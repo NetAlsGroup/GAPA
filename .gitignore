@@ -1,0 +1,11 @@
+# Dataset file dont need to upload
+/[Dd]ataset/
+# Pycharm file dont need to upload
+.idea/
+__pycache__/
+# Experiment file dont need to upload
+/experiment_data/
+/backup/
+/dist/
+/gafama.egg-info/
+/build/
