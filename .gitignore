@@ -1,8 +1,11 @@
 # Dataset file dont need to upload
 /[Dd]ataset/
 # Pycharm file dont need to upload
-.idea/
+/.idea/
 __pycache__/
+/.DS_Store
+/.gitignore
+/.gitattributes
 # Experiment file dont need to upload
 /experiment_data/
 /backup/
