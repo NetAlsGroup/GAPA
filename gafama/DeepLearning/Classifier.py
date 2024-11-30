@@ -320,12 +320,7 @@ _SET = {
 
 def load_set(dataset: str, model: str, set_net: bool = True, set_train: bool = True, **kwargs):
     """
-    设置模型结构和训练参数
 
-    :param model: 模型名称
-    :param dataset: 数据集名称
-    :param set_net: 是否设置网络结构
-    :param set_train: 是否设置训练参数
     :return: None
     """
     if model in _SET[dataset]:
@@ -350,16 +345,7 @@ def load_set(dataset: str, model: str, set_net: bool = True, set_train: bool = T
 
 def load_model(model: str, input_dim: int, output_dim: int,
                device: Optional[torch.device] = None, **kwargs) -> Module:
-    """
-    加载模型
 
-
-    :param model: 模型名称
-    :param input_dim: 输入维度
-    :param output_dim: 输出维度
-    :param device: 设备
-    :return: 模型
-    """
     assert model in _MODEL, f"Not found model {model}"
     assert kwargs['activation'] in _ACTIVATION, f"Not found activation {kwargs['activation']}"
     kwargs['activation'] = _ACTIVATION[kwargs['activation']]
@@ -369,13 +355,7 @@ def load_model(model: str, input_dim: int, output_dim: int,
 
 def load_optim(opt: str, model: Module, lr: float, weight_decay: float) -> Optimizer:
     """
-    加载优化器
 
-    :param opt: 优化器名称
-    :param model: 优化模型
-    :param lr: 学习率
-    :param weight_decay: 权重衰减
-    :return: 优化器
     """
     assert opt in _OPTIMIZER, f"Not found optimizer {opt}"
     return _OPTIMIZER[opt](model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -384,9 +364,7 @@ def load_optim(opt: str, model: Module, lr: float, weight_decay: float) -> Optim
 @torch.no_grad()
 def reset_parameters(m):
     """
-    初始化参数
 
-    :param m: nn.Module
     :return: None
     """
     if isinstance(m, nn.Linear):
@@ -396,7 +374,7 @@ def reset_parameters(m):
 class Classifier:
     def __init__(self, model_name: str, input_dim: int, output_dim: int,
                  device: Optional[torch.device] = None):
-        # 加载模型
+
         self.model = load_model(
             model=model_name,
             input_dim=input_dim,
@@ -404,7 +382,7 @@ class Classifier:
             device=device,
             **cfg.net[model_name]
         )
-        # 加载优化器
+
         self.optimizer = load_optim(
             opt=cfg.train.optimal.name,
             model=self.model,
@@ -417,7 +395,7 @@ class Classifier:
         self.output = None
         self.best_model = deepcopy(self.model.state_dict())
 
-        # 训练参数
+
         self.train_iters = cfg.train.max_epoch
         self.patience = cfg.train.patience
 

@@ -1,4 +1,4 @@
-# It is votal to start with 'if __name__ == "__main__":'
+# It is important to start with 'if __name__ == "__main__":'
 if __name__ == "__main__":
     import os
     from gafama.utils.init_device import init_device

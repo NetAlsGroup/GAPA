@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name="gafama",
+    name="gapa",
     version="0.0.1",
     author="NaKiLea",
     author_email="xx@xx.xx",

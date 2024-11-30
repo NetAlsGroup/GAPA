@@ -38,13 +38,12 @@ if __name__ == "__main__":
     print("Adjacency Matrix:")
     print(adj_matrix)
 
-    # 将邻接矩阵转换为边列表
     # src, dst = adj_matrix.nonzero(as_tuple=True)
     #
-    # 创建 DGL 图
+
     # g = dgl.graph((src, dst))
     #
-    # 打印图的信息
+
     # print(g)
 
 

@@ -1,9 +1,9 @@
-Gafama is a Python library that accelerates Perturbed SubStructure Optimization(PSSO).
+GAPA is a Python library that accelerates Perturbed SubStructure Optimization(PSSO).
 This challenging field has many vital applications, such as Community Detection Attacks (CDA), Critical Node Detection(CND), Node Classification Attacks (NCA), and Link Prediction Attacks (LPA).
 <br>
 <br>
-Gafama proposes a parallel acceleration framework to achieve fast computation of the Genetic Algorithm (GA) in PSSO.
-Currently, Gafama contains 10 PSSO algorithms implemented by GA.
+GAPA proposes a parallel acceleration framework to achieve fast computation of the Genetic Algorithm (GA) in PSSO.
+Currently, GAPA contains 10 PSSO algorithms implemented by GA.
 All algorithms built upon [PyTorch](https://github.com/pytorch/pytorch).
 <br><br>
 
@@ -33,11 +33,11 @@ Install from source
 
 ```
 git clone xxx
-cd Gafama
+cd GAPA
 python setup.py install
 ```
 
-If you find the dependencies are complex to install, please try the following: `python setup_empty.py install` (only install GFM without installing other packages)
+If you find the dependencies are complex to install, please try the following: `python setup_empty.py install` (only install GAPA without installing other packages)
 
 <br>
 <h3>
@@ -194,9 +194,9 @@ Implemented Algorithms
 <br>
 
 <h3>
-Citing Gafama
+Citing GAPA
 </h3>
-If you use Gafama in your research and want to cite in your work, please use:
+If you use GAPA in your research and want to cite in your work, please use:
 <br>
 
 ```

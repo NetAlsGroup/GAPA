@@ -16,10 +16,7 @@ class GraphConvolution(nn.Module):
 
         self.activation = activation
         self.dropout = dropout
-        # 初始化参数
         self.reset_parameters()
-
-    """初始化参数"""
 
     @torch.no_grad()
     def reset_parameters(self):

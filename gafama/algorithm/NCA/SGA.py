@@ -417,7 +417,7 @@ class SGAAlgorithm:
         top_index = best_acc.index(min(best_acc))
         print(f"Min acc: {best_acc[top_index]} -> Asr: {best_asr[top_index]}")
         print(f"Best acc: {best_acc[-1]} -> Asr: {best_asr[-1]}")
-        self.save(controller, self.dataset, [torch.tensor([0, 0])], [best_acc[top_index].item(), best_asr[top_index].item(), time_list[-1]], time_list, method="SGA", bestAcc=best_acc, bestASR=best_asr)
+        self.save(controller, self.dataset, [torch.tensor([0, 0])], [best_acc[top_index], best_asr[top_index], time_list[-1]], time_list, method="SGA", bestAcc=best_acc, bestASR=best_asr)
 
     def save(self, controller: SGAController, dataset, gene, best_metric, time_list, method, **kwargs):
         save_path = controller.path + dataset + '_crossover_rate_' + str(controller.crossover_rate) + '_mutate_rate_' + str(controller.mutate_rate) + f'_{method}.txt'
