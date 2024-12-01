@@ -1,7 +1,7 @@
 import torch
-from gafama.framework.evaluator import BasicEvaluator
-from gafama.framework.controller import CustomController
-from gafama.utils.functions import CNDTest
+from gapa.framework.evaluator import BasicEvaluator
+from gapa.framework.controller import CustomController
+from gapa.utils.functions import CNDTest
 
 
 class ExampleEvaluator(BasicEvaluator):

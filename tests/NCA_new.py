@@ -2,7 +2,7 @@ import os
 import random
 from time import time
 import networkx as nx
-from gafama.utils.DataLoader import Loader
+from gapa.utils.DataLoader import Loader
 from absolute_path import model_path, dataset_path
 
 
@@ -131,15 +131,15 @@ def GANI_main(mode, pop_size, dataset):
 
 
 if __name__ == "__main__":
-    from gafama.utils.init_device import init_device
+    from gapa.utils.init_device import init_device
     device, world_size = init_device(world_size=2)
 
     import torch
-    from gafama.algorithm.NCA.NCA_GA import NCA_GA, NCA_GAController, NCA_GAEvaluator
-    from gafama.algorithm.NCA.SGA import SGA, SGAController
-    from gafama.utils.dataset import load_dataset
-    from gafama.DeepLearning.Classifier import Classifier, load_set
-    from gafama.utils.functions import set_seed, Parsers
+    from gapa.algorithm.NCA.NCA_GA import NCA_GA, NCA_GAController, NCA_GAEvaluator
+    from gapa.algorithm.NCA.SGA import SGA, SGAController
+    from gapa.utils.dataset import load_dataset
+    from gapa.DeepLearning.Classifier import Classifier, load_set
+    from gapa.utils.functions import set_seed, Parsers
     from deeprobust.graph.defense import GCN
     args = Parsers()
 

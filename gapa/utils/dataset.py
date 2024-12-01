@@ -7,7 +7,7 @@ import scipy.sparse as sp
 import torch
 import numpy as np
 import pandas as pd
-from gafama.utils.functions import gcn_filter, eye
+from gapa.utils.functions import gcn_filter, eye
 from absolute_path import dataset_path
 
 

@@ -14,7 +14,7 @@ from GCN import GCN
 from SGC import SGC
 from ChebNet import ChebNet
 from config import cfg
-from gafama.utils.functions import gcn_filter, set_seed
+from gapa.utils.functions import gcn_filter, set_seed
 
 _MODEL = {
     'gcn': GCN,

@@ -2,7 +2,7 @@ import os
 import random
 from time import time
 import networkx as nx
-from gafama.utils.DataLoader import Loader
+from gapa.utils.DataLoader import Loader
 from absolute_path import dataset_path
 
 
@@ -140,14 +140,14 @@ def TDE_main(mode, pop_size, dataset):
 
 
 if __name__ == "__main__":
-    from gafama.utils.init_device import init_device
+    from gapa.utils.init_device import init_device
     device, world_size = init_device(world_size=2)
     # device, _ = mutil_init_device(world_size=2)
     import torch
-    from gafama.algorithm.CND.SixDST import SixDSTEvaluator, SixDSTController, SixDST
-    from gafama.algorithm.CND.Cutoff import CutoffEvaluator, CutoffController, Cutoff
-    from gafama.algorithm.CND.TDE import TDEEvaluator, TDEController, TDE
-    from gafama.utils.functions import set_seed, Parsers
+    from gapa.algorithm.CND.SixDST import SixDSTEvaluator, SixDSTController, SixDST
+    from gapa.algorithm.CND.Cutoff import CutoffEvaluator, CutoffController, Cutoff
+    from gapa.algorithm.CND.TDE import TDEEvaluator, TDEController, TDE
+    from gapa.utils.functions import set_seed, Parsers
     args = Parsers()
     # world_size = args.world_size
     # print(f"Modified world size: {world_size}")

@@ -1,16 +1,16 @@
 # It is important to start with 'if __name__ == "__main__":'
 if __name__ == "__main__":
     import os
-    from gafama.utils.init_device import init_device
+    from gapa.utils.init_device import init_device
     device, world_size = init_device(world_size=2)
 
     import torch
     import networkx as nx
     from tests.Custom import ExampleEvaluator, ExampleController
     from tests.absolute_path import dataset_path
-    from gafama.utils.DataLoader import Loader
-    from gafama.framework.controller import Start
-    from gafama.framework.body import Body
+    from gapa.utils.DataLoader import Loader
+    from gapa.framework.controller import Start
+    from gapa.framework.body import Body
 
     dataset = "ForestFire_n500"
     data_loader = Loader(

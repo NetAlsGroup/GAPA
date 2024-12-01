@@ -2,7 +2,7 @@ import os
 import random
 from time import time
 import networkx as nx
-from gafama.utils.DataLoader import Loader
+from gapa.utils.DataLoader import Loader
 from absolute_path import dataset_path
 
 
@@ -103,13 +103,13 @@ def LPA_GA_main(mode, pop_size, dataset):
 
 
 if __name__ == "__main__":
-    from gafama.utils.init_device import init_device
+    from gapa.utils.init_device import init_device
     device, world_size = init_device(world_size=2)
 
     import torch
-    from gafama.algorithm.LPA.EDA import EDAEvaluator, EDAController, EDA
-    from gafama.algorithm.LPA.LPA_GA import GAEvaluator, GAController, LPA_GA
-    from gafama.utils.functions import set_seed, Parsers
+    from gapa.algorithm.LPA.EDA import EDAEvaluator, EDAController, EDA
+    from gapa.algorithm.LPA.LPA_GA import GAEvaluator, GAController, LPA_GA
+    from gapa.utils.functions import set_seed, Parsers
     args = Parsers()
 
     if args.method == "EDA":

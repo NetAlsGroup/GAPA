@@ -2,7 +2,7 @@ import os
 import random
 from time import time
 import networkx as nx
-from gafama.utils.DataLoader import Loader
+from gapa.utils.DataLoader import Loader
 from absolute_path import dataset_path
 
 
@@ -127,14 +127,14 @@ def QAttack_main(mode, pop_size, dataset):
 
 
 if __name__ == "__main__":
-    from gafama.utils.init_device import init_device
+    from gapa.utils.init_device import init_device
     device, world_size = init_device(world_size=2)
 
     import torch
-    from gafama.algorithm.CDA.EDA import EDAEvaluator, EDAController, EDA
-    from gafama.algorithm.CDA.CGN import CGNEvaluator, CGNController, CGN
-    from gafama.algorithm.CDA.QAttack import QAttackEvaluator, QAttackController, QAttack
-    from gafama.utils.functions import set_seed, Parsers
+    from gapa.algorithm.CDA.EDA import EDAEvaluator, EDAController, EDA
+    from gapa.algorithm.CDA.CGN import CGNEvaluator, CGNController, CGN
+    from gapa.algorithm.CDA.QAttack import QAttackEvaluator, QAttackController, QAttack
+    from gapa.utils.functions import set_seed, Parsers
     args = Parsers()
 
     if args.method == "CGN":
