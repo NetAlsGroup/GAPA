@@ -181,14 +181,14 @@ Implemented Algorithms
 
 | Abbr             | Years        | Type        | Ref                           | Code                                                                                                                                   |
 |------------------|--------------|-------------|-------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|
-| <center>Q-Attack | <center>2019 | <center>CDA | <center>[\[1\]](#r1)</center> | <center>/                                                                                                                              |
+| <center>Q-Attack | <center>2019 | <center>CDA | <center>[\[1\]](#r1)</center> | <center>-                                                                                                                              |
 | <center>CGN      | <center>2022 | <center>CDA | <center>[\[2\]](#r2)</center> | <center>[Link](https://github.com/HNU-CCIE-AI-Lab/CGN)                                                                                 |
-| <center>CDA-EDA  | <center>2020 | <center>CDA | <center>[\[3\]](#r3)</center> | <center>/                                                                                                                              |
-| <center>CutOff   | <center>2023 | <center>CND | <center>[\[4\]](#r4)</center> | <center>/                                                                                                                              |
-| <center>SixDST   | <center>2024 | <center>CND | <center>/                     | <center>/                                                                                                                              |
-| <center>TDE      | <center>2022 | <center>CND | <center>[\[5\]](#r5)</center> | <center>/                                                                                                                              |
+| <center>CDA-EDA  | <center>2020 | <center>CDA | <center>[\[3\]](#r3)</center> | <center>-                                                                                                                              |
+| <center>CutOff   | <center>2023 | <center>CND | <center>[\[4\]](#r4)</center> | <center>-                                                                                                                              |
+| <center>SixDST   | <center>2024 | <center>CND | <center>-                     | <center>-                                                                                                                              |
+| <center>TDE      | <center>2022 | <center>CND | <center>[\[5\]](#r5)</center> | <center>-                                                                                                                              |
 | <center>LPA-EDA  | <center>2019 | <center>LPA | <center>[\[6\]](#r6)</center> | <center>[Link](https://github.com/Zhaominghao1314/Target-Defense-Against-Link-Prediction-Based-Attacks-via-Evolutionary-Perturbations) |
-| <center>LPA-GA   | <center>2019 | <center>LPA | <center>[\[6\]](#r6)</center> | <center>/                                                                                                                              |
+| <center>LPA-GA   | <center>2019 | <center>LPA | <center>[\[6\]](#r6)</center> | <center>-                                                                                                                              |
 | <center>GANI     | <center>2023 | <center>NCA | <center>[\[7\]](#r7)</center> | <center>[Link](https://github.com/alexfanjn/GANI)                                                                                      |
 | <center>NCA-GA   | <center>2018 | <center>NCA | <center>[\[8\]](#r8)</center> | <center>[Link](https://github.com/Hanjun-Dai/graph_adversarial_attack?tab=readme-ov-file)                                              |
 <br>
@@ -201,11 +201,11 @@ If you use GAPA in your research and want to cite in your work, please use:
 
 ```
 @article{
-    title = ...
-    author = ...
-    journal = ...
+    title = xxx
+    author = xxx
+    journal = xxx
     year = 2024
-    doi = {...}
+    doi = {xxx}
 }
 ```
 

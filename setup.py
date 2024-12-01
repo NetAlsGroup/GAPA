@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
     name="gapa",
     version="0.0.1",
-    author="NaKiLea",
+    author="xxx",
     author_email="xx@xx.xx",
     description="A PyTorch library for accelerating Genetic Algorithm in Perturbed SubStructure Optimization.",
     long_description=open("README.md").read(),
