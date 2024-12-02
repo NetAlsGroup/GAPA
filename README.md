@@ -23,7 +23,7 @@ Installation
 Install from pip
 
 ```
-pip install gafama
+pip install gapa
 ```
 
 
@@ -83,8 +83,8 @@ model_path = ...
 
 ```
 import torch
-from gafama.framework.evaluator import BasicEvaluator
-from gafama.framework.controller import CustomController
+from gapa.framework.evaluator import BasicEvaluator
+from gapa.framework.controller import CustomController
 
 
 class ExampleEvaluator(BasicEvaluator):
@@ -139,7 +139,7 @@ class ExampleController(CustomController):
 
 ```
 import os
-from gafama.utils.init_device import init_device
+from gapa.utils.init_device import init_device
 device, world_size = init_device(world_size=2)
 ```
 4. Then import other package.
@@ -149,9 +149,9 @@ import torch
 import networkx as nx
 from custom import ExampleEvaluator, ExampleController
 from absolute_path import dataset_path
-from gafama.utils.DataLoader import Loader
-from gafama.framework.controller import Start
-from gafama.framework.body import Body
+from gapa.utils.DataLoader import Loader
+from gapa.framework.controller import Start
+from gapa.framework.body import Body
 ```
 
 5. Load your data.
