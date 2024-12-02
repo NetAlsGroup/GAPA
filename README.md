@@ -68,7 +68,7 @@ File tree
 | | ├─LPA_new.py  #  Kickstart Algorithms of LPA Tasks
 | | ├─NCA_new.py  #  Kickstart Algorithms of NCA Tasks
 | | ├─Custom.py  #  Example for Custom Method
-| | ├─run.py  #  Kickstart Algorithms of Custom Method
+| | ├─run.py  #  Kickstart Custom Method
 ```
 
 <br>
