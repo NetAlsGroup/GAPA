@@ -26,7 +26,7 @@ Install from pip
 pip install gapa
 ```
 
-
+<br>
 <h3>
 Install from source
 </h3>
@@ -38,6 +38,38 @@ python setup.py install
 ```
 
 If you find the dependencies are complex to install, please try the following: `python setup_empty.py install` (only install GAPA without installing other packages)
+
+
+<br>
+<h3>
+File tree
+
+</h3>
+
+```
+├─GAPA
+| |
+| |-gapa  # Origin Files with Framework and Algorithms
+| | └─algorithm  # The Files of Algorithms
+| | | ├─CDA
+| | | ├─CND
+| | | ├─LPA
+| | | └─NCA
+| | ├─DeepLearning  # Some Key File for NCA Task
+| | └─framework
+| | | ├─body.py  # The Main Part of GA like Mutation
+| | | ├─controller.py  # The Workflow Controller of all Acceleration Modes
+| | | └─evaluator.py  # Class of Fitness Function
+| | └─utils  # Some helpful Functions
+| |-tests  # Examples for ten Algorithms and Custom Method
+| | ├─absolute_path.py  # The main path of This project and Others.
+| | ├─CDA_new.py  #  Kickstart Algorithms of CDA Tasks
+| | ├─CND_new.py  #  Kickstart Algorithms of CND Tasks
+| | ├─LPA_new.py  #  Kickstart Algorithms of LPA Tasks
+| | ├─NCA_new.py  #  Kickstart Algorithms of NCA Tasks
+| | ├─Custom.py  #  Example for Custom Method
+| | ├─run.py  #  Kickstart Algorithms of Custom Method
+```
 
 <br>
 <h3>
@@ -63,10 +95,10 @@ or you can choose your way to start an algorithm.
 <br>
 
 <h3>
-Custom Algorithm
+Custom Method
 </h3>
 
-We also provide a way to start a custom algorithm. See more details in `custom.py`,  `run.py` and `absolute_path.py`.
+We also provide a way to start a custom method. See more details in `custom.py`,  `run.py` and `absolute_path.py`.
 <br>
 
 1. Set up your path.
