@@ -5,10 +5,10 @@ import torch.distributed as dist
 from copy import deepcopy
 from tqdm import tqdm
 from time import time
-from gapa.framework.body import Body
-from gapa.framework.controller import BasicController
-from gapa.framework.evaluator import BasicEvaluator
-from gapa.utils.functions import AS_Rate, current_time, init_dist, Acc
+from gafama.framework.body import Body
+from gafama.framework.controller import BasicController
+from gafama.framework.evaluator import BasicEvaluator
+from gafama.utils.functions import AS_Rate, current_time, init_dist, Acc
 
 
 class NCA_GAEvaluator(BasicEvaluator):
@@ -29,9 +29,9 @@ class NCA_GAEvaluator(BasicEvaluator):
         model = deepcopy(self.classifier.model).to(device)
         feats = self.feats.clone().to(device)
         copy_adj = self.adj.clone().to(device)
-        test_index = self.test_index.to(device)
-        labels = self.labels.to(device)
-        edge_list = self.edge_list.to(device)
+        test_index = self.test_index.clone().to(device)
+        labels = self.labels.clone().to(device)
+        edge_list = self.edge_list.clone().to(device)
         fitness_list = torch.tensor([], device=device)
         for i in range(len(population)):
             del_edge_list = edge_list[population[i]]

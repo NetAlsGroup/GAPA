@@ -7,12 +7,12 @@ import random
 from copy import deepcopy
 from tqdm import tqdm
 from time import time
-from gapa.framework.body import Body
-from gapa.framework.controller import BasicController
-from gapa.framework.evaluator import BasicEvaluator
-from gapa.utils.functions import CNDTest
-from gapa.utils.functions import current_time
-from gapa.utils.functions import init_dist
+from gafama.framework.body import Body
+from gafama.framework.controller import BasicController
+from gafama.framework.evaluator import BasicEvaluator
+from gafama.utils.functions import CNDTest
+from gafama.utils.functions import current_time
+from gafama.utils.functions import init_dist
 from igraph import Graph as ig
 
 
@@ -51,6 +51,21 @@ class TDEEvaluator(BasicEvaluator):
         self.R0 = None
 
     def forward(self, population):
+
+        def calculate_r(graph):
+            r = 0
+            len_copy_g = graph.vcount()
+
+            for z in range(len_copy_g - 1):
+                degree = graph.degree()
+
+                node_to_remove = degree.index(max(degree))
+                graph.delete_vertices(node_to_remove)
+
+                largest_cc_size = max(graph.clusters().sizes())
+                r += largest_cc_size / len_copy_g
+            return r / (len_copy_g - 1)
+
         device = population.device
         copy_embeds = self.embeds.clone().to(device)
         fitness_list = torch.zeros(size=(len(population),), device=device)
@@ -61,7 +76,7 @@ class TDEEvaluator(BasicEvaluator):
             for node in pop_nodes:
                 copy_g.remove_node(node.item())
             graph_i = ig.from_networkx(copy_g)
-            fitness_list[i] = self.R0 - torch.tensor(self.calculate_r(graph=graph_i), device=device)
+            fitness_list[i] = self.R0 - torch.tensor(calculate_r(graph=graph_i), device=device)
         return fitness_list
 
     @staticmethod
@@ -70,14 +85,11 @@ class TDEEvaluator(BasicEvaluator):
         len_copy_g = graph.vcount()
 
         for z in range(len_copy_g - 1):
-            # 计算度中心性
             degree = graph.degree()
 
-            # 找到度中心性最大的节点并移除
             node_to_remove = degree.index(max(degree))
             graph.delete_vertices(node_to_remove)
 
-            # 计算最大连通分量的大小
             largest_cc_size = max(graph.clusters().sizes())
             r += largest_cc_size / len_copy_g
         return r / (len_copy_g - 1)

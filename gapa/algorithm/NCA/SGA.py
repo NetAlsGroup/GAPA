@@ -7,11 +7,11 @@ import pandas as pd
 from copy import deepcopy
 from tqdm import tqdm
 from time import time
-from gapa.framework.body import Body
-from gapa.framework.controller import BasicController
-from gapa.framework.evaluator import BasicEvaluator
-from gapa.utils.functions import AS_Rate, current_time, init_dist, Acc
-from gapa.utils.functions import gcn_filter, tensorToSparse, adjReshapeAddDim
+from gafama.framework.body import Body
+from gafama.framework.controller import BasicController
+from gafama.framework.evaluator import BasicEvaluator
+from gafama.utils.functions import AS_Rate, current_time, init_dist, Acc
+from gafama.utils.functions import gcn_filter, tensorToSparse, adjReshapeAddDim
 
 
 class SGAEvaluator(BasicEvaluator):
@@ -48,12 +48,12 @@ class SGAEvaluator(BasicEvaluator):
         return edge_scores
 
     def _to_device(self, device):
-        W = self.W.to(device)
-        feats = self.feats.to(device)
-        adj = self.adj.to(device)
-        labels = self.labels.to(device)
-        test_index = self.test_index.to(device)
-        edge_list = self.edge_list.to(device)
+        W = self.W.clone().to(device)
+        feats = self.feats.clone().to(device)
+        adj = self.adj.clone().to(device)
+        labels = self.labels.clone().to(device)
+        test_index = self.test_index.clone().to(device)
+        edge_list = self.edge_list.clone().to(device)
         return W, feats, adj, labels, test_index, edge_list
 
 

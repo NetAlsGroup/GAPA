@@ -5,12 +5,12 @@ import networkx as nx
 from copy import deepcopy
 from tqdm import tqdm
 from time import time
-from gapa.framework.body import Body
-from gapa.framework.controller import BasicController
-from gapa.framework.evaluator import BasicEvaluator
-from gapa.utils.functions import Q_Test, NMI_Test
-from gapa.utils.functions import current_time
-from gapa.utils.functions import init_dist
+from gafama.framework.body import Body
+from gafama.framework.controller import BasicController
+from gafama.framework.evaluator import BasicEvaluator
+from gafama.utils.functions import Q_Test, NMI_Test
+from gafama.utils.functions import current_time
+from gafama.utils.functions import init_dist
 
 
 class EDAEvaluator(BasicEvaluator):
@@ -31,10 +31,10 @@ class EDAEvaluator(BasicEvaluator):
     def forward(self, population):
         device = population.device
         graph = self.G.copy()
-        IMatrix = self.IMatrix.to(device)
-        edge_list = self.edge_list.to(device)
-        ONE_distance = self.ONE_distance.to(device)
-        distance_org = self.distance_org.to(device)
+        IMatrix = self.IMatrix.clone().to(device)
+        edge_list = self.edge_list.clone().to(device)
+        ONE_distance = self.ONE_distance.clone().to(device)
+        distance_org = self.distance_org.clone().to(device)
         fitness_list = torch.tensor([], device=device)
         for i, pop in enumerate(population):
             del_edge_list = edge_list[pop].tolist()
