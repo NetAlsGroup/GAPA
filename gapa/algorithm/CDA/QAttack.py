@@ -7,14 +7,14 @@ import numpy as np
 from tqdm import tqdm
 from time import time
 from igraph import Graph as ig
-from gafama.framework.body import BasicBody
-from gafama.framework.controller import BasicController
-from gafama.framework.evaluator import BasicEvaluator
-from gafama.utils.functions import Q_Test, NMI_Test
-from gafama.utils.functions import current_time
-from gafama.utils.functions import init_dist
-from gafama.algorithm.CDA.Genes import Gene, Nodes
-from gafama.algorithm.CDA.Genes import Generate_Genes
+from gapa.framework.body import BasicBody
+from gapa.framework.controller import BasicController
+from gapa.framework.evaluator import BasicEvaluator
+from gapa.utils.functions import Q_Test, NMI_Test
+from gapa.utils.functions import current_time
+from gapa.utils.functions import init_dist
+from gapa.algorithm.CDA.Genes import Gene, Nodes
+from gapa.algorithm.CDA.Genes import Generate_Genes
 
 
 class QAttackEvaluator(BasicEvaluator):

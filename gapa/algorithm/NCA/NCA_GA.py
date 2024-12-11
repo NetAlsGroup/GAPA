@@ -5,10 +5,10 @@ import torch.distributed as dist
 from copy import deepcopy
 from tqdm import tqdm
 from time import time
-from gafama.framework.body import Body
-from gafama.framework.controller import BasicController
-from gafama.framework.evaluator import BasicEvaluator
-from gafama.utils.functions import AS_Rate, current_time, init_dist, Acc
+from gapa.framework.body import Body
+from gapa.framework.controller import BasicController
+from gapa.framework.evaluator import BasicEvaluator
+from gapa.utils.functions import AS_Rate, current_time, init_dist, Acc
 
 
 class NCA_GAEvaluator(BasicEvaluator):

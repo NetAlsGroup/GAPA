@@ -1,6 +1,5 @@
 import torch
 import numpy as np
-from utils_whole.DataLoader import Loader
 
 
 class BasicBody:

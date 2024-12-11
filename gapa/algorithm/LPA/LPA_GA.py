@@ -7,11 +7,11 @@ from copy import deepcopy
 from itertools import combinations
 from tqdm import tqdm
 from time import time
-from gafama.framework.body import Body
-from gafama.framework.controller import BasicController
-from gafama.framework.evaluator import BasicEvaluator
-from gafama.utils.functions import current_time
-from gafama.utils.functions import init_dist
+from gapa.framework.body import Body
+from gapa.framework.controller import BasicController
+from gapa.framework.evaluator import BasicEvaluator
+from gapa.utils.functions import current_time
+from gapa.utils.functions import init_dist
 
 
 def igraph_to_nx_mapping(edges):

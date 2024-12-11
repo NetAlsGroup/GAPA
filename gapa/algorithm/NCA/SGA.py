@@ -7,11 +7,11 @@ import pandas as pd
 from copy import deepcopy
 from tqdm import tqdm
 from time import time
-from gafama.framework.body import Body
-from gafama.framework.controller import BasicController
-from gafama.framework.evaluator import BasicEvaluator
-from gafama.utils.functions import AS_Rate, current_time, init_dist, Acc
-from gafama.utils.functions import gcn_filter, tensorToSparse, adjReshapeAddDim
+from gapa.framework.body import Body
+from gapa.framework.controller import BasicController
+from gapa.framework.evaluator import BasicEvaluator
+from gapa.utils.functions import AS_Rate, current_time, init_dist, Acc
+from gapa.utils.functions import gcn_filter, tensorToSparse, adjReshapeAddDim
 
 
 class SGAEvaluator(BasicEvaluator):

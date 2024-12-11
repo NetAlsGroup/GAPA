@@ -5,7 +5,7 @@ from torch import nn
 from tqdm import tqdm
 from copy import deepcopy
 import torch.distributed as dist
-from gapa.framework.body import Body
+# from gapa.framework.body import Body
 import torch.multiprocessing as mp
 from gapa.utils.functions import init_dist
 from gapa.utils.functions import current_time

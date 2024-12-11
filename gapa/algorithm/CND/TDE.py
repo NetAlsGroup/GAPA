@@ -7,12 +7,12 @@ import random
 from copy import deepcopy
 from tqdm import tqdm
 from time import time
-from gafama.framework.body import Body
-from gafama.framework.controller import BasicController
-from gafama.framework.evaluator import BasicEvaluator
-from gafama.utils.functions import CNDTest
-from gafama.utils.functions import current_time
-from gafama.utils.functions import init_dist
+from gapa.framework.body import Body
+from gapa.framework.controller import BasicController
+from gapa.framework.evaluator import BasicEvaluator
+from gapa.utils.functions import CNDTest
+from gapa.utils.functions import current_time
+from gapa.utils.functions import init_dist
 from igraph import Graph as ig
 
 
@@ -219,10 +219,14 @@ class TDEController(BasicController):
         time_list = []
         embeds = self.embeds.to(device)
         component_size = self.pop_size // world_size
+        if self.pop_size == 2:
+            component_size = 1
         body = TDEBody(self.nodes_num, self.budget, component_size, self.fit_side, device)
         for loop in range(self.loops):
             start = time()
             ONE, component_population = body.init_population()
+            if self.pop_size == 2:
+                component_population = component_population.unsqueeze(0)
             component_fitness_list = torch.empty(size=(component_size,), device=device)
             for i, pop in enumerate(component_population):
                 copy_graph = self.graph.copy()

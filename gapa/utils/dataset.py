@@ -8,7 +8,7 @@ import torch
 import numpy as np
 import pandas as pd
 from gapa.utils.functions import gcn_filter, eye
-from absolute_path import dataset_path
+from tests.absolute_path import dataset_path
 
 
 _ALL_DATASET = {
