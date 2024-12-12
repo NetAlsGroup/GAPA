@@ -36,7 +36,7 @@ def init(dataset, attack_rate, seed=None, sort=False):
 
 def EDA_main(mode, pop_size, dataset):
     data_loader = init(dataset=dataset, attack_rate=0.1, sort=True)
-    # mode = "mm"
+    # mode = "mnm"
     evaluator = EDAEvaluator(
         pop_size=pop_size,
         graph=data_loader.G,
@@ -70,7 +70,7 @@ def EDA_main(mode, pop_size, dataset):
 
 def LPA_GA_main(mode, pop_size, dataset):
     data_loader = init(dataset=dataset, attack_rate=0.1, sort=True)
-    # mode = "ss"
+    # mode = "s"
     evaluator = GAEvaluator(
         pop_size=pop_size,
         graph=data_loader.G,

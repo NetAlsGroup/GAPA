@@ -31,7 +31,7 @@ def init(dataset, detection_rate, seed=None, selected_genes_rate=0.4, pattern="n
 
 def SixDST_main(mode, pop_size, dataset):
     data_loader = init(dataset=dataset, detection_rate=0.1, selected_genes_rate=0.4)
-    # mode = "ms"
+    # mode = "m"
     evaluator = SixDSTEvaluator(
         pop_size=pop_size,
         adj=data_loader.A,
@@ -106,7 +106,7 @@ def CutOff_main(mode, pop_size, dataset):
 
 def TDE_main(mode, pop_size, dataset):
     data_loader = init(dataset=dataset, detection_rate=0.1, pattern="sort")
-    # mode = "ms"
+    # mode = "m"
     evaluator = TDEEvaluator(
         pop_size=pop_size,
         graph=data_loader.G,

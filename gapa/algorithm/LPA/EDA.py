@@ -431,7 +431,7 @@ class EDAController(BasicController):
         for loop in range(self.loops):
             start = time()
             ONE, component_population = body.init_population_rewrite()
-            if self.mode == "mm":
+            if self.mode == "mnm":
                 evaluator = torch.nn.DataParallel(evaluator)
             component_fitness_list = evaluator(all_edges[component_population]).to(device)
             best_fitness_list = torch.tensor(data=[], device=device)
@@ -592,9 +592,9 @@ class EDAController(BasicController):
 def EDA(mode, max_generation, data_loader, controller: EDAController, evaluator, world_size):
     controller.mode = mode
     evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator)
-    if mode == "ss" or mode == "sm":
+    if mode == "s" or mode == "sm":
         controller.calculate(max_generation=max_generation, evaluator=evaluator)
-    elif mode == "ms" or mode == "mm":
+    elif mode == "m" or mode == "mnm":
         mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size), nprocs=world_size, join=True)
     else:
         raise ValueError(f"No such mode. Please choose ss, sm, ms or mm.")

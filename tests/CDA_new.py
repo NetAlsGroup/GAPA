@@ -24,7 +24,7 @@ def init(dataset, attack_rate):
 
 def EDA_main(mode, pop_size, dataset):
     data_loader = init(dataset=dataset, attack_rate=0.1)
-    # mode = "mm"
+    # mode = "mnm"
     evaluator = EDAEvaluator(
         pop_size=pop_size,
         graph=data_loader.G.copy(),
@@ -60,7 +60,7 @@ def EDA_main(mode, pop_size, dataset):
 
 def CGN_main(mode, pop_size, dataset):
     data_loader = init(dataset=dataset, attack_rate=0.1)
-    # mode = "ms"
+    # mode = "m"
     evaluator = CGNEvaluator(
         pop_size=pop_size,
         graph=data_loader.G.copy(),
@@ -94,7 +94,7 @@ def CGN_main(mode, pop_size, dataset):
 
 def QAttack_main(mode, pop_size, dataset):
     data_loader = init(dataset=dataset, attack_rate=0.1)
-    # mode = "mm"
+    # mode = "mnm"
     evaluator = QAttackEvaluator(
         pop_size=pop_size,
         graph=data_loader.G.copy(),

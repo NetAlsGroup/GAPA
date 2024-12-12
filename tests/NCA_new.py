@@ -58,7 +58,7 @@ def init(dataset, model, attack_rate, attack_target="node", retrain=False):
 
 def NCA_GA_main(mode, pop_size, dataset):
     data_loader, gcn = init(dataset=dataset, model="gcn", attack_rate=0.025, attack_target="edge")
-    # mode = "ss"
+    # mode = "s"
     evaluator = NCA_GAEvaluator(
         classifier=gcn,
         pop_size=pop_size,
@@ -97,7 +97,7 @@ def NCA_GA_main(mode, pop_size, dataset):
 
 def GANI_main(mode, pop_size, dataset):
     data_loader, gcn = init(dataset=dataset, model="gcn", attack_rate=0.05, attack_target="node")
-    # mode = "ss"
+    # mode = "s"
     surrogate = GCN(nfeat=data_loader.num_feats, nclass=data_loader.num_classes, nhid=16, dropout=0.5, with_relu=False, with_bias=True, device=device).to(device)
     surrogate.fit(data_loader.feats, data_loader.adj, data_loader.labels, data_loader.train_index, data_loader.val_index, patience=30)
     print(f"Surrogate acc: {surrogate.test(idx_test=data_loader.test_index)}")

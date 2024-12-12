@@ -26,5 +26,5 @@ if __name__ == "__main__":
     fit_side = "min"
     body = Body(critical_num=data_loader.nodes_num, budget=budget, pop_size=pop_size, fit_side=fit_side, device=device)
     evaluator = ExampleEvaluator(pop_size, data_loader.A, device)
-    controller = ExampleController(budget=budget, pop_size=pop_size, pc=0.5, pm=0.3, side=fit_side, mode="ss", num_to_eval=10, device=device)
+    controller = ExampleController(budget=budget, pop_size=pop_size, pc=0.5, pm=0.3, side=fit_side, mode="s", num_to_eval=10, device=device)
     Start(max_generation=200, data_loader=data_loader, controller=controller, evaluator=evaluator, body=body, world_size=world_size)

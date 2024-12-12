@@ -200,7 +200,7 @@ class SGAController(BasicController):
         body = SGABody(component_size, homophily_decrease_score, edge_list, self.budget, self.fit_side, device)
         for loop in range(self.loops):
             ONE, component_population = body.init_population()
-            if self.mode == "mm":
+            if self.mode == "mnm":
                 evaluator = torch.nn.DataParallel(evaluator)
             component_fitness_list = evaluator(component_population).to(device)
             best_fitness_list = torch.tensor(data=[], device=device)
@@ -366,9 +366,9 @@ class SGAAlgorithm:
                     self.n_added_labels = torch.hstack((self.labels, self.injected_nodes_classes))
                     evaluator = SGAEvaluator(feats=modified_features, adj=modified_adj, test_index=data_loader.test_index, labels=self.n_added_labels, pop_size=pop_size, device=self.device)
                     evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator, W=self.W, edge_list=final_potential_edges)
-                    if controller.mode == "ss" or controller.mode == "sm":
+                    if controller.mode == "s" or controller.mode == "sm":
                         elite_edge, elite_edge_score = controller.calculate(max_generation=max_generation, evaluator=evaluator)
-                    elif controller.mode == "ms" or controller.mode == "mm":
+                    elif controller.mode == "m" or controller.mode == "mnm":
                         with Manager() as manager:
                             return_dict = manager.dict()
                             mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, return_dict), nprocs=world_size, join=True)

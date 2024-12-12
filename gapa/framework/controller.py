@@ -141,7 +141,7 @@ class CustomController(BasicController):
         body.device = device
         body.pop_size = component_size
         ONE, component_population = self.init(body)
-        if self.mode == "mm":
+        if self.mode == "mnm":
             evaluator = torch.nn.DataParallel(evaluator)
         component_fitness_list = evaluator(component_population).to(device)
         best_fitness_list = torch.tensor(data=[], device=device)
@@ -228,9 +228,9 @@ class CustomController(BasicController):
 
 def Start(max_generation, data_loader, controller, evaluator, body, world_size):
     evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator)
-    if controller.mode == "ss" or controller.mode == "sm":
+    if controller.mode == "s" or controller.mode == "sm":
         controller.calculate(max_generation=max_generation, evaluator=evaluator, body=body)
-    elif controller.mode == "ms" or controller.mode == "mm":
+    elif controller.mode == "m" or controller.mode == "mnm":
         mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), deepcopy(body), world_size), nprocs=world_size, join=True)
     else:
         raise ValueError(f"No such mode. Please choose ss, sm, ms or mm.")

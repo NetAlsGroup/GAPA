@@ -89,7 +89,7 @@ We provide four example files in `tests/` to illustrate how to use our optimizat
 Kickstart an algorithm:
 
 ```
-python CND_new.py --dataset=ForestFire_n500 --method=SixDST --pop_size=100 --mode=ms
+python CND_new.py --dataset=ForestFire_n500 --method=SixDST --pop_size=100 --mode=m
 ```
 or you can choose your way to start an algorithm.
 <br>
@@ -201,7 +201,7 @@ data_loader = Loader(
 ```
 body = Body(nodes_num, budget, pop_size, "min", device)
 evaluator = ExampleEvaluator(pop_size, adj, device)
-controller = ExampleController(budget, pop_size, pc, pm, fit_side, "ss", num_to_eval, device)
+controller = ExampleController(budget, pop_size, pc, pm, fit_side, "s", num_to_eval, device)
 Start(max_generation, data_loader, controller, evaluator, body, world_size)
 ```
 
