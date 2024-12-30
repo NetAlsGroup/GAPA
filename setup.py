@@ -3,12 +3,12 @@ from setuptools import setup, find_packages
 setup(
     name="gapa",
     version="0.0.1",
-    author="xxx",
+    author="netalsgroup",
     author_email="xx@xx.xx",
     description="A PyTorch library for accelerating Genetic Algorithm in Perturbed SubStructure Optimization.",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
-    url="https://github.com/xx/xx",
+    url="https://github.com/NetAlsGroup/GAPA",
     license="MIT",
     classifiers=[
         "Development Status :: 3 - Alpha",
@@ -45,7 +45,7 @@ setup(
         ],
     },
     project_urls={
-        "Homepage": "https://github.com/xx/xx",
-        "Issues": "https://github.com/xx/xx/issues",
+        "Homepage": "https://github.com/NetAlsGroup/GAPA",
+        "Issues": "https://github.com/NetAlsGroup/GAPA/issues",
     },
 )
