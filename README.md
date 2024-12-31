@@ -242,11 +242,11 @@ If you use GAPA in your research and want to cite in your work, please use:
 
 ```
 @article{
-    title = xxx
-    author = xxx
-    journal = xxx
-    year = 2024
-    doi = {xxx}
+    title = Efficient Parallel Genetic Algorithm for Perturbed Substructure Optimization in Complex Network
+    author = Shanqing Yu, Meng Zhou, Jintao Zhou, Minghao Zhao, Yidan Song, Yao Lu, Zeyu Wang, Qi Xuan
+    journal = arXiv preprint arXiv:2412.20980
+    year = {2024}
+    doi = {https://doi.org/10.48550/arXiv.2412.20980}
 }
 ```
 
