@@ -1,3 +1,12 @@
+
+  [![arXiv](https://img.shields.io/badge/arxiv-2412.20980-red)](https://arxiv.org/abs/2412.20980)
+  [![PyPI-Version](https://img.shields.io/pypi/v/gapa?logo=python)](https://pypi.org/project/gapa/)
+  [![Python-Version](https://img.shields.io/badge/python-3.9+-orange?logo=python)](https://pypi.org/project/gapa/)
+<img alt="GitHub last commit" src="https://img.shields.io/github/last-commit/NetAlsGroup/GAPA">
+<a href="https://github.com/NetAlsGroup/GAPA/issues"> <img alt="GitHub issues" src="https://img.shields.io/github/issues/NetAlsGroup/GAPA"> </a>
+  [![GitHub User's Stars](https://img.shields.io/github/stars/NetAlsGroup%2FGAPA)](https://github.com/NetAlsGroup/GAPA)
+    <!--[![PyPI-Downloads](https://img.shields.io/pypi/dm/evox?color=orange&logo=python)](https://pypi.org/project/evox/)-->
+
 GAPA is a Python library that accelerates Perturbed SubStructure Optimization(PSSO).
 This challenging field has many vital applications, such as Community Detection Attacks (CDA), Critical Node Detection(CND), Node Classification Attacks (NCA), and Link Prediction Attacks (LPA).
 <br>
