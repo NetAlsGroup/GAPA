@@ -2,9 +2,9 @@ from setuptools import setup, find_packages
 
 setup(
     name="gapa",
-    version="0.0.1",
+    version="0.0.2",
     author="netalsgroup",
-    author_email="xx@xx.xx",
+    author_email="netalsgroup@gmail.com",
     description="A PyTorch library for accelerating Genetic Algorithm in Perturbed SubStructure Optimization.",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
