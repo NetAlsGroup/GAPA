@@ -1,4 +1,6 @@
 import os
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import random
 from time import time
 import networkx as nx
@@ -132,7 +134,7 @@ def GANI_main(mode, pop_size, dataset):
 
 if __name__ == "__main__":
     from gapa.utils.init_device import init_device
-    device, world_size = init_device(world_size=2)
+    device, world_size = init_device(world_size=3)
 
     import torch
     from gapa.algorithm.NCA.NCA_GA import NCA_GA, NCA_GAController, NCA_GAEvaluator

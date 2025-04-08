@@ -1,4 +1,6 @@
 import os
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import random
 from time import time
 import networkx as nx
@@ -90,7 +92,7 @@ def LPA_GA_main(mode, pop_size, dataset):
     start = time()
     LPA_GA(
         mode=mode,
-        max_generation=500,
+        max_generation=100,
         data_loader=data_loader,
         controller=controller,
         evaluator=evaluator,
@@ -104,7 +106,7 @@ def LPA_GA_main(mode, pop_size, dataset):
 
 if __name__ == "__main__":
     from gapa.utils.init_device import init_device
-    device, world_size = init_device(world_size=2)
+    device, world_size = init_device(world_size=3)
 
     import torch
     from gapa.algorithm.LPA.EDA import EDAEvaluator, EDAController, EDA

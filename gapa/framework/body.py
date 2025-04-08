@@ -55,7 +55,7 @@ class Body(BasicBody):
         crossover_population = new_population1 * (one - crossover_matrix) + new_population2 * crossover_matrix
         return crossover_population
 
-    def elitism(self, population, mutation_population, fitness_list, new_fitness_list, best_fitness_list):
+    def elitism(self, population, mutation_population, fitness_list, new_fitness_list):
         stack_population = torch.vstack((population, mutation_population))
         stack_fitness_list = torch.hstack((fitness_list, new_fitness_list))
         top_index = None
@@ -65,10 +65,4 @@ class Body(BasicBody):
             top_index = torch.argsort(stack_fitness_list)[:self.pop_size]
         population = stack_population[top_index]
         fitness_list = stack_fitness_list[top_index]
-        if self.fit_side == 'max':
-            best_fitness_list = torch.hstack((best_fitness_list, max(fitness_list)))
-        elif self.fit_side == 'min':
-            best_fitness_list = torch.hstack((best_fitness_list, min(fitness_list)))
-        else:
-            raise ValueError(f"No such fit side: {self.fit_side}")
-        return population, fitness_list, best_fitness_list
+        return population, fitness_list

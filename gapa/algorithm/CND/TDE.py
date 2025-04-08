@@ -10,7 +10,7 @@ from time import time
 from gapa.framework.body import Body
 from gapa.framework.controller import BasicController
 from gapa.framework.evaluator import BasicEvaluator
-from gapa.utils.functions import CNDTest
+from gapa.utils.functions import CNDTest, Num2Chunks
 from gapa.utils.functions import current_time
 from gapa.utils.functions import init_dist
 from igraph import Graph as ig
@@ -21,10 +21,8 @@ def phenotype2genotype(embeds, phenotype):
 
 
 def genotype2phenotype(genotype, nodes, nodes_num, budget, device):
-    # 计算每一节点与所有节点间两两距离
     # genotype = [1, budget], nodes = [1, nodes_num]
     fit_distance = torch.abs(genotype.t().repeat(1, nodes_num) - nodes.repeat(budget, 1)).cpu().numpy()
-    # 计算每一节点最接近节点，无重复
     phenotype = []
     for i in range(len(fit_distance)):
         distance_sort = fit_distance[i].argsort()
@@ -179,8 +177,6 @@ class TDEController(BasicController):
             if self.mode == "sm":
                 evaluator = torch.nn.DataParallel(evaluator)
             population_embed = phenotype2genotype(self.embeds, population)
-            best_fitness_list = torch.tensor(data=[], device=self.device)
-            best_fitness_list = torch.hstack((best_fitness_list, torch.max(fitness_list)))
             with tqdm(total=max_generation) as pbar:
                 pbar.set_description(f'Training....{self.dataset} in Loop: {loop}...')
                 for generation in range(max_generation):
@@ -195,7 +191,7 @@ class TDEController(BasicController):
                     crossover_population_embed[crossover_population_embed > 1] = 1
                     crossover_population_embed[crossover_population_embed < 0] = 0
                     new_fitness_list = evaluator(crossover_population_embed)
-                    population_embed, fitness_list, best_fitness_list = body.elitism(population_embed, crossover_population_embed, fitness_list, new_fitness_list, best_fitness_list)
+                    population_embed, fitness_list = body.elitism(population_embed, crossover_population_embed, fitness_list, new_fitness_list)
                     if generation % 50 == 0 or (generation+1) == max_generation:
                         genes_embed = population_embed[torch.argsort(fitness_list.clone(), descending=True)[0]].unsqueeze(dim=0)
                         critical_nodes = genotype2phenotype(genes_embed, self.embeds, len(self.embeds), self.budget, self.device)
@@ -211,23 +207,18 @@ class TDEController(BasicController):
             self.save(self.dataset, best_genes[top_index], [best_PCG[top_index], best_MCN[top_index], time_list[-1]], time_list, "TDE", bestPCG=best_PCG, bestMCN=best_MCN)
             print(f"Loop {loop} finished. Data saved in {self.path}...")
 
-    def mp_calculate(self, rank, max_generation, evaluator, world_size):
+    def mp_calculate(self, rank, max_generation, evaluator, world_size, component_size_list):
         device = init_dist(rank, world_size)
         best_PCG = []
         best_MCN = []
         best_genes = []
         time_list = []
         embeds = self.embeds.to(device)
-        component_size = self.pop_size // world_size
-        if self.pop_size == 2:
-            component_size = 1
-        body = TDEBody(self.nodes_num, self.budget, component_size, self.fit_side, device)
+        body = TDEBody(self.nodes_num, self.budget, component_size_list[rank], self.fit_side, device)
         for loop in range(self.loops):
             start = time()
             ONE, component_population = body.init_population()
-            if self.pop_size == 2:
-                component_population = component_population.unsqueeze(0)
-            component_fitness_list = torch.empty(size=(component_size,), device=device)
+            component_fitness_list = torch.empty(size=(component_size_list[rank],), device=device)
             for i, pop in enumerate(component_population):
                 copy_graph = self.graph.copy()
                 for node in pop:
@@ -239,20 +230,15 @@ class TDEController(BasicController):
             if self.mode == "mnm":
                 evaluator = torch.nn.DataParallel(evaluator)
             component_population_embed = phenotype2genotype(embeds, component_population)
-            best_fitness_list = torch.tensor(data=[], device=device)
-            best_fitness_list = torch.hstack((best_fitness_list, torch.max(component_fitness_list)))
-            if rank == 0:
-                population_embed = [torch.zeros((component_size, self.budget), dtype=component_population_embed.dtype, device=device) for _ in range(world_size)]
-                fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for _ in range(world_size)]
-            else:
-                population_embed = None
-                fitness_list = None
 
-            dist.gather(component_population_embed, population_embed, dst=0)
-            dist.gather(component_fitness_list, fitness_list, dst=0)
-            if rank == 0:
-                population_embed = torch.cat(population_embed)
-                fitness_list = torch.cat(fitness_list)
+            population_embed = [torch.zeros((component_size, self.budget), dtype=component_population_embed.dtype, device=device) for component_size in component_size_list]
+            fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for component_size in component_size_list]
+            dist.all_gather(population_embed, component_population_embed)
+            dist.all_gather(fitness_list, component_fitness_list)
+
+            population_embed = torch.cat(population_embed)
+            fitness_list = torch.cat(fitness_list)
+
             with tqdm(total=max_generation, position=rank) as pbar:
                 pbar.set_description(f'Rank {rank} in {self.dataset} in Loop: {loop}')
                 for generation in range(max_generation):
@@ -270,29 +256,34 @@ class TDEController(BasicController):
                         crossover_population_embed[crossover_population_embed < 0] = 0
                         elitism_population_embed = crossover_population_embed.clone()
                     if rank == 0:
-                        crossover_population_embed = torch.stack(torch.split(crossover_population_embed, component_size))
+                        crossover_population_embed = list(torch.split(crossover_population_embed, component_size_list))
                     else:
-                        crossover_population_embed = torch.stack([torch.zeros((component_size, self.budget), dtype=component_population_embed.dtype, device=device) for _ in range(world_size)])
-                    dist.broadcast(crossover_population_embed, src=0)
-                    new_fitness_list = evaluator(crossover_population_embed[rank]).to(device)
+                        crossover_population_embed = [None for _ in range(world_size)]
+
+                    component_crossover_population_embed = [torch.tensor([0])]
+                    dist.scatter_object_list(component_crossover_population_embed, crossover_population_embed, src=0)
+                    component_crossover_population_embed = component_crossover_population_embed[0].to(device)
+                    new_fitness_list = evaluator(component_crossover_population_embed).to(device)
+
+                    elitism_fitness_list = [torch.empty((component_size,), dtype=new_fitness_list.dtype, device=device) for component_size in component_size_list]
+                    dist.all_gather(elitism_fitness_list, new_fitness_list)
 
                     if rank == 0:
-                        elitism_fitness_list = [torch.empty((component_size,), dtype=new_fitness_list.dtype, device=device) for _ in range(world_size)]
-                    else:
-                        elitism_population_embed = None
-                        elitism_fitness_list = None
-                    dist.gather(new_fitness_list, elitism_fitness_list, dst=0)
-                    if rank == 0:
                         elitism_fitness_list = torch.cat(elitism_fitness_list)
-                        population_embed, fitness_list, best_fitness_list = body.elitism(population_embed, elitism_population_embed, fitness_list, elitism_fitness_list, best_fitness_list)
-                        top_index = torch.argsort(fitness_list)[self.pop_size - component_size:]
-                        component_population_embed = population_embed[top_index]
-                        component_fitness_list = fitness_list[top_index]
+                        body.pop_size = self.pop_size
+                        population_embed, fitness_list = body.elitism(population_embed, elitism_population_embed, fitness_list, elitism_fitness_list)
+                        body.pop_size = component_size_list[rank]
                     else:
-                        component_population_embed = torch.zeros((component_size, self.budget), dtype=component_population_embed.dtype, device=device)
-                        component_fitness_list = torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device)
-                    dist.broadcast(component_population_embed, src=0)
-                    dist.broadcast(component_fitness_list, src=0)
+                        population_embed = torch.zeros(population_embed.shape, dtype=population_embed.dtype, device=device)
+                        fitness_list = torch.empty(fitness_list.shape, dtype=fitness_list.dtype, device=device)
+
+                    dist.broadcast(population_embed, src=0)
+                    dist.broadcast(fitness_list, src=0)
+
+                    top_index = torch.argsort(fitness_list)[self.pop_size - component_size_list[rank]:]
+                    component_population_embed = population_embed[top_index]
+                    component_fitness_list = fitness_list[top_index]
+
                     if generation % 50 == 0 or (generation + 1) == max_generation:
                         genes_embed = component_population_embed[torch.argsort(component_fitness_list.clone(), descending=True)[0]].unsqueeze(dim=0)
                         critical_nodes = genotype2phenotype(genes_embed, embeds, len(embeds), self.budget, device)
@@ -385,14 +376,17 @@ class TDEController(BasicController):
             return edge
 
 
-def TDE(mode, max_generation, data_loader, controller: TDEController, evaluator, world_size):
+def TDE(mode, max_generation, data_loader, controller: TDEController, evaluator, world_size, verbose=True):
     controller.mode = mode
     evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator)
     if mode == "s" or mode == "sm":
         controller.calculate(max_generation=max_generation, evaluator=evaluator)
     elif mode == "m" or mode == "mnm":
-        mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size), nprocs=world_size, join=True)
+        component_size_list = Num2Chunks(controller.pop_size, world_size)
+        if verbose:
+            print(f"Component Size List: {component_size_list}")
+        mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, component_size_list), nprocs=world_size, join=True)
     else:
-        raise ValueError(f"No such mode. Please choose ss, sm, ms or mm.")
+        raise ValueError(f"No such mode. Please choose s, sm, m or mnm.")
 
 

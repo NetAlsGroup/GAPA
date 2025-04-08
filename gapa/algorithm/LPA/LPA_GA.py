@@ -10,7 +10,7 @@ from time import time
 from gapa.framework.body import Body
 from gapa.framework.controller import BasicController
 from gapa.framework.evaluator import BasicEvaluator
-from gapa.utils.functions import current_time
+from gapa.utils.functions import current_time, Num2Chunks
 from gapa.utils.functions import init_dist
 
 
@@ -110,7 +110,7 @@ class GAEvaluator(BasicEvaluator):
             if pred_dic[each] > max_test:
                 max_test = pred_dic[each]
         pos_fitness /= len(self.test_edges)
-        for each in testList:  # 需要重新计算相似度的不存在的连边/the non-existent links which need to recalculate the similarity index
+        for each in testList:
             neg_fitness -= self.init_proximity_dic[each]
             neg_fitness += pred_dic[each]
             if pred_dic[each] >= max_test:
@@ -233,7 +233,6 @@ class GABody(Body):
     def _one_pop(self, del_edges, add_edges):
         # mask = ~torch.any(torch.all(self.train_edges_index[:, None] == del_edges, dim=-1), dim=-1)
         mask = ~torch.isin(self.train_edges_index, del_edges)
-        kk = self.train_edges_index[mask]
         edges = torch.cat((self.train_edges_index[mask], add_edges))
         return torch.cat((del_edges, add_edges, edges))
 
@@ -386,8 +385,7 @@ class GAController(BasicController):
             if self.mode == "sm":
                 evaluator = torch.nn.DataParallel(evaluator)
             fitness_list = evaluator(self.all_edges[population])
-            best_fitness_list = torch.tensor(data=[], device=self.device)
-            best_fitness_list = torch.hstack((best_fitness_list, torch.max(fitness_list)))
+
             with tqdm(total=max_generation) as pbar:
                 pbar.set_description(f'Training....{self.dataset} in Loop: {loop}...')
                 for generation in range(max_generation):
@@ -412,7 +410,7 @@ class GAController(BasicController):
                         mutation_population = torch.cat((mutation_population, body._one_pop(del_pop[i], add_pop[i]).unsqueeze(dim=0)))
 
                     new_fitness_list = evaluator(self.all_edges[mutation_population])
-                    population, fitness_list, best_fitness_list = body.elitism(population, mutation_population, fitness_list, new_fitness_list, best_fitness_list)
+                    population, fitness_list = body.elitism(population, mutation_population, fitness_list, new_fitness_list)
                     if generation % 10 == 0 or (generation+1) == max_generation:
                         genes = population[torch.argsort(fitness_list.clone(), descending=True)[0]]
                         perturb_edges = genes[2*self.budget:]
@@ -430,7 +428,7 @@ class GAController(BasicController):
             self.save(self.dataset, self.all_edges[best_genes[top_index]], [best_Pre[top_index], best_AUC[top_index], time_list[-1]], time_list, "EDA", bestPre=best_Pre, bestAUC=best_AUC)
             print(f"Loop {loop} finished. Data saved in {self.path}...")
 
-    def mp_calculate(self, rank, max_generation, evaluator, world_size):
+    def mp_calculate(self, rank, max_generation, evaluator, world_size, component_size_list):
         device = init_dist(rank, world_size)
         best_Pre = []
         best_AUC = []
@@ -439,27 +437,21 @@ class GAController(BasicController):
         train_edges_index = self.train_edges_index.to(device)
         non_exist_edges_index = self.non_exist_edges_index.to(device)
         all_edges = self.all_edges.to(device)
-        component_size = self.pop_size // world_size
-        body = GABody(self.nodes_num, self.budget, component_size, train_edges_index, non_exist_edges_index, all_edges, self.nodes_num, self.fit_side, device)
+        body = GABody(self.nodes_num, self.budget, component_size_list[rank], train_edges_index, non_exist_edges_index, all_edges, self.nodes_num, self.fit_side, device)
         for loop in range(self.loops):
             start = time()
             ONE, component_population = body.init_population_rewrite()
             if self.mode == "mnm":
                 evaluator = torch.nn.DataParallel(evaluator)
             component_fitness_list = evaluator(all_edges[component_population]).to(device)
-            best_fitness_list = torch.tensor(data=[], device=device)
-            best_fitness_list = torch.hstack((best_fitness_list, torch.max(component_fitness_list)))
-            if rank == 0:
-                population = [torch.zeros(component_population.shape, dtype=component_population.dtype, device=device) for _ in range(world_size)]
-                fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for _ in range(world_size)]
-            else:
-                population = None
-                fitness_list = None
-            dist.gather(component_population, population, dst=0)
-            dist.gather(component_fitness_list, fitness_list, dst=0)
-            if rank == 0:
-                population = torch.cat(population)
-                fitness_list = torch.cat(fitness_list)
+
+            population = [torch.zeros(size=(component_size,) + component_population.shape[1:], dtype=component_population.dtype, device=device) for component_size in component_size_list]
+            fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for component_size in component_size_list]
+            dist.all_gather(population, component_population)
+            dist.all_gather(fitness_list, component_fitness_list)
+
+            population = torch.cat(population)
+            fitness_list = torch.cat(fitness_list)
 
             with tqdm(total=max_generation, position=rank) as pbar:
                 pbar.set_description(f'Rank {rank} in {self.dataset} in Loop: {loop}')
@@ -473,49 +465,51 @@ class GAController(BasicController):
                         new_del_add_population_2 = new_population_2[:, :2 * self.budget]
                         crossover_one = torch.ones((self.pop_size, 2*self.budget), dtype=component_population.dtype, device=device)
                         crossover_population = body.crossover(new_del_add_population_1, new_del_add_population_2, self.crossover_rate, crossover_one).int()
-                        body.pop_size = component_size
+                        body.pop_size = component_size_list[rank]
                         body.budget = self.budget
-                    if rank == 0:
-                        crossover_population = torch.stack(torch.split(crossover_population, component_size))
-                    else:
-                        crossover_population = torch.stack([torch.zeros((component_size, 2 * self.budget), dtype=component_population.dtype, device=device) for _ in range(world_size)])
 
-                    dist.broadcast(crossover_population, src=0)
-                    del_population = crossover_population[rank][:, :self.budget]
+                    if rank == 0:
+                        crossover_population = list(torch.split(crossover_population, component_size_list))
+                    else:
+                        crossover_population = [None for _ in range(world_size)]
+                    component_crossover_population = [torch.tensor([0])]
+                    dist.scatter_object_list(component_crossover_population, crossover_population, src=0)
+                    component_crossover_population = component_crossover_population[0].to(device)
+
+                    del_population = component_crossover_population[:, :self.budget]
                     del_mutation_population = body.del_mutation(del_population, self.mutate_rate, ONE)
-                    add_population = crossover_population[rank][:, self.budget:]
+                    add_population = component_crossover_population[:, self.budget:]
                     add_mutation_population = body.add_mutation(add_population, self.mutate_rate, ONE)
 
                     del_pop = self._remove_repeat(del_mutation_population, self.train_index_len)
                     add_pop = self._remove_repeat(add_mutation_population, self.non_exist_index_len, pattern="add", add=self.train_index_len)
                     component_mutation_population = torch.tensor([], dtype=torch.int, device=device)
-                    for i in range(component_size):
+                    for i in range(component_size_list[rank]):
                         component_mutation_population = torch.cat((component_mutation_population, body._one_pop(del_pop[i], add_pop[i]).unsqueeze(dim=0)))
 
                     new_component_fitness_list = evaluator(all_edges[component_mutation_population]).to(device)
 
-                    if rank == 0:
-                        elitism_population = [torch.zeros(component_population.shape, dtype=component_population.dtype, device=device) for _ in range(world_size)]
-                        elitism_fitness_list = [torch.empty((component_size,), dtype=new_component_fitness_list.dtype, device=device) for _ in range(world_size)]
-                    else:
-                        elitism_population = None
-                        elitism_fitness_list = None
-                    dist.gather(component_mutation_population, elitism_population, dst=0)
-                    dist.gather(new_component_fitness_list, elitism_fitness_list, dst=0)
+                    elitism_population = [torch.zeros(size=(component_size,) + component_mutation_population.shape[1:], dtype=component_mutation_population.dtype, device=device) for component_size in component_size_list]
+                    elitism_fitness_list = [torch.empty((component_size,), dtype=new_component_fitness_list.dtype, device=device) for component_size in component_size_list]
+                    dist.all_gather(elitism_population, component_mutation_population)
+                    dist.all_gather(elitism_fitness_list, new_component_fitness_list)
+
                     if rank == 0:
                         elitism_population = torch.cat(elitism_population)
                         elitism_fitness_list = torch.cat(elitism_fitness_list)
                         body.pop_size = self.pop_size
-                        population, fitness_list, best_fitness_list = body.elitism(population, elitism_population, fitness_list, elitism_fitness_list, best_fitness_list)
-                        top_index = torch.argsort(fitness_list)[self.pop_size-component_size:]
-                        component_population = population[top_index]
-                        component_fitness_list = fitness_list[top_index]
-                        body.pop_size = component_size
+                        population, fitness_list = body.elitism(population, elitism_population, fitness_list, elitism_fitness_list)
+                        body.pop_size = component_size_list[rank]
                     else:
-                        component_population = torch.zeros(component_population.shape, dtype=component_population.dtype, device=device)
-                        component_fitness_list = torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device)
-                    dist.broadcast(component_population, src=0)
-                    dist.broadcast(component_fitness_list, src=0)
+                        population = torch.zeros(population.shape, dtype=population.dtype, device=device)
+                        fitness_list = torch.empty(fitness_list.shape, dtype=fitness_list.dtype, device=device)
+
+                    dist.broadcast(population, src=0)
+                    dist.broadcast(fitness_list, src=0)
+
+                    top_index = torch.argsort(fitness_list)[self.pop_size - component_size_list[rank]:]
+                    component_population = population[top_index]
+                    component_fitness_list = fitness_list[top_index]
 
                     if generation % 10 == 0 or (generation + 1) == max_generation:
                         genes = component_population[torch.argsort(component_fitness_list.clone(), descending=True)[0]]
@@ -607,12 +601,10 @@ class GAController(BasicController):
         ra_dict = {}
         for edge in edge_list:
             node_a, node_b = edge
-            # 获取共同邻居
             neighbors_a = set(graph.neighbors(node_a))
             neighbors_b = set(graph.neighbors(node_b))
             common_neighbors = neighbors_a.intersection(neighbors_b)
 
-            # 计算资源分配指数
             ra_value = sum(1.0 / len(graph.neighbors(neighbor)) for neighbor in common_neighbors if len(graph.neighbors(neighbor)) > 0)
 
             ra_dict[tuple(edge)] = ra_value
@@ -640,15 +632,18 @@ class GAController(BasicController):
             return edge
 
 
-def LPA_GA(mode, max_generation, data_loader, controller: GAController, evaluator, world_size):
+def LPA_GA(mode, max_generation, data_loader, controller: GAController, evaluator, world_size, verbose=True):
     controller.mode = mode
     evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator)
     if mode == "s" or mode == "sm":
         controller.calculate(max_generation=max_generation, evaluator=evaluator)
     elif mode == "m" or mode == "mnm":
-        mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size), nprocs=world_size, join=True)
+        component_size_list = Num2Chunks(controller.pop_size, world_size)
+        if verbose:
+            print(f"Component Size List: {component_size_list}")
+        mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, component_size_list), nprocs=world_size, join=True)
     else:
-        raise ValueError(f"No such mode. Please choose ss, sm, ms or mm.")
+        raise ValueError(f"No such mode. Please choose s, sm, m or mnm.")
 
 
 

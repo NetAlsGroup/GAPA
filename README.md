@@ -78,6 +78,11 @@ File tree
 | | ├─NCA_new.py  #  Kickstart Algorithms of NCA Tasks
 | | ├─Custom.py  #  Example for Custom Method
 | | ├─run.py  #  Kickstart a Custom Method
+| | |
+| | ├─Evotorch_SixDST.py  # The implements of examples with Evotorch and Evox
+| | ├─Evotorch_CDA_EDA.py
+| | ├─Evox_SixDST.py
+| | ├─Evox_CDA_EDA.py
 ```
 
 <br>
@@ -102,6 +107,18 @@ python CND_new.py --dataset=ForestFire_n500 --method=SixDST --pop_size=100 --mod
 ```
 or you can choose your way to start an algorithm.
 <br>
+
+<br>
+We also provide application examples of SixDST and CDA-EDA algorithms on Evotorch and Evox for users‘ reference.
+
+
+| File         | 
+|--------------|
+| <center>Evotorch_CDA_EDA.py  | 
+| <center>Evotorch_CDA_EDA.py |
+| <center>Evox_SixDST.py | 
+| <center>Evox__CDA_EDA.py |
+
 
 <h3>
 Custom Method
@@ -232,6 +249,18 @@ Implemented Algorithms
 | <center>LPA-GA   | <center>2019 | <center>LPA | <center>[\[6\]](#r6)</center> | <center>-                                                                                                                              |
 | <center>GANI     | <center>2023 | <center>NCA | <center>[\[7\]](#r7)</center> | <center>[Link](https://github.com/alexfanjn/GANI)                                                                                      |
 | <center>NCA-GA   | <center>2018 | <center>NCA | <center>[\[8\]](#r8)</center> | <center>[Link](https://github.com/Hanjun-Dai/graph_adversarial_attack?tab=readme-ov-file)                                              |
+<br>
+
+<h3>
+Changelog
+</h3>
+
+* 12/2024: Open source code, providing ten algorithms for four tasks under GA-based PSSO problem.
+
+* 04/2025: Update the communication of arbitrary populations in M mode and MNM mode under different GPUs. 
+Optimized the fitness calculation of CDA-EDA.
+Provides CDA-EDA and SixDST acceleration use cases based on Evox and Evotorch.
+
 <br>
 
 <h3>

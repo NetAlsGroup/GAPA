@@ -8,7 +8,7 @@ from time import time
 from gapa.framework.body import Body
 from gapa.framework.controller import BasicController
 from gapa.framework.evaluator import BasicEvaluator
-from gapa.utils.functions import Q_Test, NMI_Test
+from gapa.utils.functions import Q_Test, NMI_Test, Num2Chunks
 from gapa.utils.functions import current_time
 from gapa.utils.functions import init_dist
 
@@ -26,47 +26,47 @@ class EDAEvaluator(BasicEvaluator):
         self.nodes_num = nodes_num
         self.ONE_distance = torch.ones((nodes_num, nodes_num), dtype=torch.int32, device=device)
         self.ONE_distance.fill_diagonal_(0)
+        self.one = torch.ones(size=(1, self.nodes_num), device=device)
+        self.one_t = torch.ones(size=(self.nodes_num, 1), device=device)
         self.distance_org = self._calculate_distance_org(self.AMatrix, self.IMatrix)
 
     def forward(self, population):
         device = population.device
-        graph = self.G.copy()
-        IMatrix = self.IMatrix.clone().to(device)
+        A = self.AMatrix.to(device).float()
         edge_list = self.edge_list.clone().to(device)
         ONE_distance = self.ONE_distance.clone().to(device)
         distance_org = self.distance_org.clone().to(device)
-        fitness_list = torch.tensor([], device=device)
+        fitness_list = []
         for i, pop in enumerate(population):
-            del_edge_list = edge_list[pop].tolist()
-            graph.remove_edges_from(del_edge_list)
-            copy_A = torch.tensor(nx.adjacency_matrix(graph).toarray(), device=device)
-            normalized_matrix = torch.matmul(
-                torch.diag(torch.float_power(torch.sum(copy_A + IMatrix, dim=1), -1)).float(),
-                copy_A.float())  # D^(-1)@A
-            approximate_deepwalk_matrix = torch.mul(1 / 2, torch.add(normalized_matrix, torch.matmul(normalized_matrix, normalized_matrix)))
+            copy_A = A.clone()
+            del_idx = edge_list[pop]
+            copy_A[del_idx[:, 0], del_idx[:, 1]] = 0
+            copy_A[del_idx[:, 1], del_idx[:, 0]] = 0
+            normalized_matrix = torch.diag(torch.float_power(copy_A.sum(dim=1) + 1, -1)).float() @ copy_A
+            approximate_deepwalk_matrix = 1/2 * (normalized_matrix + normalized_matrix @ normalized_matrix)
             u, s, v = torch.svd_lowrank(approximate_deepwalk_matrix)
-            embedding = torch.matmul(u, torch.diag(torch.sqrt(s)))
+            embedding = u @ torch.diag(s.sqrt())
             # Calculate distance
             E_dots = torch.sum(torch.mul(embedding, embedding), dim=1).reshape(self.nodes_num, 1)
             distance = torch.mul(
                 torch.float_power(
                     torch.abs(
                         torch.add(
-                            torch.matmul(E_dots, torch.ones(size=(1, self.nodes_num), device=device)),
-                            torch.matmul(torch.ones(size=(self.nodes_num, 1), device=device),
-                                         E_dots.T))
+                            torch.matmul(E_dots, self.one.to(device)),
+                            torch.matmul(self.one_t.to(device), E_dots.T))
                         - 2 * torch.matmul(embedding, embedding.T)),
                     1 / 2),
                 ONE_distance)
+
             # Calculate fitness
             fitness = 1 - abs(
                 torch.corrcoef(
                     input=torch.vstack((distance.flatten(), distance_org.flatten()))
                 )[0, 1]
-            ).unsqueeze(0)
-            fitness_list = torch.cat((fitness_list, fitness))
-            graph.add_edges_from(del_edge_list)
-        return fitness_list
+            )
+            fitness_list.append(fitness)
+
+        return torch.tensor(fitness_list, device=device)
 
     def _calculate_distance_org(self, AMatirx, IMatrix):
         D_inverse = torch.diag(torch.float_power(torch.sum(AMatirx + IMatrix, dim=1), -1))
@@ -81,10 +81,9 @@ class EDAEvaluator(BasicEvaluator):
         distance_org = torch.mul(
             torch.float_power(
                 torch.abs(torch.add(
-                    torch.matmul(E_dots, torch.ones(size=(1, self.nodes_num), device=self.device, dtype=torch.float32)),
-                    torch.matmul(torch.ones(size=(self.nodes_num, 1), device=self.device, dtype=torch.float32),
-                                 E_dots.T))
-                          - 2 * torch.matmul(embedding, embedding.T)),
+                    torch.matmul(E_dots, self.one),
+                    torch.matmul(self.one_t, E_dots.T)
+                ) - 2 * torch.matmul(embedding, embedding.T)),
                 1 / 2).float(),
             self.ONE_distance.float())
 
@@ -138,8 +137,6 @@ class EDAController(BasicController):
             if self.mode == "sm":
                 evaluator = torch.nn.DataParallel(evaluator)
             fitness_list = evaluator(population)
-            best_fitness_list = torch.tensor(data=[], device=self.device)
-            best_fitness_list = torch.hstack((best_fitness_list, torch.max(fitness_list)))
             with tqdm(total=max_generation) as pbar:
                 pbar.set_description(f'Training....{self.dataset} in Loop: {loop}...')
                 for generation in range(max_generation):
@@ -149,7 +146,7 @@ class EDAController(BasicController):
                     mutation_population = body.mutation(crossover_population, self.mutate_rate, ONE)
                     mutation_population = self._remove_repeat(mutation_population)
                     new_fitness_list = evaluator(mutation_population)
-                    population, fitness_list, best_fitness_list = body.elitism(population, mutation_population, fitness_list, new_fitness_list, best_fitness_list)
+                    population, fitness_list = body.elitism(population, mutation_population, fitness_list, new_fitness_list)
                     if generation % 50 == 0 or (generation+1) == max_generation:
                         critical_edges = self.edge_list[population[torch.argsort(fitness_list, descending=True)[0]]]
                         copy_G = self.graph.copy()
@@ -167,34 +164,28 @@ class EDAController(BasicController):
             print(f"Q after attack: {best_Q[top_index]}, NMI after attack: {best_NMI[top_index]}")
             self.save(self.dataset, best_genes[top_index], [best_Q[top_index], best_NMI[top_index], time_list[-1]], time_list, "EDA", bestQ=best_Q, bestNMI=best_NMI)
 
-    def mp_calculate(self, rank, max_generation, evaluator, world_size):
+    def mp_calculate(self, rank, max_generation, evaluator, world_size, component_size_list):
         device = init_dist(rank, world_size)
         best_Q = []
         best_NMI = []
         best_genes = []
         time_list = []
         edge_list = self.edge_list.to(device)
-        component_size = self.pop_size // world_size
-        body = Body(self.edge_num, self.budget, component_size, self.fit_side, device)
+        body = Body(self.edge_num, self.budget, component_size_list[rank], self.fit_side, device)
         for loop in range(self.loops):
             start = time()
             ONE, component_population = body.init_population()
             if self.mode == "mnm":
                 evaluator = torch.nn.DataParallel(evaluator)
             component_fitness_list = evaluator(component_population).to(device)
-            best_fitness_list = torch.tensor(data=[], device=device)
-            best_fitness_list = torch.hstack((best_fitness_list, torch.max(component_fitness_list)))
-            if rank == 0:
-                population = [torch.zeros((component_size, self.budget), dtype=torch.int64, device=device) for _ in range(world_size)]
-                fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for _ in range(world_size)]
-            else:
-                population = None
-                fitness_list = None
-            dist.gather(component_population, population, dst=0)
-            dist.gather(component_fitness_list, fitness_list, dst=0)
-            if rank == 0:
-                population = torch.cat(population)
-                fitness_list = torch.cat(fitness_list)
+            population = [torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for component_size in component_size_list]
+            fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for component_size in component_size_list]
+            dist.all_gather(population, component_population)
+            dist.all_gather(fitness_list, component_fitness_list)
+
+            population = torch.cat(population)
+            fitness_list = torch.cat(fitness_list)
+
             with tqdm(total=max_generation, position=rank) as pbar:
                 pbar.set_description(f'Rank {rank} in {self.dataset} in Loop: {loop}')
                 for generation in range(max_generation):
@@ -202,39 +193,43 @@ class EDAController(BasicController):
                         new_population1 = population.clone()
                         new_population2 = body.selection(new_population1, fitness_list)
                         body.pop_size = self.pop_size
-                        crossover_ONE = torch.ones((self.pop_size, self.budget), dtype=torch.int64, device=device)
+                        crossover_ONE = torch.ones((self.pop_size, self.budget), dtype=component_population.dtype, device=device)
                         crossover_population = body.crossover(new_population1, new_population2, self.crossover_rate, crossover_ONE)
-                        body.pop_size = component_size
+                        body.pop_size = component_size_list[rank]
                     if rank == 0:
-                        crossover_population = torch.stack(torch.split(crossover_population, component_size))
+                        crossover_population = list(torch.split(crossover_population, component_size_list))
                     else:
-                        crossover_population = torch.stack( [torch.zeros((component_size, self.budget), dtype=torch.int64, device=device) for _ in range(world_size)])
-                    dist.broadcast(crossover_population, src=0)
-                    mutation_population = body.mutation(crossover_population[rank], self.mutate_rate, ONE)
-                    mutation_population = self._remove_repeat(mutation_population)
+                        crossover_population = [None for _ in range(world_size)]
+
+                    component_crossover_population = [torch.tensor([0])]
+                    dist.scatter_object_list(component_crossover_population, crossover_population, src=0)
+                    component_crossover_population = component_crossover_population[0].to(device)
+                    mutation_population = body.mutation(component_crossover_population, self.mutate_rate, ONE)
+                    # mutation_population = self._remove_repeat(mutation_population)
                     new_component_fitness_list = evaluator(mutation_population).to(device)
-                    if rank == 0:
-                        elitism_population = [torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for _ in range(world_size)]
-                        elitism_fitness_list = [torch.empty((component_size,), dtype=new_component_fitness_list.dtype, device=device) for _ in range(world_size)]
-                    else:
-                        elitism_population = None
-                        elitism_fitness_list = None
-                    dist.gather(mutation_population, elitism_population, dst=0)
-                    dist.gather(new_component_fitness_list, elitism_fitness_list, dst=0)
+
+                    elitism_population = [torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for component_size in component_size_list]
+                    elitism_fitness_list = [torch.empty((component_size,), dtype=new_component_fitness_list.dtype, device=device) for component_size in component_size_list]
+                    dist.all_gather(elitism_population, mutation_population)
+                    dist.all_gather(elitism_fitness_list, new_component_fitness_list)
+
                     if rank == 0:
                         elitism_population = torch.cat(elitism_population)
                         elitism_fitness_list = torch.cat(elitism_fitness_list)
                         body.pop_size = self.pop_size
-                        population, fitness_list, best_fitness_list = body.elitism(population, elitism_population, fitness_list, elitism_fitness_list, best_fitness_list)
-                        top_index = torch.argsort(fitness_list)[self.pop_size - component_size:]
-                        component_population = population[top_index]
-                        component_fitness_list = fitness_list[top_index]
-                        body.pop_size = component_size
+                        population, fitness_list = body.elitism(population, elitism_population, fitness_list, elitism_fitness_list)
+                        body.pop_size = component_size_list[rank]
                     else:
-                        component_population = torch.zeros((component_size, self.budget), dtype=torch.int64, device=device)
-                        component_fitness_list = torch.empty((component_size,), dtype=torch.float64, device=device)
-                    dist.broadcast(component_population, src=0)
-                    dist.broadcast(component_fitness_list, src=0)
+                        population = torch.zeros(population.shape, dtype=population.dtype, device=device)
+                        fitness_list = torch.empty(fitness_list.shape, dtype=fitness_list.dtype, device=device)
+
+                    dist.broadcast(population, src=0)
+                    dist.broadcast(fitness_list, src=0)
+
+                    top_index = torch.argsort(fitness_list)[self.pop_size - component_size_list[rank]:]
+                    component_population = population[top_index]
+                    component_fitness_list = fitness_list[top_index]
+
                     if generation % 30 == 0 or (generation+1) == max_generation:
                         component_population = self._remove_repeat(component_population.clone())
                         component_edges = edge_list[component_population[torch.argsort(component_fitness_list, descending=True)[0]]]
@@ -247,8 +242,7 @@ class EDAController(BasicController):
                         time_list.append(end - start)
                     pbar.set_postfix(fitness=max(component_fitness_list).item(), Q=min(best_Q), NMI=min(best_NMI))
                     pbar.update(1)
-            end = time()
-            global_time = end - start
+
             best_genes = torch.stack(best_genes)
             best_Q = torch.tensor(best_Q, device=device)
             best_NMI = torch.tensor(best_NMI, device=device)
@@ -310,15 +304,18 @@ class EDAController(BasicController):
             return edge
 
 
-def EDA(mode, max_generation, data_loader, controller: EDAController, evaluator, world_size):
+def EDA(mode, max_generation, data_loader, controller: EDAController, evaluator, world_size, verbose=True):
     controller.mode = mode
     evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator)
     if mode == "s" or mode == "sm":
         controller.calculate(max_generation=max_generation, evaluator=evaluator)
     elif mode == "m" or mode == "mnm":
-        mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size), nprocs=world_size, join=True)
+        component_size_list = Num2Chunks(controller.pop_size, world_size)
+        if verbose:
+            print(f"Component Size List: {component_size_list}")
+        mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, component_size_list), nprocs=world_size, join=True)
     else:
-        raise ValueError(f"No such mode. Please choose ss, sm, ms or mm.")
+        raise ValueError(f"No such mode. Please choose s, sm, m or mnm.")
 
 
 

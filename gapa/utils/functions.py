@@ -40,6 +40,12 @@ def init_dist(rank, world_size, async_op=False):
     return device
 
 
+def Num2Chunks(num, num_chunks):
+    base_size, remainder = divmod(num, num_chunks)
+    chunk_sizes = [base_size + 1] * remainder + [base_size] * (num_chunks - remainder)
+    return chunk_sizes
+
+
 def current_time():
     current_datetime = datetime.now()
     formatted_datetime = current_datetime.strftime("%Y-%m-%d %H:%M:%S")

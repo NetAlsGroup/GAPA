@@ -10,7 +10,7 @@ from igraph.clustering import compare_communities
 from gapa.framework.body import BasicBody
 from gapa.framework.controller import BasicController
 from gapa.framework.evaluator import BasicEvaluator
-from gapa.utils.functions import Q_Test, NMI_Test
+from gapa.utils.functions import Q_Test, Num2Chunks
 from gapa.utils.functions import current_time
 from gapa.utils.functions import init_dist
 from gapa.algorithm.CDA.Genes import Gain_Edge_Set, Generate_Pop
@@ -75,11 +75,11 @@ class CGNBody(BasicBody):
         return self._point_mutation(population, mutation_population_index)
 
     def crossover(self, population, new_population1, new_population2, crossover_rate, one):
-        crossover_matrix = torch.tensor(np.random.choice([0, 1], size=(self.pop_size, self.budget), p=[1 - crossover_rate, crossover_rate]), device=self.device)
+        crossover_matrix = torch.tensor(np.random.choice([0, 1], size=(self.pop_size, self.budget), p=[1 - crossover_rate, crossover_rate]), dtype=torch.int, device=self.device)
         crossover_population_index = new_population1 * (one - crossover_matrix) + new_population2 * crossover_matrix
         return population.view(-1, population.shape[-1])[crossover_population_index]
 
-    def elitism(self, population, mutation_population, fitness_list, new_fitness_list, best_fitness_list):
+    def elitism(self, population, mutation_population, fitness_list, new_fitness_list):
         stack_population = torch.vstack((population, mutation_population))
         stack_fitness_list = torch.hstack((fitness_list, new_fitness_list))
         top_index = None
@@ -89,13 +89,7 @@ class CGNBody(BasicBody):
             top_index = torch.argsort(stack_fitness_list)[:self.pop_size]
         population = stack_population[top_index]
         fitness_list = stack_fitness_list[top_index]
-        if self.fit_side == 'max':
-            best_fitness_list = torch.hstack((best_fitness_list, max(fitness_list)))
-        elif self.fit_side == 'min':
-            best_fitness_list = torch.hstack((best_fitness_list, min(fitness_list)))
-        else:
-            raise ValueError(f"No such fit side: {self.fit_side}")
-        return population, fitness_list, best_fitness_list
+        return population, fitness_list
 
     def _point_mutation(self, crossover_population, mutation_population_index):
         for i in range(len(mutation_population_index)):
@@ -152,8 +146,6 @@ class CGNController(BasicController):
             if self.mode == "sm":
                 evaluator = torch.nn.DataParallel(evaluator)
             fitness_list = evaluator(population).to(self.device)
-            best_fitness_list = torch.tensor(data=[], device=self.device)
-            best_fitness_list = torch.hstack((best_fitness_list, torch.min(fitness_list)))
             with tqdm(total=max_generation) as pbar:
                 pbar.set_description(f'Training....{self.dataset} in Loop: {loop}...')
                 for generation in range(max_generation):
@@ -164,7 +156,7 @@ class CGNController(BasicController):
                     mutation_population = body.mutation(crossover_population, mutation_population_index, self.mutate_rate, ONE)
                     # mutation_population = self._remove_repeat(mutation_population)
                     new_fitness_list = evaluator(mutation_population).to(self.device)
-                    population, fitness_list, best_fitness_list = body.elitism(population, mutation_population, fitness_list, new_fitness_list, best_fitness_list)
+                    population, fitness_list = body.elitism(population, mutation_population, fitness_list, new_fitness_list)
                     if generation % 30 == 0 or (generation+1) == max_generation:
                         pop = population[torch.argsort(fitness_list)[0].item()]
                         copy_G = self.graph.copy()
@@ -183,76 +175,72 @@ class CGNController(BasicController):
             print(f"Q after attack: {best_Q[top_index]}, NMI after attack: {best_NMI[top_index]}")
             self.save(self.dataset, best_genes[top_index], [best_Q[top_index], best_NMI[top_index], time_list[-1]], time_list, "CGN", bestQ=best_Q, bestNMI=best_NMI)
 
-    def mp_calculate(self, rank, max_generation, evaluator, world_size):
+    def mp_calculate(self, rank, max_generation, evaluator, world_size, component_size_list):
         device = init_dist(rank, world_size)
         best_Q = []
         best_NMI = []
         best_genes = []
         time_list = []
         edge_in, edge_out = self.edge_in.to(device), self.edge_out.to(device)
-        component_size = self.pop_size // world_size
-        body = CGNBody(component_size, self.budget, self.fit_side, edge_in, edge_out, device)
+        body = CGNBody(component_size_list[rank], self.budget, self.fit_side, edge_in, edge_out, device)
         for loop in range(self.loops):
             start = time()
             ONE, component_population = body.init_population()
             if self.mode == "mnm":
                 evaluator = torch.nn.DataParallel(evaluator)
             component_fitness_list = evaluator(component_population).to(device)
-            best_fitness_list = torch.tensor(data=[], device=device)
-            best_fitness_list = torch.hstack((best_fitness_list, torch.max(component_fitness_list)))
-            if rank == 0:
-                population = [torch.zeros(component_population.shape, dtype=component_population.dtype, device=device) for _ in range(world_size)]
-                fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for _ in range(world_size)]
-            else:
-                population = None
-                fitness_list = None
-            dist.gather(component_population, population, dst=0)
-            dist.gather(component_fitness_list, fitness_list, dst=0)
-            if rank == 0:
-                population = torch.cat(population)
-                fitness_list = torch.cat(fitness_list)
+            population = [torch.zeros(size=(component_size,) + component_population.shape[1:], dtype=component_population.dtype, device=device) for component_size in component_size_list]
+            fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for component_size in component_size_list]
+            dist.all_gather(population, component_population)
+            dist.all_gather(fitness_list, component_fitness_list)
+
+            population = torch.cat(population)
+            fitness_list = torch.cat(fitness_list)
             with tqdm(total=max_generation, position=rank) as pbar:
                 pbar.set_description(f'Rank {rank} in {self.dataset} in Loop: {loop}')
                 for generation in range(max_generation):
                     if rank == 0:
-                        new_population_index_1 = torch.arange(self.pop_size * self.budget, device=device).reshape(self.pop_size, self.budget)
+                        new_population_index_1 = torch.arange(self.pop_size * self.budget, device=self.device).reshape(self.pop_size, self.budget)
                         new_population_index_2 = body.selection(new_population_index_1, fitness_list)
                         body.pop_size = self.pop_size
-                        crossover_ONE = torch.ones((self.pop_size, self.budget), dtype=ONE.dtype, device=device)
+                        crossover_ONE = torch.ones((self.pop_size, self.budget), dtype=new_population_index_1.dtype, device=device)
                         crossover_population = body.crossover(population, new_population_index_1, new_population_index_2, self.crossover_rate, crossover_ONE)
-                        body.pop_size = component_size
+                        body.pop_size = component_size_list[rank]
                     if rank == 0:
-                        crossover_population = torch.stack(torch.split(crossover_population, component_size))
+                        crossover_population = list(torch.split(crossover_population, component_size_list))
                     else:
-                        crossover_population = torch.stack([torch.zeros(component_population.shape, dtype=component_population.dtype, device=device) for _ in range(world_size)])
-                    dist.broadcast(crossover_population, src=0)
-                    mutation_population_index = torch.ones(size=(component_size, self.budget), device=device)
-                    mutation_population = body.mutation(crossover_population[rank], mutation_population_index, self.mutate_rate, ONE)
+                        crossover_population = [None for _ in range(world_size)]
+
+                    component_crossover_population = [torch.tensor([0])]
+                    dist.scatter_object_list(component_crossover_population, crossover_population, src=0)
+                    component_crossover_population = component_crossover_population[0].to(device)
+                    mutation_population_index = torch.ones(size=(component_size_list[rank], self.budget), device=device)
+                    mutation_population = body.mutation(component_crossover_population, mutation_population_index, self.mutate_rate, ONE)
                     # mutation_population = self._remove_repeat(mutation_population)
                     new_component_fitness_list = evaluator(mutation_population).to(device)
 
-                    if rank == 0:
-                        elitism_population = [torch.zeros(mutation_population.shape, dtype=component_population.dtype, device=device) for _ in range(world_size)]
-                        elitism_fitness_list = [torch.empty((component_size,), dtype=new_component_fitness_list.dtype, device=device) for _ in range(world_size)]
-                    else:
-                        elitism_population = None
-                        elitism_fitness_list = None
-                    dist.gather(mutation_population, elitism_population, dst=0)
-                    dist.gather(new_component_fitness_list, elitism_fitness_list, dst=0)
+                    elitism_population = [torch.zeros(size=(component_size,) + mutation_population.shape[1:], dtype=mutation_population.dtype, device=device) for component_size in component_size_list]
+                    elitism_fitness_list = [torch.empty((component_size,), dtype=new_component_fitness_list.dtype, device=device) for component_size in component_size_list]
+                    dist.all_gather(elitism_population, mutation_population)
+                    dist.all_gather(elitism_fitness_list, new_component_fitness_list)
+
                     if rank == 0:
                         elitism_population = torch.cat(elitism_population)
                         elitism_fitness_list = torch.cat(elitism_fitness_list)
                         body.pop_size = self.pop_size
-                        population, fitness_list, best_fitness_list = body.elitism(population, elitism_population, fitness_list, elitism_fitness_list, best_fitness_list)
-                        top_index = torch.argsort(fitness_list)[:component_size]
-                        component_population = population[top_index]
-                        component_fitness_list = fitness_list[top_index]
-                        body.pop_size = component_size
+                        population, fitness_list = body.elitism(population, elitism_population, fitness_list, elitism_fitness_list)
+                        body.pop_size = component_size_list[rank]
                     else:
-                        component_population = torch.zeros(component_population.shape, dtype=component_population.dtype, device=device)
-                        component_fitness_list = torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device)
-                    dist.broadcast(component_population, src=0)
-                    dist.broadcast(component_fitness_list, src=0)
+                        population = torch.zeros(population.shape, dtype=population.dtype, device=device)
+                        fitness_list = torch.empty(fitness_list.shape, dtype=fitness_list.dtype, device=device)
+
+                    dist.broadcast(population, src=0)
+                    dist.broadcast(fitness_list, src=0)
+
+                    top_index = torch.argsort(fitness_list)[:component_size_list[rank]]
+                    component_population = population[top_index]
+                    component_fitness_list = fitness_list[top_index]
+
                     if generation % 30 == 0 or (generation+1) == max_generation:
                         pop = component_population[torch.argsort(component_fitness_list)[0].item()]
                         copy_G = self.graph.copy()
@@ -310,14 +298,17 @@ class CGNController(BasicController):
             f.write(str(best_metric) + '\n')
 
 
-def CGN(mode, max_generation, data_loader, controller: CGNController, evaluator, world_size):
+def CGN(mode, max_generation, data_loader, controller: CGNController, evaluator, world_size, verbose=True):
     controller.mode = mode
     evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator)
     if mode == "s" or mode == "sm":
         controller.calculate(max_generation=max_generation, evaluator=evaluator)
     elif mode == "m" or mode == "mnm":
-        mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size), nprocs=world_size, join=True)
+        component_size_list = Num2Chunks(controller.pop_size, world_size)
+        if verbose:
+            print(f"Component Size List: {component_size_list}")
+        mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, component_size_list), nprocs=world_size, join=True)
     else:
-        raise ValueError(f"No such mode. Please choose ss, sm, ms or mm.")
+        raise ValueError(f"No such mode. Please choose s, sm, m or mnm.")
 
 

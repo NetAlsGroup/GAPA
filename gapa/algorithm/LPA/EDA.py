@@ -10,7 +10,7 @@ from time import time
 from gapa.framework.body import Body
 from gapa.framework.controller import BasicController
 from gapa.framework.evaluator import BasicEvaluator
-from gapa.utils.functions import current_time
+from gapa.utils.functions import current_time, Num2Chunks
 from gapa.utils.functions import init_dist
 
 
@@ -382,8 +382,7 @@ class EDAController(BasicController):
             if self.mode == "sm":
                 evaluator = torch.nn.DataParallel(evaluator)
             fitness_list = evaluator(self.all_edges[population])
-            best_fitness_list = torch.tensor(data=[], device=self.device)
-            best_fitness_list = torch.hstack((best_fitness_list, torch.max(fitness_list)))
+
             with tqdm(total=max_generation) as pbar:
                 pbar.set_description(f'Training....{self.dataset} in Loop: {loop}...')
                 for generation in range(max_generation):
@@ -399,7 +398,7 @@ class EDAController(BasicController):
                     stack_population = torch.cat((eda_population, eda_mutation_population))
                     new_fitness_list = evaluator(self.all_edges[stack_population])
 
-                    population, fitness_list, best_fitness_list = body.elitism(population, stack_population, fitness_list, new_fitness_list, best_fitness_list)
+                    population, fitness_list = body.elitism(population, stack_population, fitness_list, new_fitness_list)
                     if generation % 10 == 0 or (generation+1) == max_generation:
                         genes = population[torch.argsort(fitness_list.clone(), descending=True)[0]]
                         perturb_edges = genes[2*self.budget:]
@@ -417,7 +416,7 @@ class EDAController(BasicController):
             self.save(self.dataset, self.all_edges[best_genes[top_index]], [best_Pre[top_index], best_AUC[top_index], time_list[-1]], time_list, "EDA", bestPre=best_Pre, bestAUC=best_AUC)
             print(f"Loop {loop} finished. Data saved in {self.path}...")
 
-    def mp_calculate(self, rank, max_generation, evaluator, world_size):
+    def mp_calculate(self, rank, max_generation, evaluator, world_size, component_size_list):
         device = init_dist(rank, world_size)
         best_Pre = []
         best_AUC = []
@@ -426,31 +425,27 @@ class EDAController(BasicController):
         train_edges_index = self.train_edges_index.to(device)
         non_exist_edges_index = self.non_exist_edges_index.to(device)
         all_edges = self.all_edges.to(device)
-        component_size = self.pop_size // world_size
-        body = EDABody(self.nodes_num, self.budget, component_size, train_edges_index, non_exist_edges_index, all_edges, self.nodes_num, self.fit_side, device)
+
+        body = EDABody(self.nodes_num, self.budget, component_size_list[rank], train_edges_index, non_exist_edges_index, all_edges, self.nodes_num, self.fit_side, device)
         for loop in range(self.loops):
             start = time()
             ONE, component_population = body.init_population_rewrite()
             if self.mode == "mnm":
                 evaluator = torch.nn.DataParallel(evaluator)
             component_fitness_list = evaluator(all_edges[component_population]).to(device)
-            best_fitness_list = torch.tensor(data=[], device=device)
-            best_fitness_list = torch.hstack((best_fitness_list, torch.max(component_fitness_list)))
-            if rank == 0:
-                population = [torch.zeros(component_population.shape, dtype=component_population.dtype, device=device) for _ in range(world_size)]
-                fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for _ in range(world_size)]
-            else:
-                population = None
-                fitness_list = None
-            dist.gather(component_population, population, dst=0)
-            dist.gather(component_fitness_list, fitness_list, dst=0)
-            if rank == 0:
-                population = torch.cat(population)
-                fitness_list = torch.cat(fitness_list)
+
+            population = [torch.zeros(size=(component_size,) + component_population.shape[1:], dtype=component_population.dtype, device=device) for component_size in component_size_list]
+            fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for component_size in component_size_list]
+            dist.all_gather(population, component_population)
+            dist.all_gather(fitness_list, component_fitness_list)
+
+            population = torch.cat(population)
+            fitness_list = torch.cat(fitness_list)
+
             with tqdm(total=max_generation, position=rank) as pbar:
                 pbar.set_description(f'Rank {rank} in {self.dataset} in Loop: {loop}')
                 for generation in range(max_generation):
-                    eda_population = body.eda(component_population, component_fitness_list, self.num_eda_pop // world_size)
+                    eda_population = body.eda(component_population, component_fitness_list, component_size_list[rank])
 
                     eda_del_population = eda_population[:, :self.budget]
                     eda_del_mutation_population = body.del_mutation(eda_del_population, self.mutate_rate, ONE)
@@ -462,28 +457,27 @@ class EDAController(BasicController):
                     stack_component_population = torch.cat((eda_population, eda_mutation_population))
                     new_component_fitness_list = evaluator(all_edges[stack_component_population]).to(device)
 
-                    if rank == 0:
-                        elitism_population = [torch.zeros(stack_component_population.shape, dtype=stack_component_population.dtype, device=device) for _ in range(world_size)]
-                        elitism_fitness_list = [torch.empty(new_component_fitness_list.shape, dtype=new_component_fitness_list.dtype, device=device) for _ in range(world_size)]
-                    else:
-                        elitism_population = None
-                        elitism_fitness_list = None
-                    dist.gather(stack_component_population, elitism_population, dst=0)
-                    dist.gather(new_component_fitness_list, elitism_fitness_list, dst=0)
+                    elitism_population = [torch.zeros(size=(component_size * 2,) + stack_component_population.shape[1:], dtype=stack_component_population.dtype, device=device) for component_size in component_size_list]
+                    elitism_fitness_list = [torch.empty(size=(component_size * 2,), dtype=new_component_fitness_list.dtype, device=device) for component_size in component_size_list]
+                    dist.all_gather(elitism_population, stack_component_population)
+                    dist.all_gather(elitism_fitness_list, new_component_fitness_list)
+
                     if rank == 0:
                         elitism_population = torch.cat(elitism_population)
                         elitism_fitness_list = torch.cat(elitism_fitness_list)
                         body.pop_size = self.pop_size
-                        population, fitness_list, best_fitness_list = body.elitism(population, elitism_population, fitness_list, elitism_fitness_list, best_fitness_list)
-                        top_index = torch.argsort(fitness_list)[self.pop_size - component_size:]
-                        component_population = population[top_index]
-                        component_fitness_list = fitness_list[top_index]
-                        body.pop_size = component_size
+                        population, fitness_list = body.elitism(population, elitism_population, fitness_list, elitism_fitness_list)
+                        body.pop_size = component_size_list[rank]
                     else:
-                        component_population = torch.zeros(component_population.shape, dtype=component_population.dtype, device=device)
-                        component_fitness_list = torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device)
-                    dist.broadcast(component_population, src=0)
-                    dist.broadcast(component_fitness_list, src=0)
+                        population = torch.zeros(population.shape, dtype=population.dtype, device=device)
+                        fitness_list = torch.empty(fitness_list.shape, dtype=fitness_list.dtype, device=device)
+
+                    dist.broadcast(population, src=0)
+                    dist.broadcast(fitness_list, src=0)
+
+                    top_index = torch.argsort(fitness_list)[self.pop_size - component_size_list[rank]:]
+                    component_population = population[top_index]
+                    component_fitness_list = fitness_list[top_index]
 
                     if generation % 10 == 0 or (generation + 1) == max_generation:
                         genes = component_population[torch.argsort(component_fitness_list.clone(), descending=True)[0]]
@@ -575,12 +569,10 @@ class EDAController(BasicController):
         ra_dict = {}
         for edge in edge_list:
             node_a, node_b = edge
-            # 获取共同邻居
             neighbors_a = set(graph.neighbors(node_a))
             neighbors_b = set(graph.neighbors(node_b))
             common_neighbors = neighbors_a.intersection(neighbors_b)
 
-            # 计算资源分配指数
             ra_value = sum(1.0 / len(graph.neighbors(neighbor)) for neighbor in common_neighbors if
                            len(graph.neighbors(neighbor)) > 0)
 
@@ -589,13 +581,16 @@ class EDAController(BasicController):
         return ra_dict
 
 
-def EDA(mode, max_generation, data_loader, controller: EDAController, evaluator, world_size):
+def EDA(mode, max_generation, data_loader, controller: EDAController, evaluator, world_size, verbose=True):
     controller.mode = mode
     evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator)
     if mode == "s" or mode == "sm":
         controller.calculate(max_generation=max_generation, evaluator=evaluator)
     elif mode == "m" or mode == "mnm":
-        mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size), nprocs=world_size, join=True)
+        component_size_list = Num2Chunks(controller.pop_size, world_size)
+        if verbose:
+            print(f"Component Size List: {component_size_list}")
+        mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, component_size_list), nprocs=world_size, join=True)
     else:
-        raise ValueError(f"No such mode. Please choose ss, sm, ms or mm.")
+        raise ValueError(f"No such mode. Please choose s, sm, m or mnm.")
 

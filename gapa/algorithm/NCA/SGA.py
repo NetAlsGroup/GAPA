@@ -10,7 +10,7 @@ from time import time
 from gapa.framework.body import Body
 from gapa.framework.controller import BasicController
 from gapa.framework.evaluator import BasicEvaluator
-from gapa.utils.functions import AS_Rate, current_time, init_dist, Acc
+from gapa.utils.functions import AS_Rate, current_time, init_dist, Acc, Num2Chunks
 from gapa.utils.functions import gcn_filter, tensorToSparse, adjReshapeAddDim
 
 
@@ -70,7 +70,7 @@ class SGABody(Body):
         self.edge_list = edge_list.clone()
         self.device = device
 
-    def elitism(self, population, mutation_population, fitness_list, new_fitness_list, best_fitness_list):
+    def elitism(self, population, mutation_population, fitness_list, new_fitness_list):
         stack_population = torch.vstack((population, mutation_population))
         stack_fitness_list = torch.hstack((fitness_list, new_fitness_list))
         top_index = torch.argsort(stack_fitness_list)[:self.pop_size]
@@ -176,88 +176,82 @@ class SGAController(BasicController):
             if self.mode == "sm":
                 evaluator = torch.nn.DataParallel(evaluator)
             fitness_list = evaluator(population)
-            best_fitness_list = torch.tensor(data=[], device=self.device)
-            best_fitness_list = torch.hstack((best_fitness_list, torch.min(fitness_list)))
-            for generation in range(max_generation):
-                new_population1 = population.clone()
-                new_population2 = body.selection(population, fitness_list)
-                crossover_population = body.crossover(new_population1, new_population2, self.crossover_rate, ONE)
-                crossover_population = body.solve_conflict(crossover_population)
-                mutation_population = body.mutation(crossover_population, self.mutate_rate, ONE)
-                mutation_population = body.solve_conflict(mutation_population)
-                new_fitness_list = evaluator(mutation_population)
-                population, fitness_list, elite_edge, elite_edge_score = body.elitism(population, mutation_population, fitness_list, new_fitness_list, best_fitness_list)
+
+            with tqdm(total=max_generation) as pbar:
+                pbar.set_description(f"GA")
+                for generation in range(max_generation):
+                    new_population1 = population.clone()
+                    new_population2 = body.selection(population, fitness_list)
+                    crossover_population = body.crossover(new_population1, new_population2, self.crossover_rate, ONE)
+                    crossover_population = body.solve_conflict(crossover_population)
+                    mutation_population = body.mutation(crossover_population, self.mutate_rate, ONE)
+                    mutation_population = body.solve_conflict(mutation_population)
+                    new_fitness_list = evaluator(mutation_population)
+                    population, fitness_list, elite_edge, elite_edge_score = body.elitism(population, mutation_population, fitness_list, new_fitness_list)
+                    pbar.update(1)
         return elite_edge, elite_edge_score
 
-    def mp_calculate(self, rank, max_generation, evaluator, world_size, return_dict):
+    def mp_calculate(self, rank, max_generation, evaluator, world_size, component_size_list, return_dict):
         device = init_dist(rank, world_size)
         crossover_population = None
         elite_edge, elite_edge_score = None, None
         edge_list = self.edge_list.to(device)
         homophily_decrease_score = self.homophily_decrease_score.to(device)
 
-        component_size = self.pop_size // world_size
-        body = SGABody(component_size, homophily_decrease_score, edge_list, self.budget, self.fit_side, device)
+        body = SGABody(component_size_list[rank], homophily_decrease_score, edge_list, self.budget, self.fit_side, device)
         for loop in range(self.loops):
             ONE, component_population = body.init_population()
             if self.mode == "mnm":
                 evaluator = torch.nn.DataParallel(evaluator)
             component_fitness_list = evaluator(component_population).to(device)
-            best_fitness_list = torch.tensor(data=[], device=device)
-            best_fitness_list = torch.hstack((best_fitness_list, torch.max(component_fitness_list)))
 
-            if rank == 0:
-                population = [torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for _ in range(world_size)]
-                fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for _ in range(world_size)]
-            else:
-                population = None
-                fitness_list = None
+            population = [torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for component_size in component_size_list]
+            fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for component_size in component_size_list]
 
-            dist.gather(component_population, population, dst=0)
-            dist.gather(component_fitness_list, fitness_list, dst=0)
-            if rank == 0:
-                population = torch.cat(population)
-                fitness_list = torch.cat(fitness_list)
+            dist.all_gather(population, component_population)
+            dist.all_gather(fitness_list, component_fitness_list)
 
-            for generation in range(max_generation):
-                if rank == 0:
-                    new_population1 = population.clone()
-                    new_population2 = body.selection(new_population1, fitness_list)
-                    body.pop_size = self.pop_size
-                    crossover_ONE = torch.ones((self.pop_size, self.budget), dtype=new_population1.dtype, device=device)
-                    crossover_population = body.crossover(new_population1, new_population2, self.crossover_rate, crossover_ONE)
-                    crossover_population = body.solve_conflict(crossover_population)
-                    body.pop_size = component_size
-                if rank == 0:
-                    crossover_population = torch.stack(torch.split(crossover_population, component_size))
-                else:
-                    crossover_population = torch.stack( [torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for _ in range(world_size)])
-                dist.broadcast(crossover_population, src=0)
-                mutation_population = body.mutation(crossover_population[rank], self.mutate_rate, ONE)
-                mutation_population = body.solve_conflict(mutation_population)
-                new_component_fitness_list = evaluator(mutation_population).to(device)
-                if rank == 0:
-                    elitism_population = [torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for _ in range(world_size)]
-                    elitism_fitness_list = [torch.empty((component_size,), dtype=new_component_fitness_list.dtype, device=device) for _ in range(world_size)]
-                else:
-                    elitism_population = None
-                    elitism_fitness_list = None
-                dist.gather(mutation_population, elitism_population, dst=0)
-                dist.gather(new_component_fitness_list, elitism_fitness_list, dst=0)
-                if rank == 0:
-                    elitism_population = torch.cat(elitism_population)
-                    elitism_fitness_list = torch.cat(elitism_fitness_list)
-                    body.pop_size = self.pop_size
-                    population, fitness_list, elite_edge, elite_edge_score = body.elitism(population, elitism_population, fitness_list, elitism_fitness_list, best_fitness_list)
-                    top_index = torch.argsort(fitness_list)[:component_size]
-                    component_population = population[top_index]
-                    component_fitness_list = fitness_list[top_index]
-                    body.pop_size = component_size
-                else:
-                    component_population = torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device)
-                    component_fitness_list = torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device)
-                dist.broadcast(component_population, src=0)
-                dist.broadcast(component_fitness_list, src=0)
+            population = torch.cat(population)
+            fitness_list = torch.cat(fitness_list)
+
+            with tqdm(total=max_generation, position=rank) as pbar:
+                pbar.set_description(f"GA with Rank {rank}")
+                for generation in range(max_generation):
+                    if rank == 0:
+                        new_population1 = population.clone()
+                        new_population2 = body.selection(new_population1, fitness_list)
+                        body.pop_size = self.pop_size
+                        crossover_ONE = torch.ones((self.pop_size, self.budget), dtype=new_population1.dtype, device=device)
+                        crossover_population = body.crossover(new_population1, new_population2, self.crossover_rate, crossover_ONE)
+                        crossover_population = body.solve_conflict(crossover_population)
+                        body.pop_size = component_size_list[rank]
+                    if rank == 0:
+                        crossover_population = list(torch.split(crossover_population, component_size_list))
+                    else:
+                        crossover_population = [None for _ in range(world_size)]
+                    component_crossover_population = [torch.tensor([0])]
+                    dist.scatter_object_list(component_crossover_population, crossover_population, src=0)
+                    component_crossover_population = component_crossover_population[0].to(device)
+                    mutation_population = body.mutation(component_crossover_population, self.mutate_rate, ONE)
+                    mutation_population = body.solve_conflict(mutation_population)
+                    new_component_fitness_list = evaluator(mutation_population).to(device)
+
+                    elitism_population = [torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for component_size in component_size_list]
+                    elitism_fitness_list = [torch.empty((component_size,), dtype=new_component_fitness_list.dtype, device=device) for component_size in component_size_list]
+                    dist.all_gather(elitism_population, mutation_population)
+                    dist.all_gather(elitism_fitness_list, new_component_fitness_list)
+
+                    if rank == 0:
+                        elitism_population = torch.cat(elitism_population)
+                        elitism_fitness_list = torch.cat(elitism_fitness_list)
+                        body.pop_size = self.pop_size
+                        population, fitness_list, elite_edge, elite_edge_score = body.elitism(population, elitism_population, fitness_list, elitism_fitness_list)
+                        body.pop_size = component_size_list[rank]
+                    else:
+                        population = torch.zeros(population.shape, dtype=population.dtype, device=device)
+                        fitness_list = torch.empty(fitness_list.shape, dtype=fitness_list.dtype, device=device)
+                    pbar.update(1)
+
         if rank == 0:
             return_dict[rank] = [elite_edge.cpu(), elite_edge_score.cpu()]
         torch.cuda.empty_cache()
@@ -327,7 +321,7 @@ class SGAAlgorithm:
         self.W = None
         self.n_added_labels = None
 
-    def main(self, data_loader, controller, max_generation, world_size):
+    def main(self, data_loader, controller, max_generation, world_size, component_size_list):
         best_acc = []
         best_asr = []
         time_list = []
@@ -337,82 +331,82 @@ class SGAAlgorithm:
         # Remove 0
         selected_degree_distribution = torch.where(selected_degree_distribution > 0, selected_degree_distribution, self.mean_degree // 2)
         start = time()
-        with tqdm(total=n_added) as pbar:
-            for added_node in range(n_added):
-                controller.homophily_decrease_score = self.homophily_decrease_score.clone()
-                if selected_degree_distribution[added_node] > 2 * self.mean_degree:
-                    selected_degree_distribution[added_node] = int(2 * self.mean_degree)
-                pbar.set_description(f"Attack injected node with ID {added_node}")
-                added_node_label = torch.tensor(np.random.choice(self.classes, 1)[0], device=self.device)
-                self.injected_nodes_origin = torch.cat((self.injected_nodes_origin, added_node_label.unsqueeze(0)))
-                self.injected_nodes_classes = torch.cat((self.injected_nodes_classes, added_node_label.unsqueeze(0)))
-                added_node_feature = self.make_statistic_features(added_node, n_added=1, n_added_labels=added_node_label.unsqueeze(0))
-                modified_adj = adjReshapeAddDim(self.modified_adj, self.nnodes + 1, self.device)
-                modified_features = torch.vstack((self.modified_features, added_node_feature))
-                first_potential_edges = self.get_potential_edges(added_node_label)
-                pop_size = len(first_potential_edges)
+
+        for added_node in range(n_added):
+            controller.homophily_decrease_score = self.homophily_decrease_score.clone()
+            if selected_degree_distribution[added_node] > 2 * self.mean_degree:
+                selected_degree_distribution[added_node] = int(2 * self.mean_degree)
+            print(f"Attack injected node with ID {added_node}")
+            added_node_label = torch.tensor(np.random.choice(self.classes, 1)[0], device=self.device)
+            self.injected_nodes_origin = torch.cat((self.injected_nodes_origin, added_node_label.unsqueeze(0)))
+            self.injected_nodes_classes = torch.cat((self.injected_nodes_classes, added_node_label.unsqueeze(0)))
+            added_node_feature = self.make_statistic_features(added_node, n_added=1, n_added_labels=added_node_label.unsqueeze(0))
+            modified_adj = adjReshapeAddDim(self.modified_adj, self.nnodes + 1, self.device)
+            modified_features = torch.vstack((self.modified_features, added_node_feature))
+            first_potential_edges = self.get_potential_edges(added_node_label)
+            pop_size = len(first_potential_edges)
+            self.n_added_labels = torch.hstack((self.labels, self.injected_nodes_classes))
+            evaluator = SGAEvaluator(feats=modified_features, adj=modified_adj, test_index=data_loader.test_index, labels=self.n_added_labels, pop_size=pop_size, device=self.device)
+            evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator, W=self.W, edge_list=first_potential_edges)
+            edges_ranks_score = evaluator(torch.randperm(len(first_potential_edges), device=self.device).int())
+            edges_ranks = first_potential_edges
+            edges_ranks_zip = zip(edges_ranks_score, self.homophily_decrease_score[edges_ranks[:, 1]], edges_ranks)
+            edges_ranks_zip = sorted(edges_ranks_zip, key=lambda edges_ranks_zip: (edges_ranks_zip[0], -edges_ranks_zip[1]))
+            edges_ranks_scores_list = list(zip(*edges_ranks_zip))
+            edges_ranks = edges_ranks_scores_list[2]
+            final_potential_edges = torch.stack([edges_ranks[i] for i in range(int(len(edges_ranks) * self.ratio))])
+            best_single_link_loss = edges_ranks_scores_list[0][0]
+            if selected_degree_distribution[added_node] != 1:
                 self.n_added_labels = torch.hstack((self.labels, self.injected_nodes_classes))
                 evaluator = SGAEvaluator(feats=modified_features, adj=modified_adj, test_index=data_loader.test_index, labels=self.n_added_labels, pop_size=pop_size, device=self.device)
-                evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator, W=self.W, edge_list=first_potential_edges)
-                edges_ranks_score = evaluator(torch.randperm(len(first_potential_edges), device=self.device).int())
-                edges_ranks = first_potential_edges
-                edges_ranks_zip = zip(edges_ranks_score, self.homophily_decrease_score[edges_ranks[:, 1]], edges_ranks)
-                edges_ranks_zip = sorted(edges_ranks_zip, key=lambda edges_ranks_zip: (edges_ranks_zip[0], -edges_ranks_zip[1]))
-                edges_ranks_scores_list = list(zip(*edges_ranks_zip))
-                edges_ranks = edges_ranks_scores_list[2]
-                final_potential_edges = torch.stack([edges_ranks[i] for i in range(int(len(edges_ranks) * self.ratio))])
-                best_single_link_loss = edges_ranks_scores_list[0][0]
-                if selected_degree_distribution[added_node] != 1:
-                    self.n_added_labels = torch.hstack((self.labels, self.injected_nodes_classes))
-                    evaluator = SGAEvaluator(feats=modified_features, adj=modified_adj, test_index=data_loader.test_index, labels=self.n_added_labels, pop_size=pop_size, device=self.device)
-                    evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator, W=self.W, edge_list=final_potential_edges)
-                    if controller.mode == "s" or controller.mode == "sm":
-                        elite_edge, elite_edge_score = controller.calculate(max_generation=max_generation, evaluator=evaluator)
-                    elif controller.mode == "m" or controller.mode == "mnm":
-                        with Manager() as manager:
-                            return_dict = manager.dict()
-                            mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, return_dict), nprocs=world_size, join=True)
-                            elite_edge, elite_edge_score = [], []
-                            for key, value in return_dict.items():
-                                elite_edge.append(return_dict[key][0])
-                                elite_edge_score.append(return_dict[key][1])
-                            top_index = elite_edge_score.index(min(elite_edge_score))
-                            elite_edge = elite_edge[top_index].to(self.device)
-                            elite_edge_score = elite_edge_score[top_index].to(self.device)
-                    else:
-                        raise ValueError(f"No such mode. Please choose ss, sm, ms or mm.")
-                else:  # if only need to attack 1 edge, we can directly use the output of single-link attacks and do not need to employ GA
-                    elite_edge = final_potential_edges[0]
-                    elite_edge_score = best_single_link_loss
-                elite_edge = elite_edge.flatten().int()
-                # obtain the final adj
-                modified_adj = self.get_modified_adj_by_edges_ranks(modified_adj.to_dense(), elite_edge_score, elite_edge, verbose=False)
-                tag_id = 1
-                tmp = self.labels.clone()
-                tmp = torch.cat((tmp, self.injected_nodes_origin.clone()))
-                while tag_id < len(elite_edge):
-                    current_neighbors = torch.where(modified_adj[elite_edge[tag_id]] == 1)[0]
-                    current_neighbors = current_neighbors[current_neighbors != self.nnodes]
-                    current_neighbors_len = len(torch.where(modified_adj[elite_edge[tag_id]] == 1)[0])
-                    current_samelabel_neighbors_len = len(torch.where(tmp[current_neighbors] == tmp[elite_edge[tag_id]])[0])
-                    if current_neighbors_len == 0:
-                        current_neighbors_len = 1
-                    self.homophily_score[elite_edge[tag_id]] = current_samelabel_neighbors_len / (current_neighbors_len)
-                    self.homophily_decrease_score[elite_edge[tag_id]] = current_samelabel_neighbors_len / ((current_neighbors_len + 1) * (current_neighbors_len + 1) + current_neighbors_len + 1)
-                    tag_id += 2
-                self.homophily_index = torch.tensor(np.argsort(-self.homophily_decrease_score.cpu().numpy()), device=self.device)
+                evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator, W=self.W, edge_list=final_potential_edges)
+                if controller.mode == "s" or controller.mode == "sm":
+                    elite_edge, elite_edge_score = controller.calculate(max_generation=max_generation, evaluator=evaluator)
+                elif controller.mode == "m" or controller.mode == "mnm":
+                    with Manager() as manager:
+                        return_dict = manager.dict()
+                        mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, component_size_list, return_dict), nprocs=world_size, join=True)
+                        elite_edge, elite_edge_score = [], []
+                        for key, value in return_dict.items():
+                            elite_edge.append(return_dict[key][0])
+                            elite_edge_score.append(return_dict[key][1])
+                        top_index = elite_edge_score.index(min(elite_edge_score))
+                        elite_edge = elite_edge[top_index].to(self.device)
+                        elite_edge_score = elite_edge_score[top_index].to(self.device)
+                else:
+                    raise ValueError(f"No such mode. Please choose s, sm, m or mnm.")
+            else:  # if only need to attack 1 edge, we can directly use the output of single-link attacks and do not need to employ GA
+                elite_edge = final_potential_edges[0]
+                elite_edge_score = best_single_link_loss
+            elite_edge = elite_edge.flatten().int()
+            # obtain the final adj
+            modified_adj = self.get_modified_adj_by_edges_ranks(modified_adj.to_dense(), elite_edge_score, elite_edge, verbose=False)
+            tag_id = 1
+            tmp = self.labels.clone()
+            tmp = torch.cat((tmp, self.injected_nodes_origin.clone()))
+            while tag_id < len(elite_edge):
+                current_neighbors = torch.where(modified_adj[elite_edge[tag_id]] == 1)[0]
+                current_neighbors = current_neighbors[current_neighbors != self.nnodes]
+                current_neighbors_len = len(torch.where(modified_adj[elite_edge[tag_id]] == 1)[0])
+                current_samelabel_neighbors_len = len(torch.where(tmp[current_neighbors] == tmp[elite_edge[tag_id]])[0])
+                if current_neighbors_len == 0:
+                    current_neighbors_len = 1
+                self.homophily_score[elite_edge[tag_id]] = current_samelabel_neighbors_len / (current_neighbors_len)
+                self.homophily_decrease_score[elite_edge[tag_id]] = current_samelabel_neighbors_len / ((current_neighbors_len + 1) * (current_neighbors_len + 1) + current_neighbors_len + 1)
+                tag_id += 2
+            self.homophily_index = torch.tensor(np.argsort(-self.homophily_decrease_score.cpu().numpy()), device=self.device)
 
-                # inject the current node to the original adj and f matrices
-                self.modified_features = modified_features
-                self.modified_adj = modified_adj.to_sparse_coo()
-                self.nnodes = self.nnodes + 1
-                attack_acc, asr = self.test()
-                best_acc.append(attack_acc)
-                best_asr.append(asr)
-                end = time()
-                time_list.append(end-start)
-                pbar.set_postfix(Loss=elite_edge_score.item(), Acc=min(best_acc), ASR=max(best_asr))
-                pbar.update(1)
+            # inject the current node to the original adj and f matrices
+            self.modified_features = modified_features
+            self.modified_adj = modified_adj.to_sparse_coo()
+            self.nnodes = self.nnodes + 1
+            attack_acc, asr = self.test()
+            best_acc.append(attack_acc)
+            best_asr.append(asr)
+            end = time()
+            time_list.append(end-start)
+            print(f"Loss: {elite_edge_score.item()}\nAcc: {min(best_acc)}, ASR: {max(best_asr)}")
+
         print('\nFinish attacks\n')
         top_index = best_acc.index(min(best_acc))
         print(f"Min acc: {best_acc[top_index]} -> Asr: {best_asr[top_index]}")
@@ -494,7 +488,7 @@ class SGAAlgorithm:
         return modified_adj
 
 
-def SGA(mode, max_generation, data_loader, controller: SGAController, surrogate, classifier, homophily_ratio, world_size):
+def SGA(mode, max_generation, data_loader, controller: SGAController, surrogate, classifier, homophily_ratio, world_size, verbose=True):
     controller.mode = mode
     # mapping matrix to handle continuous feature
     zeroone_features = data_loader.feats.clone().to_dense()
@@ -508,4 +502,10 @@ def SGA(mode, max_generation, data_loader, controller: SGAController, surrogate,
         zeroone_features=zeroone_features,
         device=controller.device
     )
-    algorithm.main(data_loader=data_loader, controller=controller, max_generation=max_generation, world_size=world_size)
+    if controller.mode == "m" or controller.mode == "mnm":
+        component_size_list = Num2Chunks(controller.pop_size, world_size)
+        if verbose:
+            print(f"Component Size List: {component_size_list}")
+    else:
+        component_size_list = None
+    algorithm.main(data_loader=data_loader, controller=controller, max_generation=max_generation, world_size=world_size, component_size_list=component_size_list)

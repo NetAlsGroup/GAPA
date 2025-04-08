@@ -8,7 +8,7 @@ from time import time
 from gapa.framework.body import Body
 from gapa.framework.controller import BasicController
 from gapa.framework.evaluator import BasicEvaluator
-from gapa.utils.functions import AS_Rate, current_time, init_dist, Acc
+from gapa.utils.functions import AS_Rate, current_time, init_dist, Acc, Num2Chunks
 
 
 class NCA_GAEvaluator(BasicEvaluator):
@@ -100,7 +100,7 @@ class NCA_GAController(BasicController):
                     mutation_population = body.mutation(crossover_population, self.mutate_rate, ONE)
                     mutation_population = self._remove_repeat(mutation_population)
                     new_fitness_list = evaluator(mutation_population)
-                    population, fitness_list, best_fitness_list = body.elitism(population, mutation_population, fitness_list, new_fitness_list, best_fitness_list)
+                    population, fitness_list = body.elitism(population, mutation_population, fitness_list, new_fitness_list)
                     if generation % 30 == 0 or (generation+1) == max_generation:
                         critical_edges = self.edge_list[population[torch.argsort(fitness_list, descending=True)[0]]]
                         copy_adj = self.adj.clone()
@@ -118,7 +118,7 @@ class NCA_GAController(BasicController):
             self.save(self.dataset, best_genes[top_index], [best_acc[top_index], best_as_rate[top_index], time_list[-1]], time_list, "NCA_GA", bestAcc=best_acc, bestASR=best_as_rate)
             print(f"Loop {loop} finished. Data saved in {self.path}...")
 
-    def mp_calculate(self, rank, max_generation, evaluator, world_size):
+    def mp_calculate(self, rank, max_generation, evaluator, world_size, component_size_list):
         device = init_dist(rank, world_size)
         best_as_rate = []
         best_acc = []
@@ -133,28 +133,21 @@ class NCA_GAController(BasicController):
         model = deepcopy(self.classifier.model).to(device)
         evaluator.edge_list = edge_list.clone()
 
-        component_size = self.pop_size // world_size
-        body = Body(self.edge_num, self.budget, component_size, self.fit_side, device)
+        body = Body(self.edge_num, self.budget, component_size_list[rank], self.fit_side, device)
         for loop in range(self.loops):
             start = time()
             ONE, component_population = body.init_population()
             if self.mode == "mnm":
                 evaluator = torch.nn.DataParallel(evaluator)
             component_fitness_list = evaluator(component_population).to(device)
-            best_fitness_list = torch.tensor(data=[], device=device)
-            best_fitness_list = torch.hstack((best_fitness_list, torch.max(component_fitness_list)))
-            if rank == 0:
-                population = [torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for _ in range(world_size)]
-                fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for _ in range(world_size)]
-            else:
-                population = None
-                fitness_list = None
+            population = [torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for component_size in component_size_list]
+            fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for component_size in component_size_list]
+            dist.all_gather(population, component_population)
+            dist.all_gather(fitness_list, component_fitness_list)
 
-            dist.gather(component_population, population, dst=0)
-            dist.gather(component_fitness_list, fitness_list, dst=0)
-            if rank == 0:
-                population = torch.cat(population)
-                fitness_list = torch.cat(fitness_list)
+            population = torch.cat(population)
+            fitness_list = torch.cat(fitness_list)
+
             with tqdm(total=max_generation, position=rank) as pbar:
                 pbar.set_description(f'Rank {rank} in {self.dataset} in Loop: {loop}')
                 for generation in range(max_generation):
@@ -164,37 +157,40 @@ class NCA_GAController(BasicController):
                         body.pop_size = self.pop_size
                         crossover_ONE = torch.ones((self.pop_size, self.budget), dtype=new_population1.dtype, device=device)
                         crossover_population = body.crossover(new_population1, new_population2, self.crossover_rate, crossover_ONE)
-                        body.pop_size = component_size
+                        body.pop_size = component_size_list[rank]
                     if rank == 0:
-                        crossover_population = torch.stack(torch.split(crossover_population, component_size))
+                        crossover_population = list(torch.split(crossover_population, component_size_list))
                     else:
-                        crossover_population = torch.stack([torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for _ in range(world_size)])
-                    dist.broadcast(crossover_population, src=0)
-                    mutation_population = body.mutation(crossover_population[rank], self.mutate_rate, ONE)
+                        crossover_population = [None for _ in range(world_size)]
+                    component_crossover_population = [torch.tensor([0])]
+                    dist.scatter_object_list(component_crossover_population, crossover_population, src=0)
+                    component_crossover_population = component_crossover_population[0].to(device)
+                    mutation_population = body.mutation(component_crossover_population, self.mutate_rate, ONE)
                     mutation_population = self._remove_repeat(mutation_population)
                     new_component_fitness_list = evaluator(mutation_population).to(device)
-                    if rank == 0:
-                        elitism_population = [torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for _ in range(world_size)]
-                        elitism_fitness_list = [torch.empty((component_size,), dtype=new_component_fitness_list.dtype, device=device) for _ in range(world_size)]
-                    else:
-                        elitism_population = None
-                        elitism_fitness_list = None
-                    dist.gather(mutation_population, elitism_population, dst=0)
-                    dist.gather(new_component_fitness_list, elitism_fitness_list, dst=0)
+
+                    elitism_population = [torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for component_size in component_size_list]
+                    elitism_fitness_list = [torch.empty((component_size,), dtype=new_component_fitness_list.dtype, device=device) for component_size in component_size_list]
+                    dist.all_gather(elitism_population, mutation_population)
+                    dist.all_gather(elitism_fitness_list, new_component_fitness_list)
+
                     if rank == 0:
                         elitism_population = torch.cat(elitism_population)
                         elitism_fitness_list = torch.cat(elitism_fitness_list)
                         body.pop_size = self.pop_size
-                        population, fitness_list, best_fitness_list = body.elitism(population, elitism_population, fitness_list, elitism_fitness_list, best_fitness_list)
-                        top_index = torch.argsort(fitness_list)[self.pop_size - component_size:]
-                        component_population = population[top_index]
-                        component_fitness_list = fitness_list[top_index]
-                        body.pop_size = component_size
+                        population, fitness_list = body.elitism(population, elitism_population, fitness_list, elitism_fitness_list)
+                        body.pop_size = component_size_list[rank]
                     else:
-                        component_population = torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device)
-                        component_fitness_list = torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device)
-                    dist.broadcast(component_population, src=0)
-                    dist.broadcast(component_fitness_list, src=0)
+                        population = torch.zeros(population.shape, dtype=population.dtype, device=device)
+                        fitness_list = torch.empty(fitness_list.shape, dtype=fitness_list.dtype, device=device)
+
+                    dist.broadcast(population, src=0)
+                    dist.broadcast(fitness_list, src=0)
+
+                    top_index = torch.argsort(fitness_list)[self.pop_size - component_size_list[rank]:]
+                    component_population = population[top_index]
+                    component_fitness_list = fitness_list[top_index]
+
                     if generation % 30 == 0 or (generation + 1) == max_generation:
                         component_population = self._remove_repeat(component_population.clone())
                         component_edges = edge_list[component_population[torch.argsort(component_fitness_list, descending=True)[0]]]
@@ -268,13 +264,16 @@ class NCA_GAController(BasicController):
             return edge
 
 
-def NCA_GA(mode, max_generation, data_loader, controller: NCA_GAController, evaluator, world_size):
+def NCA_GA(mode, max_generation, data_loader, controller: NCA_GAController, evaluator, world_size, verbose=True):
     controller.mode = mode
     evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator)
     if mode == "s" or mode == "sm":
         controller.calculate(max_generation=max_generation, evaluator=evaluator)
     elif mode == "m" or mode == "mnm":
-        mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size), nprocs=world_size, join=True)
+        component_size_list = Num2Chunks(controller.pop_size, world_size)
+        if verbose:
+            print(f"Component Size List: {component_size_list}")
+        mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, component_size_list), nprocs=world_size, join=True)
     else:
-        raise ValueError(f"No such mode. Please choose ss, sm, ms or mm.")
+        raise ValueError(f"No such mode. Please choose s, sm, m or mnm.")
 
