@@ -236,6 +236,8 @@ def Start(max_generation, data_loader, controller, evaluator, body, world_size, 
     if controller.mode == "s" or controller.mode == "sm":
         controller.calculate(max_generation=max_generation, evaluator=evaluator, body=body)
     elif controller.mode == "m" or controller.mode == "mnm":
+        if world_size < 1:
+            raise ValueError(f"Error in world_size -> {world_size} <- Since your device may not support for m or mnm mode, please re-choose s mode.")
         component_size_list = Num2Chunks(controller.pop_size, world_size)
         if verbose:
             print(f"Component Size List: {component_size_list}")
