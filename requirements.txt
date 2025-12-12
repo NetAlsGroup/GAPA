@@ -9,3 +9,7 @@ tqdm>=4.48.2
 dgl>=2.2.1
 yacs>=0.1.8
 deeprobust>=0.2.10
+Flask>=3.0.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pynvml>=11.5.0
