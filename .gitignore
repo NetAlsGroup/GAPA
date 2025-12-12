@@ -12,3 +12,5 @@ __pycache__/
 /dist/
 /gapa.egg-info/
 /build/
+/gapa4/
+/servers.json
