@@ -96,24 +96,58 @@ def api_strategy_plan():
                 except Exception:
                     target = None
             base_url = target.get("base_url") if target else None
-            if base_url:
-                try:
-                    import requests
+            if not base_url:
+                return (
+                    jsonify(
+                        {
+                            "error": "unknown server_id or missing base_url",
+                            "server_id": server_id,
+                            "known_servers": [
+                                {"id": s.get("id"), "name": s.get("name"), "base_url": s.get("base_url")}
+                                for s in servers
+                            ],
+                        }
+                    ),
+                    404,
+                )
 
-                    resp = requests.post(
-                        base_url.rstrip("/") + "/api/strategy_plan",
-                        json={
-                            "algorithm": algo,
-                            "warmup": warmup,
-                            "objective": objective,
-                            "multi_gpu": multi_gpu,
-                        },
-                        timeout=8,
-                    )
-                    if resp.ok:
-                        return jsonify(resp.json())
-                except Exception as exc:
-                    return jsonify({"error": f"proxy failed: {exc}"}), 502
+            try:
+                import requests
+
+                session = requests.Session()
+                session.trust_env = False  # avoid routing LAN traffic via HTTP(S)_PROXY
+                timeout_s = float(payload.get("timeout_s", 120) or 120)
+                resp = session.post(
+                    base_url.rstrip("/") + "/api/strategy_plan",
+                    json={
+                        "algorithm": algo,
+                        "warmup": warmup,
+                        "objective": objective,
+                        "multi_gpu": multi_gpu,
+                    },
+                    timeout=(3.0, timeout_s),
+                )
+                if resp.ok:
+                    return jsonify(resp.json())
+                # Do not silently fall back to local plan; remote is authoritative here.
+                try:
+                    body = resp.json()
+                except Exception:
+                    body = {"raw": (resp.text or "")[:2000]}
+                return (
+                    jsonify(
+                        {
+                            "error": "remote strategy_plan failed",
+                            "server_id": server_id,
+                            "base_url": base_url,
+                            "status_code": resp.status_code,
+                            "body": body,
+                        }
+                    ),
+                    502,
+                )
+            except Exception as exc:
+                return jsonify({"error": f"proxy failed: {exc}", "server_id": server_id, "base_url": base_url}), 502
 
         plan = StrategyPlan(fitness=None, warmup=warmup, objective=objective, multi_gpu=multi_gpu)
         if algo:

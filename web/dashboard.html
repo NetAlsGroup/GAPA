@@ -1,264 +1,400 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8">
-<title>GAPA Console · 资源监控与算法控制台</title>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>
-  :root {
-    --bg: #f8fafc;
-    --panel: #ffffff;
-    --panel-border: #dbeafe;
-    --text: #0f172a;
-    --muted: #64748b;
-    --blue: #2563eb;
-    --blue-600: #2563eb;
-    --blue-700: #1d4ed8;
-    --blue-50: #eff6ff;
-    --rose: #e11d48;
-    --card-border: #e2e8f0;
-    --card-bg: #ffffff;
-    --soft-bg: #f1f5f9;
-  }
-  * { box-sizing: border-box; }
-  body {
-    margin: 0;
-    font-family: "Microsoft YaHei", system-ui, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    min-height: 100vh;
-  }
-  .hidden { display: none !important; }
-  .container { max-width: 1120px; margin: 0 auto; padding: 0 24px; }
-  .header {
-    position: sticky; top: 0; z-index: 10;
-    background: var(--panel);
-    border-bottom: 1px solid var(--panel-border);
-  }
-  .header-inner { display: flex; align-items: center; justify-content: space-between; padding: 16px 0; }
-  .title { font-size: 22px; font-weight: 700; letter-spacing: .2px; }
-  .subtitle { font-size: 13px; color: var(--muted); margin-top: 4px; }
-  .pill {
-    padding: 6px 12px; border-radius: 999px;
-    font-size: 13px; font-weight: 600;
-    background: var(--blue-50); color: var(--blue-600);
-    border: 1px solid var(--panel-border);
-  }
-  main { padding: 20px 0; display: grid; gap: 20px; }
-  .section {
-    background: var(--panel);
-    border: 1px solid var(--panel-border);
-    border-radius: 12px;
-    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
-    padding: 18px;
-  }
-  .section-header { display: flex; align-items: center; justify-content: space-between; }
-  .section-title { font-size: 16px; font-weight: 700; }
-  .btn {
-    border-radius: 8px; padding: 8px 12px;
-    font-size: 13px; font-weight: 600; cursor: pointer;
-    border: 1px solid transparent;
-  }
-  .btn-primary { background: var(--blue-600); color: #fff; box-shadow: 0 1px 2px rgba(37,99,235,.25); }
-  .btn-primary:hover { background: var(--blue-700); }
-  .btn-secondary { background: var(--blue-50); color: var(--blue-700); border-color: var(--panel-border); }
-  .btn-secondary:hover { background: #e6f0ff; }
-  .grid-cards {
-    margin-top: 14px;
-    display: grid;
-    grid-template-columns: repeat(1, minmax(0, 1fr));
-    gap: 14px;
-  }
-  @media (min-width: 768px) {
-    .grid-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  }
-  @media (min-width: 1280px) {
-    .grid-cards { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  }
-  .card {
-    background: var(--card-bg);
-    border: 1px solid var(--card-border);
-    border-radius: 12px;
-    padding: 14px;
-    transition: box-shadow .15s ease, border-color .15s ease, transform .15s ease;
-    cursor: pointer;
-  }
-  .card:hover { box-shadow: 0 6px 18px rgba(15,23,42,.08); transform: translateY(-2px); border-color: #bfdbfe; }
-  .card--expanded { border-color: #93c5fd; }
-  .card-head { display: flex; align-items: center; justify-content: space-between; }
-  .card-name { font-size: 15px; font-weight: 700; }
-  .card-type { font-size: 11px; color: var(--muted); margin-top: 2px; }
-  .badge {
-    font-size: 11px; font-weight: 700; color: var(--blue-700);
-    background: var(--blue-50); border: 1px solid var(--panel-border);
-    padding: 4px 8px; border-radius: 999px;
-  }
-  .stats { margin-top: 10px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; font-size: 12px; }
-  .stat { background: var(--soft-bg); border: 1px solid #f1f5f9; border-radius: 8px; padding: 8px; }
-  .stat-label { color: var(--muted); font-size: 11px; }
-  .stat-value { margin-top: 2px; font-weight: 700; }
-  .error { margin-top: 8px; font-size: 12px; color: var(--rose); }
-  .details { margin-top: 10px; font-size: 12px; color: #334155; display: grid; gap: 6px; }
-  .gpu-item { margin-top: 6px; background: #fff; border: 1px solid #f1f5f9; border-radius: 8px; padding: 8px; font-size: 12px; }
-  .gpu-title { font-weight: 700; }
-  .analysis-grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
-  @media (min-width: 1024px) {
-    .analysis-grid { grid-template-columns: 3fr 7fr; }
-  }
-  .panel { display: flex; flex-direction: column; min-height: 420px; }
-  .form { margin-top: 12px; display: grid; gap: 10px; }
-  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-  select, input, textarea {
-    width: 100%;
-    padding: 8px 10px;
-    font-size: 13px;
-    border-radius: 8px;
-    border: 1px solid var(--card-border);
-    background: #fff;
-    color: var(--text);
-    outline: none;
-  }
-  select:focus, input:focus, textarea:focus { border-color: #93c5fd; box-shadow: 0 0 0 3px rgba(147,197,253,.35); }
-  .log-wrap { margin-top: 12px; flex: 1; display: flex; flex-direction: column; }
-  .log-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
-  .log-title { font-size: 12px; font-weight: 700; color: #334155; }
-  .log-clear { background: none; border: none; font-size: 12px; color: var(--muted); cursor: pointer; }
-  .log-clear:hover { color: #0f172a; }
-  .log-box {
-    flex: 1;
-    border: 1px solid var(--card-border);
-    background: var(--soft-bg);
-    border-radius: 8px;
-    padding: 10px;
-    font-size: 12px;
-    line-height: 1.5;
-    overflow: auto;
-    white-space: pre-wrap;
-    max-height: 260px;
-  }
-  .log-box::-webkit-scrollbar { width: 8px; height: 8px; }
-  .log-box::-webkit-scrollbar-thumb { background: rgba(37,99,235,.45); border-radius: 8px; }
-  .log-box::-webkit-scrollbar-track { background: transparent; }
-  .ga-panel {
-    margin-top: 12px;
-    height: 340px;
-    border: 1px dashed var(--card-border);
-    border-radius: 8px;
-    background: var(--soft-bg);
-    display: flex; align-items: center; justify-content: center;
-    color: var(--muted);
-    text-align: center;
-    padding: 16px;
-  }
-  .modal-backdrop {
-    position: fixed; inset: 0;
-    background: rgba(15,23,42,.35);
-    display: none; align-items: center; justify-content: center;
-    padding: 16px;
-  }
-  .modal-backdrop.flex { display: flex; }
-  .modal {
-    width: 100%; max-width: 420px;
-    background: #fff; border: 1px solid #f1f5f9;
-    border-radius: 12px; box-shadow: 0 18px 40px rgba(15,23,42,.2);
-  }
-  .modal-head, .modal-foot { padding: 12px 14px; border-bottom: 1px solid #f1f5f9; display: flex; align-items: center; justify-content: space-between; }
-  .modal-foot { border-bottom: none; border-top: 1px solid #f1f5f9; justify-content: flex-end; gap: 8px; }
-  .modal-title { font-size: 14px; font-weight: 700; }
-  .modal-close { background: none; border: none; font-size: 20px; color: var(--muted); cursor: pointer; line-height: 1; }
-  .modal-close:hover { color: var(--text); }
-  .modal-body { padding: 12px 14px; display: grid; gap: 10px; }
-  .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-</style>
+  <meta charset="UTF-8" />
+  <title>GAPA Console · 资源监控与算法控制台</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --panel: #ffffff;
+      --panel-border: #dbeafe;
+      --text: #0f172a;
+      --muted: #64748b;
+      --blue-600: #2563eb;
+      --blue-700: #1d4ed8;
+      --blue-50: #eff6ff;
+      --rose: #e11d48;
+      --card-border: #e2e8f0;
+      --soft-bg: #f1f5f9;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: "Microsoft YaHei", system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+    }
+
+    .hidden { display: none !important; }
+    .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: var(--panel);
+      border-bottom: 1px solid var(--panel-border);
+    }
+    .header-inner { display: flex; align-items: center; justify-content: space-between; padding: 16px 0; }
+    .title { font-size: 22px; font-weight: 800; letter-spacing: .2px; }
+    .subtitle { font-size: 13px; color: var(--muted); margin-top: 4px; }
+    .pill {
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 700;
+      background: var(--blue-50);
+      color: var(--blue-600);
+      border: 1px solid var(--panel-border);
+      white-space: nowrap;
+    }
+
+    .layout { display: flex; gap: 16px; padding: 16px 0 20px; }
+    .sidebar {
+      width: 240px;
+      flex: 0 0 240px;
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+      padding: 10px;
+      position: sticky;
+      top: 72px;
+      height: calc(100vh - 92px);
+      overflow: auto;
+    }
+    .nav-title { font-size: 12px; color: var(--muted); font-weight: 800; padding: 8px 10px; }
+    .nav-item {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 10px;
+      border-radius: 10px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 800;
+      cursor: pointer;
+      text-align: left;
+    }
+    .nav-item:hover { background: var(--blue-50); border-color: var(--panel-border); }
+    .nav-item--active { background: var(--blue-50); border-color: #93c5fd; color: var(--blue-700); }
+    .nav-badge {
+      font-size: 11px;
+      font-weight: 900;
+      padding: 2px 8px;
+      border-radius: 999px;
+      background: #eef2ff;
+      color: #3730a3;
+      border: 1px solid #e0e7ff;
+    }
+    .content { flex: 1; min-width: 0; }
+
+    .section {
+      background: var(--panel);
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+      padding: 18px;
+    }
+    .section-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .section-title { font-size: 16px; font-weight: 800; }
+
+    .btn {
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      border: 1px solid transparent;
+      white-space: nowrap;
+    }
+    .btn-primary { background: var(--blue-600); color: #fff; box-shadow: 0 1px 2px rgba(37,99,235,.25); }
+    .btn-primary:hover { background: var(--blue-700); }
+    .btn-secondary { background: var(--blue-50); color: var(--blue-700); border-color: var(--panel-border); }
+    .btn-secondary:hover { background: #e6f0ff; }
+
+    .view { display: none; }
+    .view--active { display: grid; gap: 20px; }
+
+    /* Resource pool: horizontal large cards */
+    .cards { margin-top: 14px; display: grid; grid-template-columns: 1fr; gap: 12px; }
+    .card {
+      background: #fff;
+      border: 1px solid var(--card-border);
+      border-radius: 12px;
+      padding: 14px;
+      transition: box-shadow .15s ease, border-color .15s ease, transform .15s ease;
+      cursor: pointer;
+      display: grid;
+      gap: 12px;
+    }
+    .card:hover { box-shadow: 0 6px 18px rgba(15,23,42,.08); transform: translateY(-2px); border-color: #bfdbfe; }
+    .card--expanded { border-color: #93c5fd; }
+    .card-top { display: flex; gap: 14px; align-items: stretch; }
+    .card-left { width: 280px; flex: 0 0 280px; display: grid; gap: 10px; }
+    .card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+    .card-name { font-size: 15px; font-weight: 900; line-height: 1.2; }
+    .card-type { font-size: 11px; color: var(--muted); margin-top: 2px; }
+    .badge {
+      font-size: 11px;
+      font-weight: 800;
+      color: var(--blue-700);
+      background: var(--blue-50);
+      border: 1px solid var(--panel-border);
+      padding: 4px 8px;
+      border-radius: 999px;
+      flex: 0 0 auto;
+    }
+    .card-mid { flex: 1; min-width: 0; display: grid; align-content: start; }
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; font-size: 12px; margin-top: 4px; }
+    .stat { background: var(--soft-bg); border: 1px solid #f1f5f9; border-radius: 8px; padding: 8px; }
+    .stat-label { color: var(--muted); font-size: 11px; }
+    .stat-value { margin-top: 2px; font-weight: 900; }
+    .stat { min-height: 52px; }
+    .error { margin-top: 8px; font-size: 12px; color: var(--rose); }
+
+    .card-bottom {
+      display: none;
+      border-top: 1px dashed #e2e8f0;
+      padding-top: 12px;
+    }
+    .card--expanded .card-bottom { display: block; }
+
+    .details {
+      font-size: 12px;
+      color: #334155;
+      display: grid;
+      gap: 6px;
+    }
+
+    .gpu-item { margin-top: 6px; background: #fff; border: 1px solid #f1f5f9; border-radius: 8px; padding: 8px; font-size: 12px; }
+    .gpu-title { font-weight: 800; }
+
+    /* Eval layout */
+    .analysis-grid { display: grid; grid-template-columns: 1fr; gap: 18px; }
+    @media (min-width: 1024px) { .analysis-grid { grid-template-columns: 3fr 7fr; } }
+    .panel { display: flex; flex-direction: column; min-height: 420px; }
+    .form { margin-top: 12px; display: grid; gap: 10px; }
+    label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    select, input, textarea {
+      width: 100%;
+      padding: 8px 10px;
+      font-size: 13px;
+      border-radius: 8px;
+      border: 1px solid var(--card-border);
+      background: #fff;
+      color: var(--text);
+      outline: none;
+    }
+    select:focus, input:focus, textarea:focus {
+      border-color: #93c5fd;
+      box-shadow: 0 0 0 3px rgba(147,197,253,.35);
+    }
+    .log-wrap { margin-top: 12px; flex: 1; display: flex; flex-direction: column; min-height: 0; }
+    .log-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+    .log-title { font-size: 12px; font-weight: 800; color: #334155; }
+    .log-clear { background: none; border: none; font-size: 12px; color: var(--muted); cursor: pointer; }
+    .log-clear:hover { color: var(--text); }
+    .log-box {
+      flex: 1;
+      border: 1px solid var(--card-border);
+      background: var(--soft-bg);
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 12px;
+      line-height: 1.5;
+      overflow: auto;
+      white-space: pre-wrap;
+      max-height: 260px;
+    }
+    .log-box::-webkit-scrollbar { width: 8px; height: 8px; }
+    .log-box::-webkit-scrollbar-thumb { background: rgba(37,99,235,.45); border-radius: 8px; }
+    .log-box::-webkit-scrollbar-track { background: transparent; }
+
+    .ga-panel {
+      margin-top: 12px;
+      height: 340px;
+      border: 1px dashed var(--card-border);
+      border-radius: 8px;
+      background: var(--soft-bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      text-align: center;
+      padding: 16px;
+    }
+
+    /* Modal */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(15,23,42,.35);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+      z-index: 50;
+    }
+    .modal-backdrop.flex { display: flex; }
+    .modal {
+      width: 100%;
+      max-width: 420px;
+      background: #fff;
+      border: 1px solid #f1f5f9;
+      border-radius: 12px;
+      box-shadow: 0 18px 40px rgba(15,23,42,.2);
+    }
+    .modal-head, .modal-foot {
+      padding: 12px 14px;
+      border-bottom: 1px solid #f1f5f9;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .modal-foot { border-bottom: none; border-top: 1px solid #f1f5f9; justify-content: flex-end; }
+    .modal-title { font-size: 14px; font-weight: 900; }
+    .modal-close { background: none; border: none; font-size: 20px; color: var(--muted); cursor: pointer; line-height: 1; }
+    .modal-close:hover { color: var(--text); }
+    .modal-body { padding: 12px 14px; display: grid; gap: 10px; }
+    .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+    @media (max-width: 980px) {
+      .layout { flex-direction: column; }
+      .sidebar { width: auto; flex: 0 0 auto; height: auto; position: static; }
+      .card-top { flex-direction: column; }
+      .card-left { width: auto; flex: 0 0 auto; }
+    }
+  </style>
 </head>
 <body>
-  <!-- Header -->
   <header class="header">
     <div class="container header-inner">
       <div>
-        <h1 class="title">GAPA Console</h1>
-        <p class="subtitle">资源实时监控 · 算法分析 · 遗传算法控制台</p>
+        <div class="title">GAPA Console</div>
+        <div class="subtitle">资源实时监控 · 服务器评估 · 算法运行与监控</div>
       </div>
-      <div class="pill">
-        Live · 2秒刷新
-      </div>
+      <div class="pill">Live · 2秒刷新</div>
     </div>
   </header>
 
-  <main class="container">
-    <!-- Resource Pool -->
-    <section class="section">
-      <div class="section-header">
-        <h2 class="section-title">资源池</h2>
-        <div>
-          <button id="btn-open-modal" class="btn btn-primary">
-            + 添加服务器
-          </button>
-          <button id="btn-refresh" class="btn btn-secondary">
-            全部刷新
-          </button>
-        </div>
+  <div class="container layout">
+    <aside class="sidebar">
+      <div class="nav-title">导航</div>
+      <button class="nav-item nav-item--active" data-view="monitor"><span>资源池监控</span><span class="nav-badge">1</span></button>
+      <button class="nav-item" data-view="eval"><span>服务器测试评估</span><span class="nav-badge">2</span></button>
+      <button class="nav-item" data-view="algo"><span>算法运行与监控</span><span class="nav-badge">3</span></button>
+      <button class="nav-item" data-view="config"><span>配置修改</span><span class="nav-badge">4</span></button>
+      <div class="nav-title">提示</div>
+      <div style="font-size:12px;color:var(--muted);padding:0 10px 10px;">
+        资源卡片点击展开详情；详情区域支持滚动。
+      </div>
+    </aside>
+
+    <main class="content">
+      <!-- View 1: Monitor -->
+      <div class="view view--active" id="view-monitor">
+        <section class="section">
+          <div class="section-header">
+            <div class="section-title">资源池</div>
+            <div>
+              <button id="btn-refresh" class="btn btn-secondary">全部刷新</button>
+            </div>
+          </div>
+          <div class="cards" id="cards">
+            <div style="text-align:center;color:var(--muted);padding:28px 0;">正在加载本地资源…</div>
+          </div>
+        </section>
       </div>
 
-      <div class="grid-cards" id="cards">
-        <div style="text-align:center;color:var(--muted);padding:28px 0;">正在加载本地资源…</div>
+      <!-- View 2: Eval -->
+      <div class="view" id="view-eval">
+        <section class="analysis-grid">
+          <div class="section panel">
+            <div class="section-title">服务器分析</div>
+            <div class="form">
+              <div>
+                <label>选择服务器</label>
+                <select id="select-server">
+                  <option value="local">本机</option>
+                </select>
+              </div>
+              <div>
+                <label>选择算法</label>
+                <select id="select-algo">
+                  <option value="monitor" data-kind="monitor">仅监控资源</option>
+                </select>
+              </div>
+              <div id="warmup-wrap" class="hidden">
+                <label>Warm up 次数</label>
+                <input id="input-warmup" type="number" min="0" value="2" />
+              </div>
+              <button id="btn-analyze" class="btn btn-primary" style="width:100%;">开始分析</button>
+            </div>
+
+            <div class="log-wrap">
+              <div class="log-head">
+                <div class="log-title">分析日志</div>
+                <button id="btn-clear-log" class="log-clear">清空</button>
+              </div>
+              <div id="log-box" class="log-box">等待操作…</div>
+            </div>
+          </div>
+
+          <div class="section panel">
+            <div class="section-header">
+              <div class="section-title">遗传算法分析</div>
+              <div style="font-size:11px;color:var(--muted);">预留 ECharts 面板</div>
+            </div>
+            <div id="ga-panel" class="ga-panel">等待数据...</div>
+          </div>
+        </section>
       </div>
-    </section>
 
-    <!-- Analysis -->
-    <section class="analysis-grid">
-      <!-- Server Analysis (Left ~30%) -->
-      <div class="section panel">
-        <h2 class="section-title">服务器分析</h2>
-
-        <div class="form">
-          <div>
-            <label>选择服务器</label>
-            <select id="select-server">
-              <option value="local">本机</option>
-            </select>
+      <!-- View 3: Algorithm run & monitor -->
+      <div class="view" id="view-algo">
+        <section class="section">
+          <div class="section-header">
+            <div class="section-title">算法运行与监控</div>
+            <div style="font-size:12px;color:var(--muted);">预留：接入 server_agent 的 /api/analysis/*</div>
           </div>
-
-          <div>
-            <label>选择算法</label>
-            <select id="select-algo">
-              <option value="monitor">仅监控资源</option>
-            </select>
+          <div class="ga-panel" style="height:260px;">
+            等待接入：算法提交、运行状态、日志与结果可视化。
           </div>
-
-          <div id="warmup-wrap" class="hidden">
-            <label>Warm up 次数</label>
-            <input id="input-warmup" type="number" min="0" value="2" />
-          </div>
-
-          <button id="btn-analyze" class="btn btn-primary" style="width:100%;">开始分析</button>
-        </div>
-
-        <div class="log-wrap">
-          <div class="log-head">
-            <h3 class="log-title">分析日志</h3>
-            <button id="btn-clear-log" class="log-clear">清空</button>
-          </div>
-          <div id="log-box" class="log-box">等待操作…</div>
-        </div>
+        </section>
       </div>
 
-      <!-- GA Analysis (Right ~70%) -->
-      <div class="section panel">
-        <div class="section-header">
-          <h2 class="section-title">遗传算法分析</h2>
-          <div style="font-size:11px;color:var(--muted);">预留 ECharts 面板</div>
-        </div>
-        <div id="ga-panel" class="ga-panel">等待数据...</div>
+      <!-- View 4: Config -->
+      <div class="view" id="view-config">
+        <section class="section">
+          <div class="section-header">
+            <div class="section-title">配置修改</div>
+            <div>
+              <button id="btn-open-modal" class="btn btn-primary">+ 添加卡片节点</button>
+            </div>
+          </div>
+          <div style="margin-top:12px;color:var(--muted);font-size:13px;line-height:1.6;">
+            这里用于维护服务器节点配置（新增/编辑/移除）。当前版本：前端临时添加卡片节点（刷新页面后不持久化）。
+          </div>
+        </section>
       </div>
-    </section>
-  </main>
+    </main>
+  </div>
 
   <!-- Add Server Modal -->
   <div id="modal" class="modal-backdrop hidden">
     <div class="modal">
       <div class="modal-head">
-        <h3 class="modal-title">添加服务器</h3>
+        <div class="modal-title">添加服务器节点</div>
         <button id="btn-close-modal" class="modal-close">&times;</button>
       </div>
       <div class="modal-body">
@@ -288,292 +424,349 @@
     </div>
   </div>
 
-<script>
-const cardsDiv = document.getElementById('cards');
-const serverSelect = document.getElementById('select-server');
-const algoSelect = document.getElementById('select-algo');
-const warmupWrap = document.getElementById('warmup-wrap');
-const warmupInput = document.getElementById('input-warmup');
-const logBox = document.getElementById('log-box');
-const gaPanel = document.getElementById('ga-panel');
+  <script>
+    function setActiveView(view) {
+      document.querySelectorAll(".nav-item").forEach((btn) => {
+        btn.classList.toggle("nav-item--active", btn.dataset.view === view);
+      });
+      document.querySelectorAll(".view").forEach((v) => {
+        v.classList.toggle("view--active", v.id === `view-${view}`);
+      });
+      try { localStorage.setItem("gapa_view", view); } catch (e) {}
+    }
 
-const modal = document.getElementById('modal');
-const btnOpenModal = document.getElementById('btn-open-modal');
-const btnCloseModal = document.getElementById('btn-close-modal');
-const btnCancel = document.getElementById('btn-cancel');
-const btnAdd = document.getElementById('btn-add');
-
-const sources = [{id:'local', base:'', label:'本机', expanded:true, meta:{type:'local'}}];
-const snapshots = new Map();
-
-function fmt(val, unit='', fallback='N/A'){ return val==null ? fallback : val + unit; }
-function pct(val){ return val==null ? 'N/A' : Number(val).toFixed(1) + '%'; }
-
-function log(line){
-  const ts = new Date().toLocaleTimeString();
-  const next = `[${ts}] ${line}\n`;
-  if (logBox.textContent.trim() === '等待操作…') logBox.textContent = '';
-  logBox.textContent += next;
-  logBox.scrollTop = logBox.scrollHeight;
-}
-
-function openModal(){
-  modal.classList.remove('hidden');
-  modal.classList.add('flex');
-  document.getElementById('modal-ip').focus();
-}
-function closeModal(){
-  modal.classList.add('hidden');
-  modal.classList.remove('flex');
-  document.getElementById('modal-ip').value='';
-  document.getElementById('modal-port').value='7777';
-  document.getElementById('modal-user').value='';
-  document.getElementById('modal-pass').value='';
-}
-
-btnOpenModal.addEventListener('click', openModal);
-btnCloseModal.addEventListener('click', closeModal);
-btnCancel.addEventListener('click', closeModal);
-modal.addEventListener('click', (e)=>{ if(e.target === modal) closeModal(); });
-
-btnAdd.addEventListener('click', ()=>{
-  const ip = document.getElementById('modal-ip').value.trim();
-  const port = (document.getElementById('modal-port').value.trim() || '7777');
-  const username = document.getElementById('modal-user').value.trim();
-  const password = document.getElementById('modal-pass').value;
-  if(!ip) return alert('请填写IP地址');
-  const base = `http://${ip}:${port}`;
-  const id = `${ip}-${port}`;
-  if(sources.some(s=>s.id===id)) return alert('已添加该服务器');
-  sources.push({id, base, label: `${ip}:${port}`, expanded:false, meta:{type:'remote', username, password}});
-  updateServerSelect();
-  closeModal();
-  log(`已添加服务器 ${id}`);
-  refreshAll();
-});
-
-document.getElementById('btn-clear-log').addEventListener('click', ()=>{
-  logBox.textContent = '';
-});
-
-function updateServerSelect(){
-  const current = serverSelect.value;
-  serverSelect.innerHTML = sources.map(s=>`<option value="${s.id}">${s.label}</option>`).join('');
-  serverSelect.value = sources.some(s=>s.id===current) ? current : 'local';
-}
-
-async function loadConfigServers(){
-  try{
-    const res = await fetch('/api/servers', {cache:'no-store'});
-    if(!res.ok) return;
-    const list = await res.json();
-    list.forEach(item=>{
-      if(!item.ip) return;
-      const id = item.id || `${item.ip}-${item.port||'default'}`;
-      if(sources.some(s=>s.id===id)) return;
-      const protocol = item.protocol || 'http';
-      const base = `${protocol}://${item.ip}${item.port? ':'+item.port : ''}`;
-      sources.push({id, base, label: item.name || `${item.ip}:${item.port||''}`, expanded:false, meta:{type:item.type, username:item.username}});
+    document.querySelectorAll(".nav-item").forEach((btn) => {
+      btn.addEventListener("click", () => setActiveView(btn.dataset.view));
     });
-    updateServerSelect();
-  }catch(e){
-    console.warn('load servers failed', e);
-  }
-}
+    try {
+      const saved = localStorage.getItem("gapa_view");
+      if (saved) setActiveView(saved);
+    } catch (e) {}
 
-async function fetchFrom(source){
-  try{
-    const url = source.base ? `${source.base}/api/resources` : '/api/resources';
-    const res = await fetch(url, {cache:'no-store'});
-    if(!res.ok) throw new Error(res.status);
-    return await res.json();
-  }catch(e){
-    return {error: '连接失败或无响应', hostname: source.label};
-  }
-}
+    const cardsDiv = document.getElementById("cards");
+    const serverSelect = document.getElementById("select-server");
+    const algoSelect = document.getElementById("select-algo");
+    const warmupWrap = document.getElementById("warmup-wrap");
+    const warmupInput = document.getElementById("input-warmup");
+    const logBox = document.getElementById("log-box");
+    const gaPanel = document.getElementById("ga-panel");
 
-function render(){
-  cardsDiv.innerHTML = sources.map(src=>{
-    const data = snapshots.get(src.id) || {};
-    const gpus = data.gpus || [];
-    const cpu = data.cpu || {};
-    const mem = data.memory || {};
-    const expanded = !!src.expanded;
+    const modal = document.getElementById("modal");
+    const btnOpenModal = document.getElementById("btn-open-modal");
+    const btnCloseModal = document.getElementById("btn-close-modal");
+    const btnCancel = document.getElementById("btn-cancel");
+    const btnAdd = document.getElementById("btn-add");
 
-    const gpuHtml = gpus.length
-      ? gpus.map(g=>`
-        <div class="gpu-item">
-          <div class="gpu-title">GPU ${g.id} · ${g.name}</div>
-          <div style="color:var(--muted);margin-top:2px;">
-            显存：${fmt(g.used_mb)} / ${fmt(g.total_mb)} MB（功率 ${fmt(g.power_w, ' W')}）
-          </div>
-          <div style="color:var(--muted);margin-top:2px;">
-            GPU 利用率：${fmt(g.gpu_util_percent, '%')} · 显存利用率：${fmt(g.mem_util_percent, '%')}
-          </div>
-        </div>`).join('')
-      : `<div style="font-size:12px;color:var(--muted);margin-top:6px;">无GPU信息</div>`;
+    const sources = [{ id: "local", base: "", label: "本机", expanded: true, meta: { type: "local" } }];
+    const snapshots = new Map();
 
-    const title = data.name || src.label || data.hostname || src.id;
+    function fmt(val, unit = "", fallback = "N/A") {
+      return val == null ? fallback : `${val}${unit}`;
+    }
+    function pct(val) {
+      return val == null ? "N/A" : `${Number(val).toFixed(1)}%`;
+    }
+    function log(line) {
+      const ts = new Date().toLocaleTimeString();
+      const next = `[${ts}] ${line}\n`;
+      if (logBox.textContent.trim() === "等待操作…") logBox.textContent = "";
+      logBox.textContent += next;
+      logBox.scrollTop = logBox.scrollHeight;
+    }
 
-    return `
-    <div class="card ${expanded?'card--expanded':''}" onclick="toggle('${src.id}')">
-      <div class="card-head">
-        <div>
-          <div class="card-name">${title}</div>
-          <div class="card-type">${src.meta?.type === 'local' ? '本地机器' : (src.meta?.type || '远程服务器')}</div>
-        </div>
-        <div class="badge">
-          ${data.time || '--'}
-        </div>
-      </div>
+    function openModal() {
+      modal.classList.remove("hidden");
+      modal.classList.add("flex");
+      document.getElementById("modal-ip").focus();
+    }
+    function closeModal() {
+      modal.classList.add("hidden");
+      modal.classList.remove("flex");
+      document.getElementById("modal-ip").value = "";
+      document.getElementById("modal-port").value = "7777";
+      document.getElementById("modal-user").value = "";
+      document.getElementById("modal-pass").value = "";
+    }
 
-      <div class="stats">
-        <div class="stat">
-          <div class="stat-label">CPU 负载</div>
-          <div class="stat-value">${pct(cpu.usage_percent)}</div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">内存占用</div>
-          <div class="stat-value">${pct(mem.percent)}</div>
-        </div>
-        <div class="stat">
-          <div class="stat-label">显卡数量</div>
-          <div class="stat-value">${gpus.length} 张</div>
-        </div>
-      </div>
-
-      ${data.error ? `<div class="error">错误：${data.error}</div>` : ''}
-
-      ${expanded ? `
-        <div class="details">
-          <div>CPU 负载均值：${fmt(cpu.load_avg?.[0],'','N/A')}</div>
-          <div>内存：${fmt(mem.used_mb)} / ${fmt(mem.total_mb)} MB</div>
-          ${src.meta?.username ? `<div>用户：${src.meta.username}</div>` : ''}
-          ${gpuHtml}
-        </div>
-      ` : ''}
-    </div>`;
-  }).join('');
-}
-
-function toggle(id){
-  const s = sources.find(x=>x.id===id);
-  if(s) s.expanded = !s.expanded;
-  render();
-}
-
-async function refreshAll(){
-  try{
-    const resp = await fetch('/api/all_resources', {cache:'no-store'});
-    const all = await resp.json();
-    Object.entries(all).forEach(([id, data]) => snapshots.set(id, data || {}));
-    render();
-  }catch(e){
-    console.error("获取资源失败", e);
-  }
-}
-
-document.getElementById('btn-refresh').addEventListener('click', refreshAll);
-
-async function loadAlgorithms(){
-  try{
-    const res = await fetch('/api/algorithms', {cache:'no-store'});
-    if(!res.ok) return;
-    const list = await res.json();
-    const opts = [
-      {id:'monitor', name:'仅监控资源', kind:'monitor'},
-      ...(Array.isArray(list) ? list : [])
-    ];
-    algoSelect.innerHTML = opts.map(o=>{
-      const disabled = o.disabled ? 'disabled' : '';
-      const label = o.name || o.id;
-      const kind = o.kind || 'ga';
-      return `<option value="${o.id}" data-kind="${kind}" ${disabled}>${label}</option>`;
-    }).join('');
-  }catch(e){
-    console.warn('load algorithms failed', e);
-  }
-}
-
-algoSelect.addEventListener('change', ()=>{
-  const sel = algoSelect.selectedOptions[0];
-  const kind = sel?.dataset?.kind || (algoSelect.value === 'monitor' ? 'monitor' : 'ga');
-  warmupWrap.classList.toggle('hidden', kind === 'monitor');
-});
-
-// Analysis interactions
-document.getElementById('btn-analyze').addEventListener('click', async ()=>{
-  const sid = serverSelect.value;
-  const algo = algoSelect.value;
-  const src = sources.find(s=>s.id===sid) || sources[0];
-
-  const warmup = Math.max(0, Number(warmupInput.value || 0));
-  const isMonitor = algo === 'monitor';
-
-  if(isMonitor){
-    log(`开始静态资源分析：${src.label}`);
-  }else{
-    log(`开始算法分析：${src.label} · ${algo}`);
-    gaPanel.innerHTML = `<div>算法分析中...</div>`;
-  }
-
-  // Ask backend for adaptive plan (StrategyPlan)
-  let plan = null;
-  try{
-    const resp = await fetch('/api/strategy_plan', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({server_id: sid, algorithm: algo, warmup, objective: 'time', multi_gpu: true})
+    btnOpenModal.addEventListener("click", openModal);
+    btnCloseModal.addEventListener("click", closeModal);
+    btnCancel.addEventListener("click", closeModal);
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) closeModal();
     });
-    if(resp.ok) plan = await resp.json();
-  }catch(e){
-    plan = null;
-  }
 
-  if(plan){
-    log(`StrategyPlan 结果：backend=${plan.backend} devices=${(plan.devices||[]).join(',')||'-'} world_size=${plan.world_size||1}`);
-    if(plan.estimated_time_ms!=null) log(`估计耗时：${plan.estimated_time_ms.toFixed(3)} ms`);
-    if(plan.reason) log(`原因：${plan.reason}`);
-  }else{
-    log(`StrategyPlan 调用失败，使用默认策略。`);
-  }
+    document.getElementById("btn-clear-log").addEventListener("click", () => {
+      logBox.textContent = "";
+    });
 
-  if(isMonitor){
-    const snap = await fetchFrom(src);
-    const cpu = snap.cpu || {};
-    const mem = snap.memory || {};
-    const gpus = snap.gpus || [];
-    log(`Host: ${snap.hostname || src.label}`);
-    log(`CPU: ${pct(cpu.usage_percent)} (load=${fmt(cpu.load_avg?.[0],'','N/A')})`);
-    log(`MEM: ${pct(mem.percent)} (${fmt(mem.used_mb)} / ${fmt(mem.total_mb)} MB)`);
-    log(`GPU: ${gpus.length} 张`);
-    gaPanel.textContent = '等待数据...';
-    return;
-  }
+    function updateServerSelect() {
+      const current = serverSelect.value;
+      serverSelect.innerHTML = sources.map((s) => `<option value="${s.id}">${s.label}</option>`).join("");
+      serverSelect.value = sources.some((s) => s.id === current) ? current : "local";
+    }
 
-  // Simulated GA flow (warmup + analysis)
-  setTimeout(()=>log('正在初始化算法...'), 200);
-  setTimeout(()=>log(`执行 Warm up (${warmup} 次)...`), 700);
-  setTimeout(()=>log('算法分析中...'), 1200);
+    btnAdd.addEventListener("click", () => {
+      const ip = document.getElementById("modal-ip").value.trim();
+      const port = document.getElementById("modal-port").value.trim() || "7777";
+      const username = document.getElementById("modal-user").value.trim();
+      const password = document.getElementById("modal-pass").value;
+      if (!ip) return alert("请填写IP地址");
+      const base = `http://${ip}:${port}`;
+      const id = `${ip}-${port}`;
+      if (sources.some((s) => s.id === id)) return alert("已添加该服务器");
+      sources.push({ id, base, label: `${ip}:${port}`, expanded: false, meta: { type: "remote", username, password } });
+      updateServerSelect();
+      closeModal();
+      log(`已添加服务器 ${id}`);
 
-  setTimeout(()=>{
-    log('分析完成，生成模拟结果。');
-    gaPanel.innerHTML = `
-      <div>
-        <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">模拟收敛曲线/资源分配图</div>
-        <div style="font-size:20px;font-weight:700;color:var(--blue-700);">Best Plan: ${algo}</div>
-        ${plan ? `<div style="font-size:12px;color:var(--muted);margin-top:6px;">backend=${plan.backend}, world_size=${plan.world_size||1}</div>` : ''}
-      </div>`;
-  }, 2000);
-});
+      // Immediate feedback for the newly added server
+      const added = sources.find((s) => s.id === id);
+      if (added) {
+        fetchFrom(added).then((data) => {
+          snapshots.set(id, data || {});
+          if (data?.error) {
+            log(`服务器 ${id} 连接失败：${data.error}`);
+            log(`请确认远程已启动 server_agent，并监听 ${port}（以及防火墙放通）。`);
+          }
+          render();
+        });
+      }
+      refreshAll();
+    });
 
-// Boot
-setInterval(refreshAll, 2000);
-(async ()=>{
-  await loadAlgorithms();
-  await loadConfigServers();
-  refreshAll();
-})();
-</script>
+    async function loadConfigServers() {
+      try {
+        const res = await fetch("/api/servers", { cache: "no-store" });
+        if (!res.ok) return;
+        const list = await res.json();
+        list.forEach((item) => {
+          if (!item.ip) return;
+          const id = item.id || `${item.ip}-${item.port || "default"}`;
+          if (sources.some((s) => s.id === id)) return;
+          const protocol = item.protocol || "http";
+          const base = `${protocol}://${item.ip}${item.port ? ":" + item.port : ""}`;
+          sources.push({ id, base, label: item.name || `${item.ip}:${item.port || ""}`, expanded: false, meta: { type: item.type, username: item.username } });
+        });
+        updateServerSelect();
+      } catch (e) {
+        console.warn("load servers failed", e);
+      }
+    }
+
+    async function loadAlgorithms() {
+      try {
+        const res = await fetch("/api/algorithms", { cache: "no-store" });
+        if (!res.ok) return;
+        const list = await res.json();
+        const opts = [{ id: "monitor", name: "仅监控资源", kind: "monitor" }, ...(Array.isArray(list) ? list : [])];
+        algoSelect.innerHTML = opts
+          .map((o) => {
+            const disabled = o.disabled ? "disabled" : "";
+            const label = o.name || o.id;
+            const kind = o.kind || "ga";
+            return `<option value="${o.id}" data-kind="${kind}" ${disabled}>${label}</option>`;
+          })
+          .join("");
+      } catch (e) {
+        console.warn("load algorithms failed", e);
+      }
+    }
+
+    algoSelect.addEventListener("change", () => {
+      const sel = algoSelect.selectedOptions[0];
+      const kind = sel?.dataset?.kind || (algoSelect.value === "monitor" ? "monitor" : "ga");
+      warmupWrap.classList.toggle("hidden", kind === "monitor");
+    });
+
+    async function fetchFrom(source) {
+      try {
+        const url = source.base ? `${source.base}/api/resources` : "/api/resources";
+        const res = await fetch(url, { cache: "no-store" });
+        if (!res.ok) throw new Error(res.status);
+        return await res.json();
+      } catch (e) {
+        return { error: "连接失败或无响应", hostname: source.label };
+      }
+    }
+
+    function render() {
+      cardsDiv.innerHTML = sources
+        .map((src) => {
+          const data = snapshots.get(src.id) || {};
+          const gpus = data.gpus || [];
+          const cpu = data.cpu || {};
+          const mem = data.memory || {};
+          const expanded = !!src.expanded;
+
+          const title = data.name || src.label || data.hostname || src.id;
+          const gpuHtml = gpus.length
+            ? gpus
+                .map(
+                  (g) => `
+                  <div class="gpu-item">
+                    <div class="gpu-title">GPU ${g.id} · ${g.name}</div>
+                    <div style="color:var(--muted);margin-top:2px;">
+                      显存：${fmt(g.used_mb)} / ${fmt(g.total_mb)} MB（功率 ${fmt(g.power_w, " W")}）
+                    </div>
+                    <div style="color:var(--muted);margin-top:2px;">
+                      GPU 利用率：${fmt(g.gpu_util_percent, "%")} · 显存利用率：${fmt(g.mem_util_percent, "%")}
+                    </div>
+                  </div>`
+                )
+                .join("")
+            : `<div style="font-size:12px;color:var(--muted);margin-top:6px;">无GPU信息</div>`;
+
+          return `
+            <div class="card ${expanded ? "card--expanded" : ""}" onclick="toggle('${src.id}')">
+              <div class="card-top">
+                <div class="card-left">
+                  <div class="card-head">
+                    <div>
+                      <div class="card-name">${title}</div>
+                      <div class="card-type">${src.meta?.type === "local" ? "本地机器" : src.meta?.type || "远程服务器"}</div>
+                    </div>
+                    <div class="badge">${data.time || data.timestamp || "--"}</div>
+                  </div>
+                  <div style="font-size:12px;color:var(--muted);">
+                    Host: ${data.hostname || "N/A"}
+                  </div>
+                </div>
+
+                <div class="card-mid">
+                  <div class="stats">
+                    <div class="stat">
+                      <div class="stat-label">CPU 负载</div>
+                      <div class="stat-value">${pct(cpu.usage_percent)}</div>
+                    </div>
+                    <div class="stat">
+                      <div class="stat-label">内存占用</div>
+                      <div class="stat-value">${pct(mem.percent)}</div>
+                    </div>
+                    <div class="stat">
+                      <div class="stat-label">显卡数量</div>
+                      <div class="stat-value">${gpus.length} 张</div>
+                    </div>
+                  </div>
+                  ${data.error ? `<div class="error">错误：${data.error}</div>` : ""}
+                </div>
+              </div>
+
+              <div class="card-bottom">
+                <div class="details">
+                  <div>CPU 负载均值：${fmt(cpu.load_avg?.[0], "", "N/A")}</div>
+                  <div>内存：${fmt(mem.used_mb)} / ${fmt(mem.total_mb)} MB</div>
+                  ${src.meta?.username ? `<div>用户：${src.meta.username}</div>` : ""}
+                  ${gpuHtml}
+                </div>
+              </div>
+            </div>
+          `;
+        })
+        .join("");
+    }
+
+    function toggle(id) {
+      const s = sources.find((x) => x.id === id);
+      if (s) s.expanded = !s.expanded;
+      render();
+    }
+
+    async function refreshAll() {
+      try {
+        const resp = await fetch("/api/all_resources", { cache: "no-store" });
+        const all = await resp.json();
+        Object.entries(all).forEach(([id, data]) => snapshots.set(id, data || {}));
+        render();
+      } catch (e) {
+        console.error("获取资源失败", e);
+      }
+    }
+
+    document.getElementById("btn-refresh").addEventListener("click", refreshAll);
+
+    // Analysis interactions
+    document.getElementById("btn-analyze").addEventListener("click", async () => {
+      const sid = serverSelect.value;
+      const algo = algoSelect.value;
+      const src = sources.find((s) => s.id === sid) || sources[0];
+      const warmup = Math.max(0, Number(warmupInput.value || 0));
+      const isMonitor = algo === "monitor";
+
+      if (isMonitor) {
+        log(`开始静态资源分析：${src.label}`);
+      } else {
+        log(`开始算法分析：${src.label} · ${algo}`);
+        gaPanel.innerHTML = `<div>算法分析中...</div>`;
+      }
+
+      // Ask backend for adaptive plan (StrategyPlan)
+      let plan = null;
+      try {
+        const resp = await fetch("/api/strategy_plan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ server_id: sid, algorithm: algo, warmup, objective: "time", multi_gpu: true, timeout_s: 60 }),
+        });
+        if (resp.ok) {
+          plan = await resp.json();
+        } else {
+          let errBody = null;
+          try {
+            errBody = await resp.json();
+          } catch (e) {
+            errBody = { raw: await resp.text() };
+          }
+          log(`StrategyPlan 调用失败：HTTP ${resp.status} ${JSON.stringify(errBody)}`);
+        }
+      } catch (e) {
+        plan = null;
+        log(`StrategyPlan 调用异常：${e}`);
+      }
+
+      if (plan) {
+        log(`StrategyPlan 结果：backend=${plan.backend} devices=${(plan.devices || []).join(",") || "-"} world_size=${plan.world_size || 1}`);
+        if (plan.estimated_time_ms != null) log(`估计耗时：${plan.estimated_time_ms.toFixed(3)} ms`);
+        if (plan.reason) log(`原因：${plan.reason}`);
+      } else {
+        log(`StrategyPlan 未获取到结果，使用默认策略。`);
+      }
+
+      if (isMonitor) {
+        const snap = await fetchFrom(src);
+        const cpu = snap.cpu || {};
+        const mem = snap.memory || {};
+        const gpus = snap.gpus || [];
+        log(`Host: ${snap.hostname || src.label}`);
+        log(`CPU: ${pct(cpu.usage_percent)} (load=${fmt(cpu.load_avg?.[0], "", "N/A")})`);
+        log(`MEM: ${pct(mem.percent)} (${fmt(mem.used_mb)} / ${fmt(mem.total_mb)} MB)`);
+        log(`GPU: ${gpus.length} 张`);
+        gaPanel.textContent = "等待数据...";
+        return;
+      }
+
+      // Simulated GA flow (warmup + analysis)
+      setTimeout(() => log("正在初始化算法..."), 200);
+      setTimeout(() => log(`执行 Warm up (${warmup} 次)...`), 700);
+      setTimeout(() => log("算法分析中..."), 1200);
+
+      setTimeout(() => {
+        log("分析完成，生成模拟结果。");
+        gaPanel.innerHTML = `
+          <div>
+            <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">模拟收敛曲线/资源分配图</div>
+            <div style="font-size:20px;font-weight:900;color:var(--blue-700);">Best Plan: ${algo}</div>
+            ${plan ? `<div style="font-size:12px;color:var(--muted);margin-top:6px;">backend=${plan.backend}, world_size=${plan.world_size || 1}</div>` : ""}
+          </div>`;
+      }, 2000);
+    });
+
+    // Boot
+    setInterval(refreshAll, 2000);
+    (async () => {
+      await loadAlgorithms();
+      await loadConfigServers();
+      refreshAll();
+    })();
+  </script>
 </body>
 </html>

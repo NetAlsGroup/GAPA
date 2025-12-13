@@ -245,10 +245,12 @@ def get_all_resources(remote_addr: Optional[str]) -> Dict[str, Dict[str, Any]]:
             try:
                 import requests
 
-                resp = requests.get(base_url.rstrip("/") + "/api/resources", timeout=5)
+                session = requests.Session()
+                session.trust_env = False  # avoid routing LAN traffic via HTTP(S)_PROXY
+                resp = session.get(base_url.rstrip("/") + "/api/resources", timeout=5)
                 data = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}"}
             except Exception as exc:  # pragma: no cover - network issues
-                data = {"error": str(exc)}
+                data = {"error": f"{exc}", "hostname": server.get("name", server_id)}
         # Normalize timestamp field from agent to UI expected time
         if isinstance(data, dict) and "time" not in data and "timestamp" in data:
             data["time"] = data.get("timestamp")
