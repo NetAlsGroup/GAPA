@@ -4,6 +4,7 @@ import torch.distributed as dist
 # import cugraph
 from copy import deepcopy
 import numpy as np
+from typing import Any
 from tqdm import tqdm
 from time import time
 from igraph import Graph as ig
@@ -140,6 +141,27 @@ class QAttackController(BasicController):
         self.budget = data_loader.k
         self.graph = data_loader.G.copy()
         self.Nodes = None
+        self.mode = None
+        self.observer = None
+
+    def _emit_observer(self, generation: int, max_generation: int, payload: Any) -> None:
+        obs = self.observer
+        if obs is None:
+            return
+        if callable(obs):
+            obs(generation, max_generation, payload)
+            return
+        if isinstance(obs, dict) and obs.get("type") == "jsonl" and obs.get("path"):
+            try:
+                import json
+
+                with open(obs["path"], "a", encoding="utf-8") as f:
+                    if isinstance(payload, dict):
+                        f.write(json.dumps({"generation": generation, "max_generation": max_generation, "metrics": payload}) + "\n")
+                    else:
+                        f.write(json.dumps({"generation": generation, "max_generation": max_generation, "best_fitness": payload}) + "\n")
+            except Exception:
+                pass
 
     def setup(self, data_loader, evaluator: QAttackEvaluator):
         self.Nodes = Nodes(data_loader.G, device=self.device)
@@ -185,6 +207,14 @@ class QAttackController(BasicController):
                         best_genes.append(genes)
                         end = time()
                         time_list.append(end - start)
+                        try:
+                            self._emit_observer(
+                                generation + 1,
+                                max_generation,
+                                {"Q": float(best_Q[-1]), "NMI": float(best_NMI[-1])},
+                            )
+                        except Exception:
+                            pass
                     pbar.set_postfix(fitness=max(fitness_list).item(), Q=min(best_Q), NMI=min(best_NMI))
                     pbar.update(1)
             top_index = best_Q.index(min(best_Q))
@@ -271,6 +301,15 @@ class QAttackController(BasicController):
                         best_genes.append(genes)
                         end = time()
                         time_list.append(end - start)
+                        if rank == 0:
+                            try:
+                                self._emit_observer(
+                                    generation + 1,
+                                    max_generation,
+                                    {"Q": float(best_Q[-1]), "NMI": float(best_NMI[-1])},
+                                )
+                            except Exception:
+                                pass
                     pbar.set_postfix(fitness=max(component_fitness_list).item(), Q=min(best_Q), NMI=min(best_NMI))
                     pbar.update(1)
             best_genes = torch.stack(best_genes)
@@ -349,5 +388,3 @@ def QAttack(mode, max_generation, data_loader, controller: QAttackController, ev
         mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, component_size_list), nprocs=world_size, join=True)
     else:
         raise ValueError(f"No such mode. Please choose s, sm, m or mnm.")
-
-

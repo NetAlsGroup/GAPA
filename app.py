@@ -19,6 +19,7 @@ from server import (
 
 import threading
 import time
+from time import perf_counter
 
 
 def _resolve_server_base_url(server_id: str | None) -> str | None:
@@ -53,6 +54,7 @@ class _LocalTaskState:
         self.logs: list[str] = []
         self.result: dict | None = None
         self.error: str | None = None
+        self.cancel: bool = False
 
     def reset(self, task_id: str) -> None:
         self.task_id = task_id
@@ -61,6 +63,7 @@ class _LocalTaskState:
         self.logs = []
         self.result = None
         self.error = None
+        self.cancel = False
 
     def log(self, line: str) -> None:
         self.logs.append(line)
@@ -99,8 +102,15 @@ def _run_local_ga(task_id: str, algorithm: str, iterations: int, pc: float, pm: 
             if LOCAL_TASK.task_id != task_id:
                 return
             LOCAL_TASK.log(f"[INFO] 任务 {task_id} 启动，算法={algorithm} pc={pc:.3f} pm={pm:.3f} iters={iterations}")
+            LOCAL_TASK.log("[INFO] preprocessing: start")
             LOCAL_TASK.progress = 1
-            LOCAL_TASK.result = {"algorithm": algorithm, "convergence": [], "metrics": [], "hyperparams": {"iterations": iterations, "crossover_rate": pc, "mutate_rate": pm}}
+            LOCAL_TASK.result = {
+                "algorithm": algorithm,
+                "convergence": [],
+                "metrics": [],
+                "timing": {"iter_seconds": None, "note": "iter_seconds excludes preprocessing; timing starts at first loop iteration"},
+                "hyperparams": {"iterations": iterations, "crossover_rate": pc, "mutate_rate": pm},
+            }
 
         time.sleep(0.2)
         with LOCAL_TASK.lock:
@@ -110,9 +120,21 @@ def _run_local_ga(task_id: str, algorithm: str, iterations: int, pc: float, pm: 
 
         base = 1.0
         steps = max(1, int(iterations or 1))
+        t0 = None
+        t1 = None
         for i in range(steps):
             time.sleep(0.25)
+            now = perf_counter()
             with LOCAL_TASK.lock:
+                if LOCAL_TASK.cancel:
+                    LOCAL_TASK.log("[WARN] stop requested, aborting local task.")
+                    LOCAL_TASK.state = "idle"
+                    LOCAL_TASK.error = "stopped"
+                    return
+                if t0 is None:
+                    t0 = now
+                    LOCAL_TASK.log("[INFO] iteration loop started; timing begins (preprocessing excluded)")
+                t1 = now
                 metric = round(0.5 + 0.5 * (1.0 - (i + 1) / steps), 4)
                 LOCAL_TASK.log(f"[INFO] 进化迭代 {i+1}/{steps} metric={metric} ...")
                 LOCAL_TASK.progress = 5 + int((i + 1) / steps * 95)
@@ -124,6 +146,8 @@ def _run_local_ga(task_id: str, algorithm: str, iterations: int, pc: float, pm: 
             LOCAL_TASK.log("[INFO] 分析完成。")
             LOCAL_TASK.progress = 100
             LOCAL_TASK.state = "completed"
+            if t0 is not None and t1 is not None and t1 >= t0:
+                LOCAL_TASK.result["timing"]["iter_seconds"] = float(t1 - t0)
             conv = LOCAL_TASK.result.get("convergence") or []
             LOCAL_TASK.result["best_score"] = min(conv) if conv else None
     except Exception as exc:
@@ -442,6 +466,42 @@ def api_analysis_status():
         except Exception:
             body = {"raw": (resp.text or "")[:2000]}
         return jsonify({"error": "remote analysis status failed", "status_code": resp.status_code, "body": body}), 502
+    except Exception as exc:
+        return jsonify({"error": f"proxy failed: {exc}", "server_id": server_id, "base_url": base_url}), 502
+
+
+@app.route("/api/analysis/stop", methods=["POST"])
+def api_analysis_stop():
+    """Proxy analysis stop to remote server_agent; includes server_id."""
+    payload = request.get_json(silent=True) or {}
+    server_id = payload.get("server_id") or payload.get("server")
+    base_url = _resolve_server_base_url(server_id)
+    if base_url is None and server_id and server_id != "local":
+        return jsonify({"error": "unknown server_id or missing base_url", "server_id": server_id}), 404
+
+    try:
+        import requests
+
+        session = requests.Session()
+        session.trust_env = False
+        timeout_s = float(payload.get("timeout_s", 10) or 10)
+        if base_url:
+            resp = session.post(base_url.rstrip("/") + "/api/analysis/stop", timeout=(3.0, timeout_s))
+            if resp.ok:
+                return jsonify(resp.json())
+            try:
+                body = resp.json()
+            except Exception:
+                body = {"raw": (resp.text or "")[:2000]}
+            return jsonify({"error": "remote analysis stop failed", "status_code": resp.status_code, "body": body}), 502
+
+        # Local fallback stop
+        with LOCAL_TASK.lock:
+            if LOCAL_TASK.state == "running":
+                LOCAL_TASK.cancel = True
+                LOCAL_TASK.log("[WARN] stop requested.")
+                return jsonify({"status": "stopping", "task_id": LOCAL_TASK.task_id})
+            return jsonify({"status": "idle", "task_id": LOCAL_TASK.task_id})
     except Exception as exc:
         return jsonify({"error": f"proxy failed: {exc}", "server_id": server_id, "base_url": base_url}), 502
 

@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import torch.multiprocessing as mp
 import torch.distributed as dist
 from copy import deepcopy
+from typing import Any
 from tqdm import tqdm
 from time import time
 from gapa.framework.body import Body
@@ -65,6 +66,26 @@ class NCA_GAController(BasicController):
         self.feats = None
         self.test_index = None
         self.labels = None
+        self.observer = None
+
+    def _emit_observer(self, generation: int, max_generation: int, payload: Any) -> None:
+        obs = self.observer
+        if obs is None:
+            return
+        if callable(obs):
+            obs(generation, max_generation, payload)
+            return
+        if isinstance(obs, dict) and obs.get("type") == "jsonl" and obs.get("path"):
+            try:
+                import json
+
+                with open(obs["path"], "a", encoding="utf-8") as f:
+                    if isinstance(payload, dict):
+                        f.write(json.dumps({"generation": generation, "max_generation": max_generation, "metrics": payload}) + "\n")
+                    else:
+                        f.write(json.dumps({"generation": generation, "max_generation": max_generation, "best_fitness": payload}) + "\n")
+            except Exception:
+                pass
 
     def setup(self, data_loader, evaluator: NCA_GAEvaluator):
         copy_graph = data_loader.G.copy()
@@ -110,6 +131,14 @@ class NCA_GAController(BasicController):
                         best_genes.append(critical_edges)
                         end = time()
                         time_list.append(end - start)
+                        try:
+                            self._emit_observer(
+                                generation + 1,
+                                max_generation,
+                                {"Acc": float(best_acc[-1]), "ASR": float(best_as_rate[-1])},
+                            )
+                        except Exception:
+                            pass
                     pbar.set_postfix(Loss=max(fitness_list).item(), Acc=min(best_acc), AS_Rate=max(best_as_rate))
                     pbar.update(1)
             # Test
@@ -201,6 +230,15 @@ class NCA_GAController(BasicController):
                         best_genes.append(component_edges)
                         end = time()
                         time_list.append(end - start)
+                        if rank == 0:
+                            try:
+                                self._emit_observer(
+                                    generation + 1,
+                                    max_generation,
+                                    {"Acc": float(best_acc[-1]), "ASR": float(best_as_rate[-1])},
+                                )
+                            except Exception:
+                                pass
                     pbar.set_postfix(Loss=max(component_fitness_list).item(), Acc=min(best_acc), AS_Rate=max(best_as_rate))
                     pbar.update(1)
             best_genes = torch.stack(best_genes)
@@ -276,4 +314,3 @@ def NCA_GA(mode, max_generation, data_loader, controller: NCA_GAController, eval
         mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, component_size_list), nprocs=world_size, join=True)
     else:
         raise ValueError(f"No such mode. Please choose s, sm, m or mnm.")
-

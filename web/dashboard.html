@@ -283,8 +283,22 @@
     .split { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 12px; }
     @media (min-width: 1024px) { .split { grid-template-columns: 1fr 1fr; } }
     .history-list { display: grid; gap: 10px; margin-top: 12px; }
+    .history-grid { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 12px; }
+    @media (min-width: 1024px) { .history-grid { grid-template-columns: 1fr 1.4fr; } }
+    .history-scroll {
+      border: 1px solid var(--card-border);
+      background: var(--soft-bg);
+      border-radius: 10px;
+      padding: 10px;
+      max-height: 520px;
+      overflow: auto;
+    }
+    .history-scroll::-webkit-scrollbar { width: 8px; height: 8px; }
+    .history-scroll::-webkit-scrollbar-thumb { background: rgba(37,99,235,.35); border-radius: 8px; }
+    .history-scroll::-webkit-scrollbar-track { background: transparent; }
     .history-item { border: 1px solid var(--card-border); background: #fff; border-radius: 10px; padding: 10px; cursor: pointer; }
     .history-item:hover { border-color: #bfdbfe; box-shadow: 0 6px 18px rgba(15,23,42,.06); }
+    .history-item--active { border-color: #93c5fd; background: var(--blue-50); }
     .history-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
     .history-actions { display: flex; gap: 8px; margin-top: 10px; }
   </style>
@@ -429,7 +443,10 @@
                     <input id="run-pm" type="number" min="0" max="1" step="0.01" value="0.20" />
                   </div>
                 </div>
-                <button id="btn-run" class="btn btn-primary" style="width:100%;">提交运行</button>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                  <button id="btn-run" class="btn btn-primary" style="width:100%;">提交运行</button>
+                  <button id="btn-run-stop" class="btn" style="width:100%;background:#fee2e2;color:#991b1b;border-color:#fecaca;" disabled>停止</button>
+                </div>
               </div>
 
               <div class="kv">
@@ -494,10 +511,17 @@
               <button id="btn-history-clear" class="btn btn-secondary">清空历史</button>
             </div>
           </div>
-          <div id="history-list" class="history-list"></div>
-          <div style="margin-top:12px;">
-            <div class="log-title">记录详情</div>
-            <div id="history-detail" class="log-box" style="max-height:320px;">选择一条记录查看日志与指标。</div>
+          <div class="history-grid">
+            <div>
+              <div class="log-title">记录列表</div>
+              <div class="history-scroll">
+                <div id="history-list" class="history-list"></div>
+              </div>
+            </div>
+            <div>
+              <div class="log-title">记录详情</div>
+              <div id="history-detail" class="log-box" style="max-height:520px;">选择一条记录查看日志与指标。</div>
+            </div>
           </div>
         </section>
       </div>
@@ -587,6 +611,7 @@
     const runPc = document.getElementById("run-pc");
     const runPm = document.getElementById("run-pm");
     const btnRun = document.getElementById("btn-run");
+    const btnRunStop = document.getElementById("btn-run-stop");
     const runState = document.getElementById("run-state");
     const runTaskId = document.getElementById("run-taskid");
     const runProgress = document.getElementById("run-progress");
@@ -1188,6 +1213,8 @@
         .join("");
       historyList.querySelectorAll(".history-item").forEach((el) => {
         el.addEventListener("click", () => {
+          historyList.querySelectorAll(".history-item").forEach((x) => x.classList.remove("history-item--active"));
+          el.classList.add("history-item--active");
           const idx = Number(el.dataset.idx);
           const it = historyLoad()[idx];
           if (!it) return;
@@ -1196,6 +1223,8 @@
             `time: ${it.timestamp}`,
             `state: ${it.state}`,
             `task_id: ${it.task_id}`,
+            it.dataset ? `dataset: ${it.dataset}` : "",
+            it.hyperparams ? `hyperparams: ${JSON.stringify(it.hyperparams)}` : "",
             it.best_score != null ? `best_score: ${it.best_score}` : "",
             "",
             ...(it.logs || []),
@@ -1224,7 +1253,13 @@
 
     function renderRunCharts(result) {
       if (!result) return;
-      const conv = Array.isArray(result.convergence) ? result.convergence : [];
+      const curves = result.curves && typeof result.curves === "object" ? result.curves : null;
+      const objectives = result.objectives && typeof result.objectives === "object" ? result.objectives : null;
+      const primaryName = objectives?.primary || null;
+      const secondaryName = objectives?.secondary || null;
+      const primaryArr = primaryName && curves && Array.isArray(curves[primaryName]) ? curves[primaryName] : null;
+      const secondaryArr = secondaryName && curves && Array.isArray(curves[secondaryName]) ? curves[secondaryName] : null;
+      const conv = primaryArr || (Array.isArray(result.convergence) ? result.convergence : []);
       const metrics = Array.isArray(result.metrics) ? result.metrics : [];
       if (!conv.length && !metrics.length) return;
 
@@ -1248,13 +1283,24 @@
       const cpuPts = polylineFor(cpuArr);
       const memPts = polylineFor(memArr);
       const convPts = polylineFor(conv);
+      const conv2Pts = secondaryArr ? polylineFor(secondaryArr) : "";
 
+      const title = primaryName
+        ? `指标曲线：${primaryName}${secondaryName ? " / " + secondaryName : ""}`
+        : "指标曲线";
       runChart.innerHTML = `
         <div style="width:100%;display:grid;gap:12px;">
-          <div style="font-weight:900;">收敛曲线（示例）</div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+            <div style="font-weight:900;">${title}</div>
+            <div style="font-size:12px;color:var(--muted);">
+              <span style="display:inline-block;width:10px;height:10px;background:#2563eb;border-radius:3px;margin-right:6px;"></span>${primaryName || "primary"}
+              ${secondaryName ? `<span style="display:inline-block;width:10px;height:10px;background:#a855f7;border-radius:3px;margin:0 6px 0 12px;"></span>${secondaryName}` : ""}
+            </div>
+          </div>
           <div style="border:1px dashed var(--card-border);border-radius:10px;background:var(--soft-bg);padding:10px;overflow:hidden;">
             <svg viewBox="0 0 ${w} ${h}" width="100%" height="140" preserveAspectRatio="none">
               ${convPts ? `<polyline fill="none" stroke="#2563eb" stroke-width="3" points="${convPts}" />` : ""}
+              ${conv2Pts ? `<polyline fill="none" stroke="#a855f7" stroke-width="3" points="${conv2Pts}" />` : ""}
               <line x1="${pad}" y1="${h - pad}" x2="${w - pad}" y2="${h - pad}" stroke="#cbd5e1" stroke-width="2"/>
               <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${h - pad}" stroke="#cbd5e1" stroke-width="2"/>
             </svg>
@@ -1340,11 +1386,32 @@
       pollRunStatus(server_id);
     }
 
+    async function stopRun() {
+      const server_id = runServer.value;
+      try {
+        btnRunStop.disabled = true;
+        const resp = await fetch(`/api/analysis/stop`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ server_id }),
+        });
+        if (!resp.ok) {
+          appendRunLog([`[ERROR] stop failed: HTTP ${resp.status}`]);
+        } else {
+          const data = await resp.json();
+          appendRunLog([`[WARN] stop requested: ${JSON.stringify(data)}`]);
+        }
+      } catch (e) {
+        appendRunLog([`[ERROR] stop failed: ${e}`]);
+      }
+    }
+
     async function pollRunStatus(server_id) {
       const resp = await fetch(`/api/analysis/status?server_id=${encodeURIComponent(server_id)}&timeout_s=10`, { cache: "no-store" });
       if (!resp.ok) return;
       const st = await resp.json();
       runState.textContent = st.state || "unknown";
+      btnRunStop.disabled = !(st.state === "running");
       const p = Number(st.progress || 0);
       runProgress.style.width = `${Math.max(0, Math.min(100, p))}%`;
       runProgressText.textContent = `${Math.max(0, Math.min(100, p))}%`;
@@ -1387,6 +1454,7 @@
     }
 
     btnRun?.addEventListener("click", startRun);
+    btnRunStop?.addEventListener("click", stopRun);
 
     // Boot
     setInterval(refreshAll, 2000);

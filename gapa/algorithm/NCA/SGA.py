@@ -5,6 +5,7 @@ import torch.distributed as dist
 import numpy as np
 import pandas as pd
 from copy import deepcopy
+from typing import Any
 from tqdm import tqdm
 from time import time
 from gapa.framework.body import Body
@@ -151,6 +152,26 @@ class SGAController(BasicController):
         self.test_index = None
         self.labels = None
         self.homophily_decrease_score = None
+        self.observer = None
+
+    def _emit_observer(self, generation: int, max_generation: int, payload: Any) -> None:
+        obs = self.observer
+        if obs is None:
+            return
+        if callable(obs):
+            obs(generation, max_generation, payload)
+            return
+        if isinstance(obs, dict) and obs.get("type") == "jsonl" and obs.get("path"):
+            try:
+                import json
+
+                with open(obs["path"], "a", encoding="utf-8") as f:
+                    if isinstance(payload, dict):
+                        f.write(json.dumps({"generation": generation, "max_generation": max_generation, "metrics": payload}) + "\n")
+                    else:
+                        f.write(json.dumps({"generation": generation, "max_generation": max_generation, "best_fitness": payload}) + "\n")
+            except Exception:
+                pass
 
     def setup(self, data_loader, evaluator: SGAEvaluator, W, edge_list=None):
         copy_graph = data_loader.G.copy()
@@ -403,6 +424,10 @@ class SGAAlgorithm:
             attack_acc, asr = self.test()
             best_acc.append(attack_acc)
             best_asr.append(asr)
+            try:
+                controller._emit_observer(added_node + 1, n_added, {"Acc": float(attack_acc), "ASR": float(asr)})
+            except Exception:
+                pass
             end = time()
             time_list.append(end-start)
             print(f"Loss: {elite_edge_score.item()}\nAcc: {min(best_acc)}, ASR: {max(best_asr)}")

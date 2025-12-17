@@ -3,6 +3,7 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 import networkx as nx
 from copy import deepcopy
+from typing import Any
 from tqdm import tqdm
 from time import time
 from gapa.framework.body import Body
@@ -63,19 +64,22 @@ class SixDSTController(BasicController):
         self.mode = None
         self.observer = None
 
-    def _emit_observer(self, generation: int, max_generation: int, best_fitness: float) -> None:
+    def _emit_observer(self, generation: int, max_generation: int, payload: Any) -> None:
         obs = self.observer
         if obs is None:
             return
         if callable(obs):
-            obs(generation, max_generation, best_fitness)
+            obs(generation, max_generation, payload)
             return
         if isinstance(obs, dict) and obs.get("type") == "jsonl" and obs.get("path"):
             try:
                 import json
 
                 with open(obs["path"], "a", encoding="utf-8") as f:
-                    f.write(json.dumps({"generation": generation, "max_generation": max_generation, "best_fitness": best_fitness}) + "\n")
+                    if isinstance(payload, dict):
+                        f.write(json.dumps({"generation": generation, "max_generation": max_generation, "metrics": payload}) + "\n")
+                    else:
+                        f.write(json.dumps({"generation": generation, "max_generation": max_generation, "best_fitness": payload}) + "\n")
             except Exception:
                 pass
 
@@ -116,10 +120,6 @@ class SixDSTController(BasicController):
                     # mutation_population = self._remove_repeat(mutation_population)
                     new_fitness_list = evaluator(mutation_population)
                     population, fitness_list = body.elitism(population, mutation_population, fitness_list, new_fitness_list)
-                    try:
-                        self._emit_observer(generation + 1, max_generation, float(torch.min(fitness_list).item()))
-                    except Exception:
-                        pass
                     if generation % 50 == 0 or (generation+1) == max_generation:
                         # population_copy = self._remove_repeat(population.clone())
                         critical_nodes = self.nodes[population[torch.argsort(fitness_list.clone())[0]]]
@@ -128,6 +128,14 @@ class SixDSTController(BasicController):
                         best_genes.append(critical_nodes)
                         end = time()
                         time_list.append(end - start)
+                        try:
+                            self._emit_observer(
+                                generation + 1,
+                                max_generation,
+                                {"PCG": float(best_PCG[-1]), "MCN": float(best_MCN[-1])},
+                            )
+                        except Exception:
+                            pass
                     pbar.set_postfix(fitness=min(fitness_list).item(), PCG=min(best_PCG))
                     pbar.update(1)
             top_index = best_PCG.index(min(best_PCG))
@@ -200,11 +208,6 @@ class SixDSTController(BasicController):
                     top_index = torch.argsort(fitness_list)[:component_size_list[rank]]
                     component_population = population[top_index]
                     component_fitness_list = fitness_list[top_index]
-                    if rank == 0:
-                        try:
-                            self._emit_observer(generation + 1, max_generation, float(torch.min(fitness_list).item()))
-                        except Exception:
-                            pass
                     if generation % 50 == 0 or (generation+1) == max_generation:
                         # component_population = self._remove_repeat(component_population.clone())
                         critical_nodes = nodes[component_population[torch.argsort(component_fitness_list.clone())[0]]]
@@ -213,6 +216,15 @@ class SixDSTController(BasicController):
                         best_genes.append(critical_nodes)
                         end = time()
                         time_list.append(end - start)
+                        if rank == 0:
+                            try:
+                                self._emit_observer(
+                                    generation + 1,
+                                    max_generation,
+                                    {"PCG": float(best_PCG[-1]), "MCN": float(best_MCN[-1])},
+                                )
+                            except Exception:
+                                pass
                     pbar.set_postfix(MCN=min(component_fitness_list).item(), PCG=min(best_PCG))
                     pbar.update(1)
             best_genes = torch.stack(best_genes)

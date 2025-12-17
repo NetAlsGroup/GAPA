@@ -1,18 +1,18 @@
 {
   "by_algorithm": {
-    "CDA-EDA": ["Karate", "Dolphins", "Football", "email-EU-core"],
-    "CGN": ["Karate", "Dolphins", "Football", "email-EU-core"],
-    "QAttack": ["Karate", "Dolphins", "Football", "email-EU-core"],
+    "CDA-EDA": ["karate", "dolphins", "football", "email-EU-core"],
+    "CGN": ["karate", "dolphins", "football", "email-EU-core"],
+    "QAttack": ["karate", "dolphins", "football", "email-EU-core"],
 
-    "TDE": ["Circuit", "A01", "HD500", "Yeast1"],
-    "CutOff": ["Circuit", "A01", "HD500", "Yeast1"],
-    "SixDST": ["Circuit", "A01", "HD500", "Yeast1"],
+    "TDE": ["Circuit", "A01", "humanDiseasome", "yeast1"],
+    "CutOff": ["Circuit", "A01", "humanDiseasome", "yeast1"],
+    "SixDST": ["Circuit", "A01", "humanDiseasome", "yeast1"],
 
-    "GANI": ["chameleon_filtered", "squirrel_filtered", "Cora", "Citeseer"],
-    "NCA-GA": ["chameleon_filtered", "squirrel_filtered", "Cora", "Citeseer"],
+    "GANI": ["chameleon_filtered", "squirrel_filtered", "cora", "citeseer"],
+    "NCA-GA": ["chameleon_filtered", "squirrel_filtered", "cora", "citeseer"],
 
-    "LPA-EDA": ["Dolphins", "HD500", "Jazz", "USAir97"],
-    "LPA-GA": ["Dolphins", "HD500", "Jazz", "USAir97"]
+    "LPA-EDA": ["dolphins", "humanDiseasome", "jazz", "USAir97"],
+    "LPA-GA": ["dolphins", "humanDiseasome", "jazz", "USAir97"]
   }
 }
 

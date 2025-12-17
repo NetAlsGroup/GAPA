@@ -3,6 +3,7 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 import networkx as nx
 from copy import deepcopy
+from typing import Any
 from tqdm import tqdm
 from time import time
 from gapa.framework.body import Body
@@ -108,6 +109,26 @@ class EDAController(BasicController):
         self.edge_num = None
         self.graph = data_loader.G
         self.mode = None
+        self.observer = None
+
+    def _emit_observer(self, generation: int, max_generation: int, payload: Any) -> None:
+        obs = self.observer
+        if obs is None:
+            return
+        if callable(obs):
+            obs(generation, max_generation, payload)
+            return
+        if isinstance(obs, dict) and obs.get("type") == "jsonl" and obs.get("path"):
+            try:
+                import json
+
+                with open(obs["path"], "a", encoding="utf-8") as f:
+                    if isinstance(payload, dict):
+                        f.write(json.dumps({"generation": generation, "max_generation": max_generation, "metrics": payload}) + "\n")
+                    else:
+                        f.write(json.dumps({"generation": generation, "max_generation": max_generation, "best_fitness": payload}) + "\n")
+            except Exception:
+                pass
 
     def setup(self, data_loader, evaluator: EDAEvaluator):
         copy_graph = data_loader.G.copy()
@@ -156,6 +177,14 @@ class EDAController(BasicController):
                         best_genes.append(critical_edges)
                         end = time()
                         time_list.append(end - start)
+                        try:
+                            self._emit_observer(
+                                generation + 1,
+                                max_generation,
+                                {"Q": float(best_Q[-1]), "NMI": float(best_NMI[-1])},
+                            )
+                        except Exception:
+                            pass
                     pbar.set_postfix(fitness=max(fitness_list).item(), Q=min(best_Q), NMI=min(best_NMI))
                     pbar.update(1)
             end = time()
@@ -240,6 +269,15 @@ class EDAController(BasicController):
                         best_genes.append(component_edges)
                         end = time()
                         time_list.append(end - start)
+                        if rank == 0:
+                            try:
+                                self._emit_observer(
+                                    generation + 1,
+                                    max_generation,
+                                    {"Q": float(best_Q[-1]), "NMI": float(best_NMI[-1])},
+                                )
+                            except Exception:
+                                pass
                     pbar.set_postfix(fitness=max(component_fitness_list).item(), Q=min(best_Q), NMI=min(best_NMI))
                     pbar.update(1)
 
@@ -316,9 +354,6 @@ def EDA(mode, max_generation, data_loader, controller: EDAController, evaluator,
         mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, component_size_list), nprocs=world_size, join=True)
     else:
         raise ValueError(f"No such mode. Please choose s, sm, m or mnm.")
-
-
-
 
 
 

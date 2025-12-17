@@ -4,6 +4,7 @@ import torch.distributed as dist
 import numpy as np
 import networkx as nx
 from copy import deepcopy
+from typing import Any
 from itertools import combinations
 from tqdm import tqdm
 from time import time
@@ -315,6 +316,26 @@ class GAController(BasicController):
         self.non_exist_edges_index = None
         self.non_exist_index_len = None
         self.all_edges = None
+        self.observer = None
+
+    def _emit_observer(self, generation: int, max_generation: int, payload: Any) -> None:
+        obs = self.observer
+        if obs is None:
+            return
+        if callable(obs):
+            obs(generation, max_generation, payload)
+            return
+        if isinstance(obs, dict) and obs.get("type") == "jsonl" and obs.get("path"):
+            try:
+                import json
+
+                with open(obs["path"], "a", encoding="utf-8") as f:
+                    if isinstance(payload, dict):
+                        f.write(json.dumps({"generation": generation, "max_generation": max_generation, "metrics": payload}) + "\n")
+                    else:
+                        f.write(json.dumps({"generation": generation, "max_generation": max_generation, "best_fitness": payload}) + "\n")
+            except Exception:
+                pass
 
     def setup(self, data_loader, evaluator: GAEvaluator):
         ori_G_edges = np.array(data_loader.G.edges())
@@ -420,6 +441,14 @@ class GAController(BasicController):
                         best_genes.append(genes)
                         end = time()
                         time_list.append(end - start)
+                        try:
+                            self._emit_observer(
+                                generation + 1,
+                                max_generation,
+                                {"Pre": float(best_Pre[-1]), "AUC": float(best_AUC[-1])},
+                            )
+                        except Exception:
+                            pass
                     pbar.set_postfix(fitness=max(fitness_list).item(), Pre=min(best_Pre), AUC=min(best_AUC))
                     pbar.update(1)
 
@@ -520,6 +549,15 @@ class GAController(BasicController):
                         best_genes.append(genes)
                         end = time()
                         time_list.append(end - start)
+                        if rank == 0:
+                            try:
+                                self._emit_observer(
+                                    generation + 1,
+                                    max_generation,
+                                    {"Pre": float(best_Pre[-1]), "AUC": float(best_AUC[-1])},
+                                )
+                            except Exception:
+                                pass
                     pbar.set_postfix(fitness=max(component_fitness_list).item(), Pre=min(best_Pre), AUC=min(best_AUC))
                     pbar.update(1)
             best_genes = torch.stack(best_genes)
@@ -644,9 +682,6 @@ def LPA_GA(mode, max_generation, data_loader, controller: GAController, evaluato
         mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, component_size_list), nprocs=world_size, join=True)
     else:
         raise ValueError(f"No such mode. Please choose s, sm, m or mnm.")
-
-
-
 
 
 
