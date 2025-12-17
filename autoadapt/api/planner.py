@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Callable, Optional, Tuple, Dict, Any
+from typing import Callable, Optional, Tuple, Dict, Any, List
 
 import time
 from .schemas import Plan
@@ -65,3 +65,171 @@ def StrategyPlan(
         plan = router.route(wl, objective=objective, multi_gpu=multi_gpu)
 
     return plan
+
+
+def StrategyCompare(
+    objective: str = "time",
+    multi_gpu: bool = True,
+    warmup_iters: int = 0,
+) -> Dict[str, Any]:
+    """Return best plan and key candidates for explaining the decision in UI."""
+    prof = PerformanceProfiler(quick=True).profile()
+    router = StrategyRouter(prof)
+
+    class _SyntheticWL:
+        n_nodes = 50_000
+        n_edges = 5_000_000
+        steps = 50
+        batch_individuals = 1
+
+    wl = _SyntheticWL()
+    candidates = router._candidates(wl, objective, multi_gpu, power_cap_w=None)  # type: ignore[attr-defined]
+    items = []
+    for tag, plan in candidates:
+        items.append({"tag": tag, "plan": plan.to_dict()})
+    # Use public route() for best selection (same behavior, includes calibration handling)
+    best_plan = router.route(wl, objective=objective, multi_gpu=multi_gpu, power_cap_w=None)
+
+    measured: Dict[str, Any] = {}
+    warmup_iters = int(warmup_iters or 0)
+    if warmup_iters > 0:
+        measured = _warmup_benchmark(candidates, warmup_iters)
+
+    return {
+        "best": best_plan.to_dict(),
+        "candidates": items,
+        "profile": {"has_cuda": getattr(prof.device, "has_cuda", False), "gpus": prof.device.gpus},
+        "warmup": measured,
+    }
+
+
+def _warmup_benchmark(candidates: List[tuple], iters: int) -> Dict[str, Any]:
+    """Measure real latency curves for CPU vs GPU candidates (best-effort).
+
+    Returns:
+      {
+        "series": [{"label": "CPU", "ms": [...]}, {"label": "GPU(0)", "ms":[...]}, {"label":"Multi-GPU(3)","ms":[...]}],
+        "avg_ms": {"CPU": 12.3, "GPU(0)": 3.4}
+      }
+    """
+    try:
+        import torch
+    except Exception:
+        return {"error": "torch not available"}
+
+    def _sync(device: str) -> None:
+        if device.startswith("cuda"):
+            torch.cuda.synchronize()
+
+    def _prepare_mats(device: str):
+        # Use GEMM for robust cross-platform timing; sparse CUDA support can vary by build.
+        n = 1024 if device == "cpu" else 2048
+        a = torch.randn((n, n), device=device)
+        b = torch.randn((n, n), device=device)
+        return a, b
+
+    def _run_once(a, b) -> None:
+        y = a @ b
+        y = y.relu_()
+        _ = float(y[0, 0].item())
+
+    def measure_cpu() -> Optional[List[float]]:
+        device = "cpu"
+        a, b = _prepare_mats(device)
+        ms: List[float] = []
+        for _ in range(iters):
+            start = time.perf_counter()
+            _run_once(a, b)
+            ms.append((time.perf_counter() - start) * 1000.0)
+        return ms
+
+    def measure_single_gpu(label: str) -> Optional[List[float]]:
+        if not torch.cuda.is_available():
+            return None
+        device = "cuda:0"
+        a, b = _prepare_mats(device)
+        ms: List[float] = []
+        for _ in range(iters):
+            _sync(device)
+            start = time.perf_counter()
+            _run_once(a, b)
+            _sync(device)
+            ms.append((time.perf_counter() - start) * 1000.0)
+        return ms
+
+    def measure_multi_gpu(num_devices: int) -> Optional[List[float]]:
+        if not torch.cuda.is_available():
+            return None
+        num_devices = max(2, int(num_devices))
+        mats = []
+        for i in range(num_devices):
+            dev = f"cuda:{i}"
+            mats.append((dev, *_prepare_mats(dev)))
+
+        import threading
+
+        ms: List[float] = []
+        for _ in range(iters):
+            for dev, *_ in mats:
+                _sync(dev)
+            start = time.perf_counter()
+
+            threads = []
+            for dev, a, b in mats:
+                t = threading.Thread(target=_run_once, args=(a, b), daemon=True)
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
+
+            for dev, *_ in mats:
+                _sync(dev)
+            ms.append((time.perf_counter() - start) * 1000.0)
+        return ms
+
+    series: List[Dict[str, Any]] = []
+    avg_ms: Dict[str, float] = {}
+    errors: List[str] = []
+
+    # Pick CPU + best single GPU candidates only (clear CPU vs GPU comparison).
+    cpu_plan = next((p for _tag, p in candidates if isinstance(p, Plan) and p.backend == "cpu"), None)
+    gpu_plan = next((p for _tag, p in candidates if isinstance(p, Plan) and p.backend == "cuda"), None)
+    mgpu_plan = next((p for _tag, p in candidates if isinstance(p, Plan) and p.backend == "multi-gpu"), None)
+
+    if cpu_plan is not None:
+        try:
+            ms = measure_cpu()
+            if ms:
+                series.append({"label": "CPU", "ms": ms})
+                avg_ms["CPU"] = sum(ms) / max(1, len(ms))
+        except Exception as exc:
+            errors.append(f"cpu: {exc}")
+
+    if gpu_plan is not None:
+        idx = (gpu_plan.devices[0] if gpu_plan.devices else 0)
+        label = f"GPU({idx})"
+        try:
+            apply_plan_env(gpu_plan)
+            ms = measure_single_gpu(label)
+            if ms:
+                series.append({"label": label, "ms": ms})
+                avg_ms[label] = sum(ms) / max(1, len(ms))
+        except Exception as exc:
+            errors.append(f"gpu: {exc}")
+
+    if mgpu_plan is not None:
+        try:
+            apply_plan_env(mgpu_plan)
+            n = len(mgpu_plan.devices) if mgpu_plan.devices else int(mgpu_plan.world_size or 2)
+            ms = measure_multi_gpu(n)
+            label = f"Multi-GPU({n})"
+            if ms:
+                series.append({"label": label, "ms": ms})
+                avg_ms[label] = sum(ms) / max(1, len(ms))
+        except Exception as exc:
+            errors.append(f"multi-gpu: {exc}")
+
+    if not series:
+        return {"error": "no measurable candidates", "details": errors}
+
+    return {"series": series, "avg_ms": avg_ms, "iters": iters, "errors": errors}

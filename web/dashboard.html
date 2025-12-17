@@ -221,16 +221,14 @@
 
     .ga-panel {
       margin-top: 12px;
-      height: 340px;
+      min-height: 420px;
       border: 1px dashed var(--card-border);
       border-radius: 8px;
       background: var(--soft-bg);
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      display: block;
       color: var(--muted);
-      text-align: center;
       padding: 16px;
+      overflow: auto;
     }
 
     /* Modal */
@@ -274,6 +272,21 @@
       .card-top { flex-direction: column; }
       .card-left { width: auto; flex: 0 0 auto; }
     }
+
+    /* Algo run UI */
+    .kv { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+    .kv-item { border: 1px solid var(--card-border); background: #fff; border-radius: 10px; padding: 10px; }
+    .kv-label { font-size: 11px; color: var(--muted); font-weight: 800; }
+    .kv-value { margin-top: 4px; font-size: 13px; font-weight: 900; }
+    .progress { margin-top: 10px; height: 10px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
+    .progress-bar { height: 100%; width: 0%; background: var(--blue-600); }
+    .split { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 12px; }
+    @media (min-width: 1024px) { .split { grid-template-columns: 1fr 1fr; } }
+    .history-list { display: grid; gap: 10px; margin-top: 12px; }
+    .history-item { border: 1px solid var(--card-border); background: #fff; border-radius: 10px; padding: 10px; cursor: pointer; }
+    .history-item:hover { border-color: #bfdbfe; box-shadow: 0 6px 18px rgba(15,23,42,.06); }
+    .history-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+    .history-actions { display: flex; gap: 8px; margin-top: 10px; }
   </style>
 </head>
 <body>
@@ -294,6 +307,7 @@
       <button class="nav-item" data-view="eval"><span>服务器测试评估</span><span class="nav-badge">2</span></button>
       <button class="nav-item" data-view="algo"><span>算法运行与监控</span><span class="nav-badge">3</span></button>
       <button class="nav-item" data-view="config"><span>配置修改</span><span class="nav-badge">4</span></button>
+      <button class="nav-item" data-view="history"><span>历史记录</span><span class="nav-badge">H</span></button>
       <div class="nav-title">提示</div>
       <div style="font-size:12px;color:var(--muted);padding:0 10px 10px;">
         资源卡片点击展开详情；详情区域支持滚动。
@@ -365,10 +379,93 @@
         <section class="section">
           <div class="section-header">
             <div class="section-title">算法运行与监控</div>
-            <div style="font-size:12px;color:var(--muted);">预留：接入 server_agent 的 /api/analysis/*</div>
+            <div style="font-size:12px;color:var(--muted);">提交任务 · 轮询状态 · 日志/结果可视化</div>
           </div>
-          <div class="ga-panel" style="height:260px;">
-            等待接入：算法提交、运行状态、日志与结果可视化。
+          <div class="split">
+            <div>
+              <div class="form">
+                <div>
+                  <label>选择服务器</label>
+                  <select id="run-server"></select>
+                </div>
+                <div>
+                  <label>选择算法</label>
+                  <select id="run-algo"></select>
+                </div>
+                <div>
+                  <label>选择数据集</label>
+                  <select id="run-dataset"></select>
+                </div>
+                <div>
+                  <label>运行模式</label>
+                  <select id="run-mode">
+                    <option value="AUTO">默认（使用资源评估结果）</option>
+                    <option value="CPU">CPU</option>
+                    <option value="S">S（单卡）</option>
+                    <option value="SM">SM（单卡加速）</option>
+                    <option value="M">M（多卡）</option>
+                    <option value="MNM" disabled>MNM（多机多卡 Coming Soon）</option>
+                  </select>
+                </div>
+                <div id="run-gpu-single-wrap" class="hidden">
+                  <label>选择显卡（单选）</label>
+                  <select id="run-gpu-single"></select>
+                </div>
+                <div id="run-gpu-multi-wrap" class="hidden">
+                  <label>选择显卡（多选）</label>
+                  <div id="run-gpu-multi" style="display:grid;gap:8px;"></div>
+                </div>
+                <div>
+                  <label>迭代次数</label>
+                  <input id="run-iters" type="number" min="1" value="20" />
+                </div>
+                <div class="row-2">
+                  <div>
+                    <label>交叉率 (pc)</label>
+                    <input id="run-pc" type="number" min="0" max="1" step="0.01" value="0.80" />
+                  </div>
+                  <div>
+                    <label>变异率 (pm)</label>
+                    <input id="run-pm" type="number" min="0" max="1" step="0.01" value="0.20" />
+                  </div>
+                </div>
+                <button id="btn-run" class="btn btn-primary" style="width:100%;">提交运行</button>
+              </div>
+
+              <div class="kv">
+                <div class="kv-item">
+                  <div class="kv-label">状态</div>
+                  <div id="run-state" class="kv-value">idle</div>
+                </div>
+                <div class="kv-item">
+                  <div class="kv-label">任务ID</div>
+                  <div id="run-taskid" class="kv-value">-</div>
+                </div>
+              </div>
+              <div class="kv">
+                <div class="kv-item">
+                  <div class="kv-label">进度</div>
+                  <div id="run-progress-text" class="kv-value">0%</div>
+                  <div class="progress"><div id="run-progress" class="progress-bar"></div></div>
+                </div>
+                <div class="kv-item">
+                  <div class="kv-label">最优值</div>
+                  <div id="run-best" class="kv-value">-</div>
+                </div>
+              </div>
+            </div>
+
+            <div>
+              <div class="log-head" style="margin-top:0;">
+                <div class="log-title">实时日志</div>
+                <button id="btn-run-clear" class="log-clear">清空</button>
+              </div>
+              <div id="run-log" class="log-box" style="max-height:260px;">等待任务…</div>
+              <div style="margin-top:12px;">
+                <div class="log-title">结果可视化</div>
+                <div id="run-chart" class="ga-panel" style="min-height:260px;">等待数据...</div>
+              </div>
+            </div>
           </div>
         </section>
       </div>
@@ -384,6 +481,23 @@
           </div>
           <div style="margin-top:12px;color:var(--muted);font-size:13px;line-height:1.6;">
             这里用于维护服务器节点配置（新增/编辑/移除）。当前版本：前端临时添加卡片节点（刷新页面后不持久化）。
+          </div>
+        </section>
+      </div>
+
+      <!-- View 5: History -->
+      <div class="view" id="view-history">
+        <section class="section">
+          <div class="section-header">
+            <div class="section-title">历史记录</div>
+            <div class="history-actions">
+              <button id="btn-history-clear" class="btn btn-secondary">清空历史</button>
+            </div>
+          </div>
+          <div id="history-list" class="history-list"></div>
+          <div style="margin-top:12px;">
+            <div class="log-title">记录详情</div>
+            <div id="history-detail" class="log-box" style="max-height:320px;">选择一条记录查看日志与指标。</div>
           </div>
         </section>
       </div>
@@ -460,6 +574,39 @@
     const sources = [{ id: "local", base: "", label: "本机", expanded: true, meta: { type: "local" } }];
     const snapshots = new Map();
 
+    // Algo run DOM
+    const runServer = document.getElementById("run-server");
+    const runAlgo = document.getElementById("run-algo");
+    const runDataset = document.getElementById("run-dataset");
+    const runMode = document.getElementById("run-mode");
+    const runGpuSingleWrap = document.getElementById("run-gpu-single-wrap");
+    const runGpuSingle = document.getElementById("run-gpu-single");
+    const runGpuMultiWrap = document.getElementById("run-gpu-multi-wrap");
+    const runGpuMulti = document.getElementById("run-gpu-multi");
+    const runIters = document.getElementById("run-iters");
+    const runPc = document.getElementById("run-pc");
+    const runPm = document.getElementById("run-pm");
+    const btnRun = document.getElementById("btn-run");
+    const runState = document.getElementById("run-state");
+    const runTaskId = document.getElementById("run-taskid");
+    const runProgress = document.getElementById("run-progress");
+    const runProgressText = document.getElementById("run-progress-text");
+    const runBest = document.getElementById("run-best");
+    const runLog = document.getElementById("run-log");
+    const runChart = document.getElementById("run-chart");
+    const btnRunClear = document.getElementById("btn-run-clear");
+
+    // History DOM
+    const historyList = document.getElementById("history-list");
+    const historyDetail = document.getElementById("history-detail");
+    const btnHistoryClear = document.getElementById("btn-history-clear");
+
+    const HISTORY_KEY = "gapa_history_v1";
+    const PLAN_KEY = "gapa_saved_plans_v1";
+    let datasetsManifest = null;
+    let currentPoll = null;
+    let lastLogCount = 0;
+
     function fmt(val, unit = "", fallback = "N/A") {
       return val == null ? fallback : `${val}${unit}`;
     }
@@ -503,7 +650,83 @@
       const current = serverSelect.value;
       serverSelect.innerHTML = sources.map((s) => `<option value="${s.id}">${s.label}</option>`).join("");
       serverSelect.value = sources.some((s) => s.id === current) ? current : "local";
+      if (runServer) {
+        const cur2 = runServer.value;
+        runServer.innerHTML = sources.map((s) => `<option value="${s.id}">${s.label}</option>`).join("");
+        runServer.value = sources.some((s) => s.id === cur2) ? cur2 : "local";
+        updateRunGpuOptions();
+      }
     }
+
+    function plansLoad() {
+      try { return JSON.parse(localStorage.getItem(PLAN_KEY) || "{}") || {}; } catch (e) { return {}; }
+    }
+    function plansSave(obj) {
+      try { localStorage.setItem(PLAN_KEY, JSON.stringify(obj)); } catch (e) {}
+    }
+    function getSavedPlan(server_id) {
+      const all = plansLoad();
+      return all[server_id] || null;
+    }
+    function setSavedPlan(server_id, plan) {
+      const all = plansLoad();
+      all[server_id] = { plan, saved_at: new Date().toLocaleString() };
+      plansSave(all);
+    }
+
+    function updateRunGpuOptions() {
+      if (!runServer) return;
+      const sid = runServer.value;
+      const snap = snapshots.get(sid) || {};
+      const gpus = Array.isArray(snap.gpus) ? snap.gpus : [];
+      const options = gpus.map((g) => ({ id: g.id, name: g.name || `GPU ${g.id}` }));
+
+      if (runGpuSingle) {
+        runGpuSingle.innerHTML = options.map((o) => `<option value="${o.id}">${o.name} (#${o.id})</option>`).join("");
+      }
+      if (runGpuMulti) {
+        runGpuMulti.innerHTML = options
+          .map((o) => {
+            return `
+              <label style="display:flex;gap:10px;align-items:center;border:1px solid var(--card-border);border-radius:10px;padding:8px;background:#fff;">
+                <input type="checkbox" class="run-gpu-check" value="${o.id}" />
+                <span style="font-weight:900;">${o.name}</span>
+                <span style="color:var(--muted);font-size:12px;">#${o.id}</span>
+              </label>
+            `;
+          })
+          .join("");
+      }
+
+      // Apply default selection from saved plan for AUTO
+      const saved = getSavedPlan(sid);
+      if (saved && saved.plan && Array.isArray(saved.plan.devices) && saved.plan.devices.length) {
+        const devs = saved.plan.devices.map((x) => Number(x));
+        if (runGpuSingle && devs.length) runGpuSingle.value = String(devs[0]);
+        if (runGpuMulti) {
+          runGpuMulti.querySelectorAll(".run-gpu-check").forEach((el) => {
+            el.checked = devs.includes(Number(el.value));
+          });
+        }
+      }
+    }
+
+    function updateRunModeVisibility() {
+      const mode = (runMode?.value || "AUTO").toUpperCase();
+      const sid = runServer?.value;
+      const snap = snapshots.get(sid) || {};
+      const hasGpu = Array.isArray(snap.gpus) && snap.gpus.length > 0;
+
+      const single = mode === "S" || mode === "SM";
+      const multi = mode === "M" || mode === "MNM";
+      runGpuSingleWrap?.classList.toggle("hidden", !(single && hasGpu));
+      runGpuMultiWrap?.classList.toggle("hidden", !(multi && hasGpu));
+    }
+    runMode?.addEventListener("change", updateRunModeVisibility);
+    runServer?.addEventListener("change", () => {
+      updateRunGpuOptions();
+      updateRunModeVisibility();
+    });
 
     btnAdd.addEventListener("click", () => {
       const ip = document.getElementById("modal-ip").value.trim();
@@ -567,9 +790,41 @@
             return `<option value="${o.id}" data-kind="${kind}" ${disabled}>${label}</option>`;
           })
           .join("");
+        if (runAlgo) {
+          const runOpts = opts.filter((o) => o.id !== "monitor");
+          runAlgo.innerHTML = runOpts
+            .map((o) => {
+              const disabled = o.disabled ? "disabled" : "";
+              const label = o.name || o.id;
+              return `<option value="${o.id}" ${disabled}>${label}</option>`;
+            })
+            .join("");
+        }
       } catch (e) {
         console.warn("load algorithms failed", e);
       }
+    }
+
+    async function loadDatasets() {
+      try {
+        const res = await fetch("/api/datasets", { cache: "no-store" });
+        if (!res.ok) return;
+        datasetsManifest = await res.json();
+      } catch (e) {
+        datasetsManifest = null;
+      }
+    }
+
+    function updateRunDatasetOptions() {
+      if (!runDataset) return;
+      const algo = runAlgo?.value;
+      const byAlgo = datasetsManifest?.by_algorithm || {};
+      const list = Array.isArray(byAlgo?.[algo]) ? byAlgo[algo] : [];
+      if (!list.length) {
+        runDataset.innerHTML = `<option value="">(该算法暂无数据集清单)</option>`;
+        return;
+      }
+      runDataset.innerHTML = list.map((d) => `<option value="${d}">${d}</option>`).join("");
     }
 
     algoSelect.addEventListener("change", () => {
@@ -577,6 +832,8 @@
       const kind = sel?.dataset?.kind || (algoSelect.value === "monitor" ? "monitor" : "ga");
       warmupWrap.classList.toggle("hidden", kind === "monitor");
     });
+
+    runAlgo?.addEventListener("change", updateRunDatasetOptions);
 
     async function fetchFrom(source) {
       try {
@@ -692,6 +949,123 @@
       const warmup = Math.max(0, Number(warmupInput.value || 0));
       const isMonitor = algo === "monitor";
 
+      let panelPinned = false;
+      function renderComparison(compare) {
+        if (!compare || !Array.isArray(compare.candidates)) return;
+        panelPinned = true;
+        const best = compare.best || {};
+        const items = compare.candidates
+          .map((c) => c?.plan)
+          .filter((p) => p && typeof p.estimated_time_ms === "number");
+        if (!items.length) return;
+
+        const maxMs = Math.max(...items.map((p) => p.estimated_time_ms || 0), 1);
+        const rows = compare.candidates
+          .map((c) => {
+            const p = c.plan || {};
+            const ms = typeof p.estimated_time_ms === "number" ? p.estimated_time_ms : null;
+            if (ms == null) return null;
+            let label = c.tag || p.backend || "plan";
+            if (p.backend === "cpu") label = "CPU";
+            if (p.backend === "cuda") label = `GPU(${(p.devices || [])[0] ?? "-"})`;
+            if (p.backend === "multi-gpu") label = `Multi-GPU(${(p.devices || []).length})`;
+            const pct = Math.max(2, Math.round((ms / maxMs) * 100));
+            const isBest = (p.backend === best.backend) && JSON.stringify(p.devices || []) === JSON.stringify(best.devices || []);
+            const speedup = ms > 0 && best.estimated_time_ms ? (ms / best.estimated_time_ms) : null;
+            return { label, ms, pct, isBest, speedup };
+          })
+          .filter(Boolean);
+
+        const bestMs = typeof best.estimated_time_ms === "number" ? best.estimated_time_ms : null;
+        const bestLabel = best.backend === "cpu"
+          ? "CPU"
+          : best.backend === "cuda"
+            ? `GPU(${(best.devices || [])[0] ?? "-"})`
+            : best.backend === "multi-gpu"
+              ? `Multi-GPU(${(best.devices || []).length})`
+              : (best.backend || "best");
+
+        const barsHtml = rows
+          .map((r) => {
+            const color = r.isBest ? "#2563eb" : "#94a3b8";
+            const border = r.isBest ? "1px solid #bfdbfe" : "1px solid #e2e8f0";
+            const bg = r.isBest ? "#eff6ff" : "#f8fafc";
+            const hint = r.isBest ? "最优" : (bestMs ? `慢 ${(r.ms / bestMs).toFixed(2)}×` : "");
+            return `
+              <div style="display:grid;gap:6px;padding:10px;border-radius:10px;background:${bg};border:${border};">
+                <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                  <div style="font-weight:900;">${r.label}</div>
+                  <div style="font-size:12px;color:var(--muted);white-space:nowrap;">${r.ms.toFixed(2)} ms ${hint ? `· ${hint}` : ""}</div>
+                </div>
+                <div style="height:10px;background:#e2e8f0;border-radius:999px;overflow:hidden;">
+                  <div style="width:${r.pct}%;height:100%;background:${color};"></div>
+                </div>
+              </div>
+            `;
+          })
+          .join("");
+
+        // Real warmup curves (ms) if provided
+        const warm = compare.warmup || {};
+        const series = Array.isArray(warm.series) ? warm.series : [];
+        const w = 520, h = 140, pad = 18;
+        function polylineFor(ms) {
+          if (!ms || ms.length < 2) return "";
+          const minV = Math.min(...ms);
+          const maxV = Math.max(...ms);
+          return ms
+            .map((y, i) => {
+              const x = pad + (i / (ms.length - 1)) * (w - pad * 2);
+              const yy = pad + (1 - (y - minV) / Math.max(1e-9, (maxV - minV))) * (h - pad * 2);
+              return `${x.toFixed(1)},${yy.toFixed(1)}`;
+            })
+            .join(" ");
+        }
+
+        const cpuSeries = series.find((s) => (s.label || "").toUpperCase() === "CPU");
+        const gpuSeries = series.find((s) => (s.label || "").toUpperCase().startsWith("GPU"));
+        const mgpuSeries = series.find((s) => (s.label || "").toUpperCase().startsWith("MULTI-GPU"));
+        const cpuPts = cpuSeries ? polylineFor(cpuSeries.ms) : "";
+        const gpuPts = gpuSeries ? polylineFor(gpuSeries.ms) : "";
+        const mgpuPts = mgpuSeries ? polylineFor(mgpuSeries.ms) : "";
+        const curveLegend = cpuSeries || gpuSeries
+          ? `
+            <div style="display:flex;gap:10px;align-items:center;font-size:12px;color:var(--muted);">
+              ${cpuSeries ? `<span><span style="display:inline-block;width:10px;height:10px;background:#2563eb;border-radius:3px;margin-right:6px;"></span>CPU</span>` : ""}
+              ${gpuSeries ? `<span><span style="display:inline-block;width:10px;height:10px;background:#16a34a;border-radius:3px;margin-right:6px;"></span>${gpuSeries.label}</span>` : ""}
+              ${mgpuSeries ? `<span><span style="display:inline-block;width:10px;height:10px;background:#f59e0b;border-radius:3px;margin-right:6px;"></span>${mgpuSeries.label}</span>` : ""}
+            </div>
+          `
+          : `<div style="font-size:12px;color:var(--muted);">未提供 warmup 实测曲线（可能远程缺少 torch/cuda）。</div>`;
+
+        gaPanel.innerHTML = `
+          <div style="width:100%;display:grid;gap:12px;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+              <div style="font-weight:900;">为什么选择该方案</div>
+              <div style="font-size:12px;color:var(--muted);">最优：${bestLabel}${bestMs != null ? ` · ${bestMs.toFixed(2)} ms` : ""}</div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr;gap:10px;">
+              ${barsHtml}
+            </div>
+            <div style="display:grid;gap:8px;">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+                <div style="font-weight:900;">Warmup 实测耗时曲线（CPU vs GPU）</div>
+                ${curveLegend}
+              </div>
+              <div style="border:1px dashed var(--card-border);border-radius:10px;background:var(--soft-bg);padding:10px;overflow:hidden;">
+                <svg viewBox="0 0 ${w} ${h}" width="100%" height="140" preserveAspectRatio="none">
+                  ${cpuPts ? `<polyline fill="none" stroke="#2563eb" stroke-width="3" points="${cpuPts}" />` : ""}
+                  ${gpuPts ? `<polyline fill="none" stroke="#16a34a" stroke-width="3" points="${gpuPts}" />` : ""}
+                  ${mgpuPts ? `<polyline fill="none" stroke="#f59e0b" stroke-width="3" points="${mgpuPts}" />` : ""}
+                  <line x1="${pad}" y1="${h - pad}" x2="${w - pad}" y2="${h - pad}" stroke="#cbd5e1" stroke-width="2"/>
+                  <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${h - pad}" stroke="#cbd5e1" stroke-width="2"/>
+                </svg>
+              </div>
+            </div>
+          </div>
+        `;
+      }
+
       if (isMonitor) {
         log(`开始静态资源分析：${src.label}`);
       } else {
@@ -727,6 +1101,8 @@
         log(`StrategyPlan 结果：backend=${plan.backend} devices=${(plan.devices || []).join(",") || "-"} world_size=${plan.world_size || 1}`);
         if (plan.estimated_time_ms != null) log(`估计耗时：${plan.estimated_time_ms.toFixed(3)} ms`);
         if (plan.reason) log(`原因：${plan.reason}`);
+        // Persist best plan per server for default run mode (AUTO)
+        try { setSavedPlan(sid, plan); } catch (e) {}
       } else {
         log(`StrategyPlan 未获取到结果，使用默认策略。`);
       }
@@ -744,6 +1120,25 @@
         return;
       }
 
+      // Fetch candidate comparison and render explanation chart
+      try {
+        const resp = await fetch("/api/strategy_compare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ server_id: sid, objective: "time", multi_gpu: true, warmup_iters: Math.max(2, Math.min(8, warmup || 4)), timeout_s: 60 }),
+        });
+        if (resp.ok) {
+          const compare = await resp.json();
+          renderComparison(compare);
+        } else {
+          let errBody = null;
+          try { errBody = await resp.json(); } catch (e) { errBody = { raw: await resp.text() }; }
+          log(`StrategyCompare 失败：HTTP ${resp.status} ${JSON.stringify(errBody)}`);
+        }
+      } catch (e) {
+        log(`StrategyCompare 异常：${e}`);
+      }
+
       // Simulated GA flow (warmup + analysis)
       setTimeout(() => log("正在初始化算法..."), 200);
       setTimeout(() => log(`执行 Warm up (${warmup} 次)...`), 700);
@@ -751,21 +1146,257 @@
 
       setTimeout(() => {
         log("分析完成，生成模拟结果。");
-        gaPanel.innerHTML = `
-          <div>
-            <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">模拟收敛曲线/资源分配图</div>
-            <div style="font-size:20px;font-weight:900;color:var(--blue-700);">Best Plan: ${algo}</div>
-            ${plan ? `<div style="font-size:12px;color:var(--muted);margin-top:6px;">backend=${plan.backend}, world_size=${plan.world_size || 1}</div>` : ""}
-          </div>`;
+        if (!panelPinned) {
+          gaPanel.innerHTML = `
+            <div>
+              <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">等待图表数据...</div>
+              <div style="font-size:20px;font-weight:900;color:var(--blue-700);">Best Plan: ${algo}</div>
+              ${plan ? `<div style="font-size:12px;color:var(--muted);margin-top:6px;">backend=${plan.backend}, world_size=${plan.world_size || 1}</div>` : ""}
+            </div>`;
+        }
       }, 2000);
     });
+
+    // ---------- Module 3: run & monitor ----------
+    function historyLoad() {
+      try {
+        return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]") || [];
+      } catch (e) {
+        return [];
+      }
+    }
+    function historySave(items) {
+      try {
+        localStorage.setItem(HISTORY_KEY, JSON.stringify(items.slice(0, 50)));
+      } catch (e) {}
+    }
+    function historyRender() {
+      const items = historyLoad();
+      if (!items.length) {
+        historyList.innerHTML = `<div style="color:var(--muted);font-size:13px;">暂无历史记录。</div>`;
+        return;
+      }
+      historyList.innerHTML = items
+        .map((it, idx) => {
+          return `
+            <div class="history-item" data-idx="${idx}">
+              <div style="font-weight:900;">${it.algorithm} · ${it.server_label || it.server_id}</div>
+              <div class="history-meta">${it.timestamp} · state=${it.state} · best=${it.best_score ?? "-"}</div>
+            </div>
+          `;
+        })
+        .join("");
+      historyList.querySelectorAll(".history-item").forEach((el) => {
+        el.addEventListener("click", () => {
+          const idx = Number(el.dataset.idx);
+          const it = historyLoad()[idx];
+          if (!it) return;
+          historyDetail.textContent = [
+            `# ${it.algorithm} @ ${it.server_label || it.server_id}`,
+            `time: ${it.timestamp}`,
+            `state: ${it.state}`,
+            `task_id: ${it.task_id}`,
+            it.best_score != null ? `best_score: ${it.best_score}` : "",
+            "",
+            ...(it.logs || []),
+          ]
+            .filter(Boolean)
+            .join("\n");
+        });
+      });
+    }
+    btnHistoryClear?.addEventListener("click", () => {
+      historySave([]);
+      historyRender();
+      historyDetail.textContent = "历史已清空。";
+    });
+
+    function appendRunLog(lines) {
+      if (!lines || !lines.length) return;
+      if (runLog.textContent.trim() === "等待任务…") runLog.textContent = "";
+      runLog.textContent += lines.join("\n") + "\n";
+      runLog.scrollTop = runLog.scrollHeight;
+    }
+    btnRunClear?.addEventListener("click", () => {
+      runLog.textContent = "";
+      lastLogCount = 0;
+    });
+
+    function renderRunCharts(result) {
+      if (!result) return;
+      const conv = Array.isArray(result.convergence) ? result.convergence : [];
+      const metrics = Array.isArray(result.metrics) ? result.metrics : [];
+      if (!conv.length && !metrics.length) return;
+
+      // convergence polyline
+      const w = 520, h = 140, pad = 18;
+      function polylineFor(arr) {
+        if (!arr || arr.length < 2) return "";
+        const minV = Math.min(...arr);
+        const maxV = Math.max(...arr);
+        return arr
+          .map((y, i) => {
+            const x = pad + (i / (arr.length - 1)) * (w - pad * 2);
+            const yy = pad + (1 - (y - minV) / Math.max(1e-9, maxV - minV)) * (h - pad * 2);
+            return `${x.toFixed(1)},${yy.toFixed(1)}`;
+          })
+          .join(" ");
+      }
+
+      const cpuArr = metrics.map((m) => m.cpu_usage_percent).filter((x) => x != null);
+      const memArr = metrics.map((m) => m.memory_percent).filter((x) => x != null);
+      const cpuPts = polylineFor(cpuArr);
+      const memPts = polylineFor(memArr);
+      const convPts = polylineFor(conv);
+
+      runChart.innerHTML = `
+        <div style="width:100%;display:grid;gap:12px;">
+          <div style="font-weight:900;">收敛曲线（示例）</div>
+          <div style="border:1px dashed var(--card-border);border-radius:10px;background:var(--soft-bg);padding:10px;overflow:hidden;">
+            <svg viewBox="0 0 ${w} ${h}" width="100%" height="140" preserveAspectRatio="none">
+              ${convPts ? `<polyline fill="none" stroke="#2563eb" stroke-width="3" points="${convPts}" />` : ""}
+              <line x1="${pad}" y1="${h - pad}" x2="${w - pad}" y2="${h - pad}" stroke="#cbd5e1" stroke-width="2"/>
+              <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${h - pad}" stroke="#cbd5e1" stroke-width="2"/>
+            </svg>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+            <div style="font-weight:900;">轮次资源监视（每轮采样）</div>
+            <div style="font-size:12px;color:var(--muted);">
+              <span style="display:inline-block;width:10px;height:10px;background:#f59e0b;border-radius:3px;margin-right:6px;"></span>CPU%
+              <span style="display:inline-block;width:10px;height:10px;background:#16a34a;border-radius:3px;margin:0 6px 0 12px;"></span>MEM%
+            </div>
+          </div>
+          <div style="border:1px dashed var(--card-border);border-radius:10px;background:var(--soft-bg);padding:10px;overflow:hidden;">
+            <svg viewBox="0 0 ${w} ${h}" width="100%" height="140" preserveAspectRatio="none">
+              ${cpuPts ? `<polyline fill="none" stroke="#f59e0b" stroke-width="3" points="${cpuPts}" />` : ""}
+              ${memPts ? `<polyline fill="none" stroke="#16a34a" stroke-width="3" points="${memPts}" />` : ""}
+              <line x1="${pad}" y1="${h - pad}" x2="${w - pad}" y2="${h - pad}" stroke="#cbd5e1" stroke-width="2"/>
+              <line x1="${pad}" y1="${pad}" x2="${pad}" y2="${h - pad}" stroke="#cbd5e1" stroke-width="2"/>
+            </svg>
+          </div>
+        </div>
+      `;
+    }
+
+    async function startRun() {
+      const server_id = runServer.value;
+      const algorithm = runAlgo.value;
+      const dataset = runDataset?.value || "";
+      const iterations = Math.max(1, Number(runIters.value || 1));
+      const crossover_rate = Math.min(1, Math.max(0, Number(runPc.value || 0.8)));
+      const mutate_rate = Math.min(1, Math.max(0, Number(runPm.value || 0.2)));
+      const mode = (runMode.value || "AUTO").toUpperCase();
+
+      let devices = [];
+      const snap = snapshots.get(server_id) || {};
+      const hasGpu = Array.isArray(snap.gpus) && snap.gpus.length > 0;
+
+      if (mode === "AUTO") {
+        const saved = getSavedPlan(server_id);
+        if (saved && saved.plan && Array.isArray(saved.plan.devices)) {
+          devices = saved.plan.devices;
+        }
+      } else if (mode === "CPU") {
+        devices = [];
+      } else if ((mode === "S" || mode === "SM") && hasGpu) {
+        devices = [Number(runGpuSingle.value)];
+      } else if ((mode === "M" || mode === "MNM") && hasGpu) {
+        const checked = Array.from(runGpuMulti.querySelectorAll(".run-gpu-check"))
+          .filter((el) => el.checked)
+          .map((el) => Number(el.value));
+        devices = checked;
+      }
+
+      // reset UI
+      runState.textContent = "starting";
+      runTaskId.textContent = "-";
+      runProgress.style.width = "0%";
+      runProgressText.textContent = "0%";
+      runBest.textContent = "-";
+      runChart.textContent = "等待数据...";
+      runLog.textContent = "";
+      lastLogCount = 0;
+
+      const resp = await fetch("/api/analysis/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ server_id, algorithm, dataset, iterations, crossover_rate, mutate_rate, mode, devices, timeout_s: 20 }),
+      });
+      if (!resp.ok) {
+        let errBody = null;
+        try { errBody = await resp.json(); } catch (e) { errBody = { raw: await resp.text() }; }
+        appendRunLog([`[ERROR] start failed: HTTP ${resp.status} ${JSON.stringify(errBody)}`]);
+        runState.textContent = "error";
+        return;
+      }
+      const data = await resp.json();
+      runTaskId.textContent = data.task_id || "-";
+      runState.textContent = data.status || "started";
+      appendRunLog([`[INFO] task started: ${data.task_id}`]);
+
+      // poll status
+      if (currentPoll) clearInterval(currentPoll);
+      currentPoll = setInterval(() => pollRunStatus(server_id), 1200);
+      pollRunStatus(server_id);
+    }
+
+    async function pollRunStatus(server_id) {
+      const resp = await fetch(`/api/analysis/status?server_id=${encodeURIComponent(server_id)}&timeout_s=10`, { cache: "no-store" });
+      if (!resp.ok) return;
+      const st = await resp.json();
+      runState.textContent = st.state || "unknown";
+      const p = Number(st.progress || 0);
+      runProgress.style.width = `${Math.max(0, Math.min(100, p))}%`;
+      runProgressText.textContent = `${Math.max(0, Math.min(100, p))}%`;
+
+      const logs = Array.isArray(st.logs) ? st.logs : [];
+      if (logs.length > lastLogCount) {
+        appendRunLog(logs.slice(lastLogCount));
+        lastLogCount = logs.length;
+      }
+
+      if (st.result) {
+        const best = st.result.best_score;
+        if (best != null) runBest.textContent = String(best);
+        renderRunCharts(st.result);
+      }
+
+      if (st.state === "completed" || st.state === "error" || st.state === "idle") {
+        if (currentPoll) {
+          clearInterval(currentPoll);
+          currentPoll = null;
+        }
+        // persist to history
+        const items = historyLoad();
+        items.unshift({
+          timestamp: new Date().toLocaleString(),
+          server_id,
+          server_label: (sources.find((s) => s.id === server_id) || {}).label,
+          algorithm: runAlgo.value,
+          dataset: runDataset?.value || null,
+          task_id: st.task_id,
+          state: st.state,
+          best_score: st.result ? st.result.best_score : null,
+          hyperparams: st.result ? st.result.hyperparams : null,
+          logs: logs.slice(-500),
+          result: st.result || null,
+        });
+        historySave(items);
+        historyRender();
+      }
+    }
+
+    btnRun?.addEventListener("click", startRun);
 
     // Boot
     setInterval(refreshAll, 2000);
     (async () => {
       await loadAlgorithms();
+      await loadDatasets();
       await loadConfigServers();
       refreshAll();
+      historyRender();
+      updateRunDatasetOptions();
     })();
   </script>
 </body>

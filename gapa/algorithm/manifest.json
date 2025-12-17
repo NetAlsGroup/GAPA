@@ -5,7 +5,9 @@
   {"id": "SixDST", "name": "SixDST", "category": "CND", "kind": "ga"},
   {"id": "CutOff", "name": "CutOff", "category": "CND", "kind": "ga"},
   {"id": "TDE", "name": "TDE", "category": "CND", "kind": "ga"},
+  {"id": "GANI", "name": "GANI", "category": "NCA", "kind": "ga"},
   {"id": "LPA-GA", "name": "LPA-GA", "category": "LPA", "kind": "ga"},
   {"id": "NCA-GA", "name": "NCA-GA", "category": "NCA", "kind": "ga"},
+  {"id": "LPA-EDA", "name": "LPA-EDA", "category": "LPA", "kind": "ga"},
   {"id": "SGA", "name": "SGA", "category": "Misc", "kind": "ga"}
 ]

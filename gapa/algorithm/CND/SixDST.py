@@ -61,6 +61,23 @@ class SixDSTController(BasicController):
         self.nodes = None
         self.nodes_num = None
         self.mode = None
+        self.observer = None
+
+    def _emit_observer(self, generation: int, max_generation: int, best_fitness: float) -> None:
+        obs = self.observer
+        if obs is None:
+            return
+        if callable(obs):
+            obs(generation, max_generation, best_fitness)
+            return
+        if isinstance(obs, dict) and obs.get("type") == "jsonl" and obs.get("path"):
+            try:
+                import json
+
+                with open(obs["path"], "a", encoding="utf-8") as f:
+                    f.write(json.dumps({"generation": generation, "max_generation": max_generation, "best_fitness": best_fitness}) + "\n")
+            except Exception:
+                pass
 
     def setup(self, data_loader, evaluator: SixDSTEvaluator):
         self.nodes = data_loader.nodes
@@ -99,6 +116,10 @@ class SixDSTController(BasicController):
                     # mutation_population = self._remove_repeat(mutation_population)
                     new_fitness_list = evaluator(mutation_population)
                     population, fitness_list = body.elitism(population, mutation_population, fitness_list, new_fitness_list)
+                    try:
+                        self._emit_observer(generation + 1, max_generation, float(torch.min(fitness_list).item()))
+                    except Exception:
+                        pass
                     if generation % 50 == 0 or (generation+1) == max_generation:
                         # population_copy = self._remove_repeat(population.clone())
                         critical_nodes = self.nodes[population[torch.argsort(fitness_list.clone())[0]]]
@@ -179,6 +200,11 @@ class SixDSTController(BasicController):
                     top_index = torch.argsort(fitness_list)[:component_size_list[rank]]
                     component_population = population[top_index]
                     component_fitness_list = fitness_list[top_index]
+                    if rank == 0:
+                        try:
+                            self._emit_observer(generation + 1, max_generation, float(torch.min(fitness_list).item()))
+                        except Exception:
+                            pass
                     if generation % 50 == 0 or (generation+1) == max_generation:
                         # component_population = self._remove_repeat(component_population.clone())
                         critical_nodes = nodes[component_population[torch.argsort(component_fitness_list.clone())[0]]]
@@ -322,4 +348,3 @@ def SixDST(mode, max_generation, data_loader, controller: SixDSTController, eval
         mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, component_size_list), nprocs=world_size, join=True)
     else:
         raise ValueError(f"No such mode. Please choose s, sm, m or mnm.")
-
