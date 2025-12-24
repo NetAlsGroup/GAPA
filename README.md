@@ -109,6 +109,30 @@ or you can choose your way to start an algorithm.
 <br>
 
 <br>
+<h3>
+GAPA Console（资源监控 + 多机适应度加速）
+</h3>
+
+1) 本机启动控制台：
+
+```
+python app.py
+```
+
+2) 在每台远程服务器启动 agent（用于资源上报与适应度计算 RPC）：
+
+```
+uvicorn server_agent:app --host 0.0.0.0 --port 7777
+```
+
+3) 配置 `servers.json` 后，在 Console 的“算法运行与监控”里选择运行模式 `MNM（多机适应度加速）`。
+目前 MNM 分布式适应度计算优先支持 CND 系列算法：`SixDST` / `CutOff` / `TDE`。
+
+可选参数：
+- `GAPA_MNM_MAX_WORKERS`：每次适应度评估最多使用的远程节点数（默认 4）
+- `GAPA_MNM_REFRESH_S`：节点资源与 StrategyPlan 刷新间隔秒数（默认 2.0）
+
+<br>
 We also provide application examples of SixDST and CDA-EDA algorithms on Evotorch and Evox for users‘ reference.
 
 

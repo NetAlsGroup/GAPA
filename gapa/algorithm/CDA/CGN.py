@@ -14,6 +14,7 @@ from gapa.framework.evaluator import BasicEvaluator
 from gapa.utils.functions import Q_Test, Num2Chunks
 from gapa.utils.functions import current_time
 from gapa.utils.functions import init_dist
+from gapa.utils.comm_stats import CommTimer, finalize_comm_stats, timed_call
 from gapa.algorithm.CDA.Genes import Gain_Edge_Set, Generate_Pop
 from gapa.algorithm.CDA.Genes import generate_candidate_edge
 
@@ -206,6 +207,7 @@ class CGNController(BasicController):
 
     def mp_calculate(self, rank, max_generation, evaluator, world_size, component_size_list):
         device = init_dist(rank, world_size)
+        comm_timer = CommTimer()
         best_Q = []
         best_NMI = []
         best_genes = []
@@ -220,8 +222,8 @@ class CGNController(BasicController):
             component_fitness_list = evaluator(component_population).to(device)
             population = [torch.zeros(size=(component_size,) + component_population.shape[1:], dtype=component_population.dtype, device=device) for component_size in component_size_list]
             fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for component_size in component_size_list]
-            dist.all_gather(population, component_population)
-            dist.all_gather(fitness_list, component_fitness_list)
+            timed_call(comm_timer, "all_gather_init_pop", dist.all_gather, population, component_population)
+            timed_call(comm_timer, "all_gather_init_fit", dist.all_gather, fitness_list, component_fitness_list)
 
             population = torch.cat(population)
             fitness_list = torch.cat(fitness_list)
@@ -241,7 +243,7 @@ class CGNController(BasicController):
                         crossover_population = [None for _ in range(world_size)]
 
                     component_crossover_population = [torch.tensor([0])]
-                    dist.scatter_object_list(component_crossover_population, crossover_population, src=0)
+                    timed_call(comm_timer, "scatter_crossover", dist.scatter_object_list, component_crossover_population, crossover_population, src=0)
                     component_crossover_population = component_crossover_population[0].to(device)
                     mutation_population_index = torch.ones(size=(component_size_list[rank], self.budget), device=device)
                     mutation_population = body.mutation(component_crossover_population, mutation_population_index, self.mutate_rate, ONE)
@@ -250,8 +252,8 @@ class CGNController(BasicController):
 
                     elitism_population = [torch.zeros(size=(component_size,) + mutation_population.shape[1:], dtype=mutation_population.dtype, device=device) for component_size in component_size_list]
                     elitism_fitness_list = [torch.empty((component_size,), dtype=new_component_fitness_list.dtype, device=device) for component_size in component_size_list]
-                    dist.all_gather(elitism_population, mutation_population)
-                    dist.all_gather(elitism_fitness_list, new_component_fitness_list)
+                    timed_call(comm_timer, "all_gather_elitism_pop", dist.all_gather, elitism_population, mutation_population)
+                    timed_call(comm_timer, "all_gather_elitism_fit", dist.all_gather, elitism_fitness_list, new_component_fitness_list)
 
                     if rank == 0:
                         elitism_population = torch.cat(elitism_population)
@@ -263,8 +265,8 @@ class CGNController(BasicController):
                         population = torch.zeros(population.shape, dtype=population.dtype, device=device)
                         fitness_list = torch.empty(fitness_list.shape, dtype=fitness_list.dtype, device=device)
 
-                    dist.broadcast(population, src=0)
-                    dist.broadcast(fitness_list, src=0)
+                    timed_call(comm_timer, "broadcast_pop", dist.broadcast, population, src=0)
+                    timed_call(comm_timer, "broadcast_fit", dist.broadcast, fitness_list, src=0)
 
                     top_index = torch.argsort(fitness_list)[:component_size_list[rank]]
                     component_population = population[top_index]
@@ -304,10 +306,10 @@ class CGNController(BasicController):
                 whole_genes = None
                 whole_NMI = None
                 whole_Q = None
-            dist.barrier()
-            dist.gather(best_genes, whole_genes, dst=0)
-            dist.gather(best_Q, whole_Q, dst=0)
-            dist.gather(best_NMI, whole_NMI, dst=0)
+            timed_call(comm_timer, "barrier", dist.barrier)
+            timed_call(comm_timer, "gather_genes", dist.gather, best_genes, whole_genes, dst=0)
+            timed_call(comm_timer, "gather_q", dist.gather, best_Q, whole_Q, dst=0)
+            timed_call(comm_timer, "gather_nmi", dist.gather, best_NMI, whole_NMI, dst=0)
             if rank == 0:
                 whole_genes = torch.cat(whole_genes)
                 whole_Q = torch.cat(whole_Q)
@@ -316,6 +318,7 @@ class CGNController(BasicController):
                 print(f"Q after attack: {whole_Q[top_index]}, NMI after attack: {whole_NMI[top_index]}")
                 self.save(self.dataset, whole_genes[top_index], [whole_Q[top_index].item(), whole_NMI[top_index].item(), time_list[-1]], time_list, "CGN", bestQ=best_Q.tolist(), bestNMI=best_NMI.tolist())
         torch.cuda.empty_cache()
+        finalize_comm_stats(comm_timer, rank, world_size, getattr(self, "comm_path", None))
         dist.destroy_process_group()
         torch.cuda.synchronize()
 
@@ -339,9 +342,9 @@ class CGNController(BasicController):
 def CGN(mode, max_generation, data_loader, controller: CGNController, evaluator, world_size, verbose=True):
     controller.mode = mode
     evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator)
-    if mode == "s" or mode == "sm":
+    if mode in ("s", "sm", "mnm"):
         controller.calculate(max_generation=max_generation, evaluator=evaluator)
-    elif mode == "m" or mode == "mnm":
+    elif mode == "m":
         component_size_list = Num2Chunks(controller.pop_size, world_size)
         if verbose:
             print(f"Component Size List: {component_size_list}")

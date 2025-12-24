@@ -13,6 +13,7 @@ from gapa.framework.evaluator import BasicEvaluator
 from gapa.utils.functions import CNDTest, Num2Chunks
 from gapa.utils.functions import current_time
 from gapa.utils.functions import init_dist
+from gapa.utils.comm_stats import CommTimer, finalize_comm_stats, timed_call
 from collections import Counter
 
 
@@ -157,6 +158,7 @@ class CutoffController(BasicController):
 
     def mp_calculate(self, rank, max_generation, evaluator, world_size, component_size_list):
         device = init_dist(rank, world_size)
+        comm_timer = CommTimer()
         best_PCG = []
         best_MCN = []
         best_genes = []
@@ -172,8 +174,8 @@ class CutoffController(BasicController):
             component_fitness_list = evaluator(component_population).to(device)
             population = [torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for component_size in component_size_list]
             fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for component_size in component_size_list]
-            dist.all_gather(population, component_population)
-            dist.all_gather(fitness_list, component_fitness_list)
+            timed_call(comm_timer, "all_gather_init_pop", dist.all_gather, population, component_population)
+            timed_call(comm_timer, "all_gather_init_fit", dist.all_gather, fitness_list, component_fitness_list)
 
             population = torch.cat(population)
             fitness_list = torch.cat(fitness_list)
@@ -198,7 +200,7 @@ class CutoffController(BasicController):
                     else:
                         crossover_population = [None for _ in range(world_size)]
                     component_crossover_population = [torch.tensor([0])]
-                    dist.scatter_object_list(component_crossover_population, crossover_population, src=0)
+                    timed_call(comm_timer, "scatter_crossover", dist.scatter_object_list, component_crossover_population, crossover_population, src=0)
                     component_crossover_population = component_crossover_population[0].to(device)
                     mutation_population = body.mutation(component_crossover_population, self.mutate_rate, ONE)
                     mutation_population = self._remove_repeat(mutation_population)
@@ -206,8 +208,8 @@ class CutoffController(BasicController):
 
                     elitism_population = [torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for component_size in component_size_list]
                     elitism_fitness_list = [torch.empty((component_size,), dtype=new_component_fitness_list.dtype, device=device) for component_size in component_size_list]
-                    dist.all_gather(elitism_population, mutation_population)
-                    dist.all_gather(elitism_fitness_list, new_component_fitness_list)
+                    timed_call(comm_timer, "all_gather_elitism_pop", dist.all_gather, elitism_population, mutation_population)
+                    timed_call(comm_timer, "all_gather_elitism_fit", dist.all_gather, elitism_fitness_list, new_component_fitness_list)
 
                     if rank == 0:
                         elitism_population = torch.cat(elitism_population)
@@ -219,8 +221,8 @@ class CutoffController(BasicController):
                         population = torch.zeros(population.shape, dtype=population.dtype, device=device)
                         fitness_list = torch.empty(fitness_list.shape, dtype=fitness_list.dtype, device=device)
 
-                    dist.broadcast(population, src=0)
-                    dist.broadcast(fitness_list, src=0)
+                    timed_call(comm_timer, "broadcast_pop", dist.broadcast, population, src=0)
+                    timed_call(comm_timer, "broadcast_fit", dist.broadcast, fitness_list, src=0)
 
                     top_index = torch.argsort(fitness_list)[:component_size_list[rank]]
                     component_population = population[top_index]
@@ -257,10 +259,10 @@ class CutoffController(BasicController):
                 whole_genes = None
                 whole_PCG = None
                 whole_MCN = None
-            dist.barrier()
-            dist.gather(best_genes, whole_genes, dst=0)
-            dist.gather(best_PCG, whole_PCG, dst=0)
-            dist.gather(best_MCN, whole_MCN, dst=0)
+            timed_call(comm_timer, "barrier", dist.barrier)
+            timed_call(comm_timer, "gather_genes", dist.gather, best_genes, whole_genes, dst=0)
+            timed_call(comm_timer, "gather_pcg", dist.gather, best_PCG, whole_PCG, dst=0)
+            timed_call(comm_timer, "gather_mcn", dist.gather, best_MCN, whole_MCN, dst=0)
             if rank == 0:
                 whole_genes = torch.cat(whole_genes)
                 whole_PCG = torch.cat(whole_PCG)
@@ -270,6 +272,7 @@ class CutoffController(BasicController):
                 self.save(self.dataset, whole_genes[top_index], [whole_PCG[top_index].item(), whole_MCN[top_index].item(), time_list[-1]], time_list, "CutOff", bestPCG=best_PCG, bestMCN=best_MCN)
                 print(f"Loop {loop} finished. Data saved in {self.path}...")
         torch.cuda.empty_cache()
+        finalize_comm_stats(comm_timer, rank, world_size, getattr(self, "comm_path", None))
         dist.destroy_process_group()
         torch.cuda.synchronize()
 
@@ -426,9 +429,9 @@ class CutoffController(BasicController):
 def Cutoff(mode, max_generation, data_loader, controller: CutoffController, evaluator, world_size, verbose=True):
     controller.mode = mode
     evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator)
-    if mode == "s" or mode == "sm":
+    if mode in ("s", "sm", "mnm"):
         controller.calculate(max_generation=max_generation, evaluator=evaluator)
-    elif mode == "m" or mode == "mnm":
+    elif mode == "m":
         component_size_list = Num2Chunks(controller.pop_size, world_size)
         if verbose:
             print(f"Component Size List: {component_size_list}")

@@ -2,11 +2,14 @@
 from __future__ import annotations
 
 import json
+import multiprocessing as mp
+import os
+import signal
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
 
-from autoadapt import StrategyPlan
+from autoadapt import StrategyPlan, DistributedStrategyPlan
 
 from server import (
     STATIC_ROOT,
@@ -16,10 +19,12 @@ from server import (
     load_server_config,
     load_server_list,
 )
+from server.resource_lock import LOCK_MANAGER
+from server.agent_state import TaskState, start_consumer
+from server.ga_worker import ga_worker, select_run_mode
 
 import threading
 import time
-from time import perf_counter
 
 
 def _resolve_server_base_url(server_id: str | None) -> str | None:
@@ -45,116 +50,131 @@ def _resolve_server_base_url(server_id: str | None) -> str | None:
     return target.get("base_url") if target else None
 
 
-class _LocalTaskState:
-    def __init__(self):
-        self.lock = threading.Lock()
-        self.task_id: str | None = None
-        self.state: str = "idle"
-        self.progress: int = 0
-        self.logs: list[str] = []
-        self.result: dict | None = None
-        self.error: str | None = None
-        self.cancel: bool = False
-
-    def reset(self, task_id: str) -> None:
-        self.task_id = task_id
-        self.state = "running"
-        self.progress = 0
-        self.logs = []
-        self.result = None
-        self.error = None
-        self.cancel = False
-
-    def log(self, line: str) -> None:
-        self.logs.append(line)
-        if len(self.logs) > 500:
-            self.logs = self.logs[-500:]
-
-
-LOCAL_TASK = _LocalTaskState()
+def _summarize_warmup_result(result: dict | None) -> dict:
+    if not isinstance(result, dict):
+        return {"summary": {}, "per_iter_ms": []}
+    timing = result.get("timing") or {}
+    summary = {
+        "iter_seconds": timing.get("iter_seconds"),
+        "iter_avg_ms": timing.get("iter_avg_ms"),
+        "throughput_ips": timing.get("throughput_ips"),
+        "iterations": (result.get("hyperparams") or {}).get("iterations"),
+        "pop_size": (result.get("hyperparams") or {}).get("pop_size"),
+        "mode": (result.get("selected") or {}).get("mode"),
+        "devices": (result.get("selected") or {}).get("devices"),
+        "remote_servers": (result.get("selected") or {}).get("remote_servers"),
+    }
+    points = result.get("points") or []
+    per_iter_ms = []
+    last = None
+    for item in points:
+        elapsed = item.get("elapsed_s")
+        if elapsed is None:
+            continue
+        if last is not None:
+            per_iter_ms.append((float(elapsed) - float(last)) * 1000.0)
+        last = float(elapsed)
+    return {"summary": summary, "per_iter_ms": per_iter_ms}
 
 
-def _local_resource_point() -> dict:
-    snap = current_resource_snapshot()
-    gpus = []
-    for g in snap.get("gpus", []) or []:
-        gpus.append(
-            {
-                "id": g.get("id"),
-                "used_mb": g.get("used_mb"),
-                "total_mb": g.get("total_mb"),
-                "power_w": g.get("power_w"),
-                "gpu_util_percent": g.get("gpu_util_percent"),
-                "mem_util_percent": g.get("mem_util_percent"),
-            }
-        )
+def _ga_entry(
+    task_id: str,
+    algorithm: str,
+    dataset: str,
+    iterations: int,
+    crossover_rate: float,
+    mutate_rate: float,
+    selected: dict,
+    q: any,
+) -> None:
+    if os.name == "posix":
+        try:
+            os.setsid()
+        except Exception:
+            pass
+    ga_worker(task_id, algorithm, dataset, iterations, crossover_rate, mutate_rate, selected, q)
+
+
+def _run_ga_warmup_local(payload: dict) -> dict:
+    import uuid
+
+    algorithm = str(payload.get("algorithm") or "")
+    dataset = str(payload.get("dataset") or "")
+    iterations = int(payload.get("iterations") or payload.get("warmup_iters") or 2)
+    pc = float(payload.get("crossover_rate") or payload.get("pc") or 0.8)
+    pm = float(payload.get("mutate_rate") or payload.get("pm") or 0.2)
+    selected = select_run_mode(payload.get("mode"), payload.get("devices"))
+    remote_servers = payload.get("remote_servers") or payload.get("allowed_server_ids")
+    if remote_servers is not None:
+        selected["remote_servers"] = remote_servers
+    timeout_s = float(payload.get("timeout_s", 180) or 180)
+
+    with LOCAL_TASK.lock:
+        if LOCAL_TASK.state == "running":
+            return {"error": "A task is already running"}, 409
+
+    task_id = str(uuid.uuid4())
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    proc = ctx.Process(
+        target=_ga_entry,
+        args=(task_id, algorithm, dataset, iterations, pc, pm, selected, q),
+    )
+    proc.start()
+
+    logs = []
+    result = None
+    state = "running"
+    error = None
+    deadline = time.time() + timeout_s
+
+    while time.time() < deadline:
+        try:
+            evt = q.get(timeout=0.2)
+        except Exception:
+            if not proc.is_alive():
+                break
+            continue
+        if not isinstance(evt, dict):
+            continue
+        etype = evt.get("type")
+        if etype == "log":
+            logs.append(evt.get("line"))
+        elif etype == "result":
+            result = evt.get("result")
+        elif etype == "state":
+            state = evt.get("state") or state
+            error = evt.get("error") or error
+        if state in ("completed", "error") and result is not None:
+            break
+
+    if proc.is_alive():
+        try:
+            proc.terminate()
+            proc.join(timeout=1.0)
+        except Exception:
+            pass
+        state = "timeout"
+        error = error or "warmup timeout"
+    else:
+        try:
+            proc.join(timeout=0.2)
+        except Exception:
+            pass
+
+    summary = _summarize_warmup_result(result)
     return {
-        "timestamp": snap.get("time"),
-        "cpu_usage_percent": (snap.get("cpu") or {}).get("usage_percent"),
-        "memory_percent": (snap.get("memory") or {}).get("percent"),
-        "gpus": gpus,
+        "task_id": task_id,
+        "state": state,
+        "summary": summary["summary"],
+        "per_iter_ms": summary["per_iter_ms"],
+        "comm": (result or {}).get("comm"),
+        "logs": logs[-200:],
+        "error": error,
     }
 
 
-def _run_local_ga(task_id: str, algorithm: str, iterations: int, pc: float, pm: float) -> None:
-    try:
-        with LOCAL_TASK.lock:
-            if LOCAL_TASK.task_id != task_id:
-                return
-            LOCAL_TASK.log(f"[INFO] 任务 {task_id} 启动，算法={algorithm} pc={pc:.3f} pm={pm:.3f} iters={iterations}")
-            LOCAL_TASK.log("[INFO] preprocessing: start")
-            LOCAL_TASK.progress = 1
-            LOCAL_TASK.result = {
-                "algorithm": algorithm,
-                "convergence": [],
-                "metrics": [],
-                "timing": {"iter_seconds": None, "note": "iter_seconds excludes preprocessing; timing starts at first loop iteration"},
-                "hyperparams": {"iterations": iterations, "crossover_rate": pc, "mutate_rate": pm},
-            }
-
-        time.sleep(0.2)
-        with LOCAL_TASK.lock:
-            LOCAL_TASK.log("[INFO] 初始化种群...")
-            LOCAL_TASK.progress = 5
-            LOCAL_TASK.result["metrics"].append({"stage": "init", **_local_resource_point()})
-
-        base = 1.0
-        steps = max(1, int(iterations or 1))
-        t0 = None
-        t1 = None
-        for i in range(steps):
-            time.sleep(0.25)
-            now = perf_counter()
-            with LOCAL_TASK.lock:
-                if LOCAL_TASK.cancel:
-                    LOCAL_TASK.log("[WARN] stop requested, aborting local task.")
-                    LOCAL_TASK.state = "idle"
-                    LOCAL_TASK.error = "stopped"
-                    return
-                if t0 is None:
-                    t0 = now
-                    LOCAL_TASK.log("[INFO] iteration loop started; timing begins (preprocessing excluded)")
-                t1 = now
-                metric = round(0.5 + 0.5 * (1.0 - (i + 1) / steps), 4)
-                LOCAL_TASK.log(f"[INFO] 进化迭代 {i+1}/{steps} metric={metric} ...")
-                LOCAL_TASK.progress = 5 + int((i + 1) / steps * 95)
-                base *= 0.88
-                LOCAL_TASK.result["convergence"].append(round(base + (0.01 * ((i + 1) % 3) / 3.0), 6))
-                LOCAL_TASK.result["metrics"].append({"stage": "iter", "iter": i + 1, **_local_resource_point()})
-
-        with LOCAL_TASK.lock:
-            LOCAL_TASK.log("[INFO] 分析完成。")
-            LOCAL_TASK.progress = 100
-            LOCAL_TASK.state = "completed"
-            if t0 is not None and t1 is not None and t1 >= t0:
-                LOCAL_TASK.result["timing"]["iter_seconds"] = float(t1 - t0)
-            conv = LOCAL_TASK.result.get("convergence") or []
-            LOCAL_TASK.result["best_score"] = min(conv) if conv else None
-    except Exception as exc:
-        with LOCAL_TASK.lock:
-            LOCAL_TASK.state = "error"
-            LOCAL_TASK.error = str(exc)
-            LOCAL_TASK.log(f"[ERROR] {exc}")
+LOCAL_TASK = TaskState()
 
 # 使用 /static 避免与 /api/* 路由冲突
 app = Flask(__name__, static_folder=str(STATIC_ROOT), static_url_path="/static")
@@ -346,6 +366,117 @@ def api_strategy_compare():
         return jsonify({"error": str(exc)}), 500
 
 
+@app.route("/api/ga_warmup", methods=["POST"])
+def api_ga_warmup():
+    """Run a short real GA warmup to measure actual latency/throughput."""
+    payload = request.get_json(silent=True) or {}
+    server_id = payload.get("server_id") or payload.get("server") or "local"
+    algorithm = payload.get("algorithm")
+    dataset = payload.get("dataset")
+    if not algorithm or not dataset:
+        return jsonify({"error": "algorithm and dataset are required"}), 400
+
+    if server_id and server_id != "local":
+        base_url = _resolve_server_base_url(server_id)
+        if not base_url:
+            return jsonify({"error": "unknown server_id or missing base_url", "server_id": server_id}), 404
+        try:
+            import requests
+
+            session = requests.Session()
+            session.trust_env = False
+            timeout_s = float(payload.get("timeout_s", 180) or 180)
+            body = dict(payload)
+            body.pop("server_id", None)
+            body.pop("server", None)
+            resp = session.post(base_url.rstrip("/") + "/api/ga_warmup", json=body, timeout=(3.0, timeout_s))
+            if resp.ok:
+                return jsonify(resp.json())
+            try:
+                err = resp.json()
+            except Exception:
+                err = {"raw": (resp.text or "")[:2000]}
+            return (
+                jsonify(
+                    {
+                        "error": "remote ga_warmup failed",
+                        "server_id": server_id,
+                        "base_url": base_url,
+                        "status_code": resp.status_code,
+                        "body": err,
+                    }
+                ),
+                502,
+            )
+        except Exception as exc:
+            return jsonify({"error": f"proxy failed: {exc}", "server_id": server_id, "base_url": base_url}), 502
+
+    result = _run_ga_warmup_local(payload)
+    if isinstance(result, tuple):
+        payload, code = result
+        return jsonify(payload), code
+    return jsonify(result)
+
+
+@app.route("/api/distributed_strategy_plan", methods=["POST"])
+def api_distributed_strategy_plan():
+    """Distributed plan by merging per-server StrategyPlan + resource snapshots."""
+    payload = request.get_json(silent=True) or {}
+    server_ids = payload.get("servers") or payload.get("server_ids") or []
+    if not server_ids:
+        server_ids = [s.get("id") for s in load_server_list()]
+    per_server_gpus = int(payload.get("per_server_gpus", 1) or 1)
+    min_gpu_free_mb = int(payload.get("min_gpu_free_mb", 1024) or 1024)
+    gpu_busy_threshold = float(payload.get("gpu_busy_threshold", 85.0) or 85.0)
+
+    server_resources: dict = {}
+    server_plans: dict = {}
+
+    for sid in server_ids:
+        if sid == "local":
+            server_resources[sid] = current_resource_snapshot()
+            try:
+                plan = StrategyPlan(fitness=None, warmup=0, objective="time", multi_gpu=True)
+                server_plans[sid] = plan
+            except Exception:
+                server_plans[sid] = None
+            continue
+        base_url = _resolve_server_base_url(sid)
+        if not base_url:
+            server_resources[sid] = {"error": "missing base_url"}
+            continue
+        try:
+            import requests
+
+            session = requests.Session()
+            session.trust_env = False
+            r_resp = session.get(base_url.rstrip("/") + "/api/resources", timeout=(3.0, 8.0))
+            server_resources[sid] = r_resp.json() if r_resp.ok else {"error": f"HTTP {r_resp.status_code}"}
+            p_resp = session.post(base_url.rstrip("/") + "/api/strategy_plan", json={"warmup": 0, "objective": "time", "multi_gpu": True}, timeout=(3.0, 20.0))
+            if p_resp.ok:
+                try:
+                    from autoadapt.api.schemas import Plan
+
+                    pdata = p_resp.json()
+                    if isinstance(pdata, dict) and "backend" in pdata:
+                        server_plans[sid] = Plan(**{k: pdata.get(k) for k in Plan.__dataclass_fields__.keys()})
+                except Exception:
+                    server_plans[sid] = None
+        except Exception as exc:
+            server_resources[sid] = {"error": str(exc)}
+
+    plan = DistributedStrategyPlan(
+        server_resources=server_resources,
+        server_plans=server_plans,
+        per_server_gpus=per_server_gpus,
+        min_gpu_free_mb=min_gpu_free_mb,
+        gpu_busy_threshold=gpu_busy_threshold,
+    )
+    plan["server_resources"] = server_resources
+    plan["server_plans"] = {k: (v.to_dict() if v else None) for k, v in server_plans.items()}
+    return jsonify(plan)
+
+
 @app.route("/api/actions/<action>", methods=["POST"])
 def api_actions(action: str):
     payload = request.get_json(force=True, silent=True) or {}
@@ -399,24 +530,52 @@ def api_analysis_start():
                     "mutate_rate": payload.get("mutate_rate"),
                     "mode": payload.get("mode"),
                     "devices": payload.get("devices"),
+                    "release_lock_on_finish": payload.get("release_lock_on_finish", True),
                 },
                 timeout=(3.0, timeout_s),
             )
         else:
-            # Local execution in console process
+            # Local execution with real GA worker
             import uuid
 
             algorithm = str(payload.get("algorithm") or "ga")
-            iterations = int(payload.get("iterations") or 20)
-            pc = float(payload.get("crossover_rate") or 0.8)
-            pm = float(payload.get("mutate_rate") or 0.2)
+            dataset = str(payload.get("dataset") or "")
+            iterations = int(payload.get("iterations") or payload.get("max_generation") or 20)
+            pc = float(payload.get("crossover_rate") or payload.get("pc") or 0.8)
+            pm = float(payload.get("mutate_rate") or payload.get("pm") or 0.2)
+            selected = select_run_mode(payload.get("mode"), payload.get("devices"))
+            remote_servers = payload.get("remote_servers") or payload.get("allowed_server_ids")
+            if remote_servers is not None:
+                selected["remote_servers"] = remote_servers
+            release_lock_on_finish = bool(payload.get("release_lock_on_finish", True))
+
+            # If no resource lock is active, force CPU execution.
+            try:
+                lock_active = bool(LOCK_MANAGER.status().get("active"))
+            except Exception:
+                lock_active = False
+            if not lock_active and (selected.get("mode") or "").upper() not in ("MNM",):
+                selected = select_run_mode("CPU", None)
+
             with LOCAL_TASK.lock:
                 if LOCAL_TASK.state == "running":
                     return jsonify({"error": "A task is already running"}), 409
                 task_id = str(uuid.uuid4())
-                LOCAL_TASK.reset(task_id)
-                t = threading.Thread(target=_run_local_ga, args=(task_id, algorithm, iterations, pc, pm), daemon=True)
-                t.start()
+                LOCAL_TASK.reset_for_new_task(task_id)
+                LOCAL_TASK.release_lock_on_finish = release_lock_on_finish
+                LOCAL_TASK.append_log(f"[INFO] 运行模式: {selected.get('mode')} devices={selected.get('devices')}")
+
+                ctx = mp.get_context("spawn")
+                q = ctx.Queue()
+                proc = ctx.Process(
+                    target=_ga_entry,
+                    args=(task_id, algorithm, dataset, iterations, pc, pm, selected, q),
+                )
+                LOCAL_TASK.queue = q
+                LOCAL_TASK.process = proc
+                proc.start()
+                start_consumer(LOCAL_TASK)
+
             return jsonify({"task_id": task_id, "status": "started"})
 
         if resp.ok:
@@ -497,14 +656,223 @@ def api_analysis_stop():
 
         # Local fallback stop
         with LOCAL_TASK.lock:
-            if LOCAL_TASK.state == "running":
-                LOCAL_TASK.cancel = True
-                LOCAL_TASK.log("[WARN] stop requested.")
-                return jsonify({"status": "stopping", "task_id": LOCAL_TASK.task_id})
-            return jsonify({"status": "idle", "task_id": LOCAL_TASK.task_id})
+            proc = LOCAL_TASK.process
+            if LOCAL_TASK.state != "running" or not proc or not proc.is_alive():
+                LOCAL_TASK.state = "idle" if LOCAL_TASK.state != "error" else LOCAL_TASK.state
+                return jsonify({"status": "idle", "task_id": LOCAL_TASK.task_id})
+            pid = proc.pid
+            LOCAL_TASK.append_log("[WARN] stop requested, terminating task...")
+
+        # terminate outside lock
+        try:
+            def kill_children(sig: int) -> None:
+                try:
+                    import psutil  # type: ignore
+                except Exception:
+                    return
+                try:
+                    parent = psutil.Process(pid) if pid else None
+                    if not parent:
+                        return
+                    for ch in parent.children(recursive=True):
+                        try:
+                            ch.send_signal(sig)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+            if pid and os.name == "posix":
+                try:
+                    os.killpg(pid, signal.SIGTERM)
+                except Exception:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except Exception:
+                        pass
+                kill_children(signal.SIGTERM)
+            else:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+                try:
+                    kill_children(signal.SIGTERM)
+                except Exception:
+                    pass
+
+            proc.join(timeout=3.0)
+            if proc.is_alive():
+                if pid and os.name == "posix":
+                    try:
+                        os.killpg(pid, signal.SIGKILL)
+                    except Exception:
+                        try:
+                            os.kill(pid, signal.SIGKILL)
+                        except Exception:
+                            pass
+                    kill_children(signal.SIGKILL)
+                else:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    try:
+                        kill_children(signal.SIGKILL)
+                    except Exception:
+                        pass
+                proc.join(timeout=1.0)
+        finally:
+            with LOCAL_TASK.lock:
+                LOCAL_TASK.state = "idle"
+                LOCAL_TASK.progress = 0
+                LOCAL_TASK.error = "stopped"
+                LOCAL_TASK.append_log("[INFO] task stopped.")
+
+        return jsonify({"status": "stopped", "task_id": LOCAL_TASK.task_id})
     except Exception as exc:
         return jsonify({"error": f"proxy failed: {exc}", "server_id": server_id, "base_url": base_url}), 502
 
+
+def _proxy_resource_lock(base_url: str, endpoint: str, payload: dict | None = None):
+    import requests
+
+    session = requests.Session()
+    session.trust_env = False
+    if payload is None:
+        resp = session.post(base_url.rstrip("/") + endpoint, timeout=(3.0, 20.0))
+    else:
+        resp = session.post(base_url.rstrip("/") + endpoint, json=payload, timeout=(3.0, 20.0))
+    return resp
+
+
+@app.route("/api/resource_lock", methods=["POST"])
+def api_resource_lock():
+    payload = request.get_json(silent=True) or {}
+    scope = payload.get("scope") or payload.get("server_id") or payload.get("server") or "local"
+    duration_s = float(payload.get("duration_s", 600) or 600)
+    warmup_iters = int(payload.get("warmup_iters", 2) or 2)
+    mem_mb = int(payload.get("mem_mb", 1024) or 1024)
+    strict_idle = bool(payload.get("strict_idle", False))
+    devices = payload.get("devices")
+    devices_by_server = payload.get("devices_by_server") or {}
+
+    servers = load_server_list()
+    if scope in ("all", "*"):
+        if isinstance(devices_by_server, dict) and devices_by_server:
+            targets = [s for s in servers if s.get("id") in devices_by_server]
+        else:
+            targets = servers
+    else:
+        targets = [s for s in servers if s.get("id") == scope]
+    if not targets:
+        return jsonify({"error": "unknown server", "scope": scope}), 404
+
+    results = {}
+    for s in targets:
+        sid = s.get("id")
+        if sid == "local":
+            try:
+                devs = devices_by_server.get(sid) if isinstance(devices_by_server, dict) else None
+                results[sid] = LOCK_MANAGER.lock(
+                    duration_s=duration_s,
+                    warmup_iters=warmup_iters,
+                    mem_mb=mem_mb,
+                    devices=devs if devs is not None else devices,
+                    strict_idle=strict_idle,
+                )
+            except Exception as exc:
+                results[sid] = {"error": str(exc)}
+            continue
+        base_url = _resolve_server_base_url(sid)
+        if not base_url:
+            results[sid] = {"error": "missing base_url"}
+            continue
+        try:
+            resp = _proxy_resource_lock(
+                base_url,
+                "/api/resource_lock",
+                {
+                    "duration_s": duration_s,
+                    "warmup_iters": warmup_iters,
+                    "mem_mb": mem_mb,
+                    "devices": (devices_by_server.get(sid) if isinstance(devices_by_server, dict) else None) or devices,
+                    "strict_idle": strict_idle,
+                },
+            )
+            results[sid] = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}"}
+        except Exception as exc:
+            results[sid] = {"error": str(exc)}
+    return jsonify({"scope": scope, "results": results})
+
+
+@app.route("/api/resource_lock/release", methods=["POST"])
+def api_resource_lock_release():
+    payload = request.get_json(silent=True) or {}
+    scope = payload.get("scope") or payload.get("server_id") or payload.get("server") or "local"
+    servers = load_server_list()
+    targets = servers if scope in ("all", "*") else [s for s in servers if s.get("id") == scope]
+    if not targets:
+        return jsonify({"error": "unknown server", "scope": scope}), 404
+
+    results = {}
+    for s in targets:
+        sid = s.get("id")
+        if sid == "local":
+            try:
+                results[sid] = LOCK_MANAGER.release(reason="manual")
+                try:
+                    from server.fitness_worker import clear_contexts
+
+                    clear_contexts()
+                except Exception:
+                    pass
+            except Exception as exc:
+                results[sid] = {"error": str(exc)}
+            continue
+        base_url = _resolve_server_base_url(sid)
+        if not base_url:
+            results[sid] = {"error": "missing base_url"}
+            continue
+        try:
+            resp = _proxy_resource_lock(base_url, "/api/resource_lock/release", None)
+            results[sid] = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}"}
+        except Exception as exc:
+            results[sid] = {"error": str(exc)}
+    return jsonify({"scope": scope, "results": results})
+
+
+@app.route("/api/resource_lock/status", methods=["GET"])
+def api_resource_lock_status():
+    scope = request.args.get("scope") or request.args.get("server_id") or request.args.get("server") or "local"
+    servers = load_server_list()
+    targets = servers if scope in ("all", "*") else [s for s in servers if s.get("id") == scope]
+    if not targets:
+        return jsonify({"error": "unknown server", "scope": scope}), 404
+
+    results = {}
+    for s in targets:
+        sid = s.get("id")
+        if sid == "local":
+            try:
+                results[sid] = LOCK_MANAGER.status()
+            except Exception as exc:
+                results[sid] = {"error": str(exc)}
+            continue
+        base_url = _resolve_server_base_url(sid)
+        if not base_url:
+            results[sid] = {"error": "missing base_url"}
+            continue
+        try:
+            import requests
+
+            session = requests.Session()
+            session.trust_env = False
+            resp = session.get(base_url.rstrip("/") + "/api/resource_lock/status", timeout=(3.0, 10.0))
+            results[sid] = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}"}
+        except Exception as exc:
+            results[sid] = {"error": str(exc)}
+    return jsonify({"scope": scope, "results": results})
 
 if __name__ == "__main__":
     print("=" * 50)

@@ -12,6 +12,7 @@ from gapa.framework.body import Body
 from gapa.framework.controller import BasicController
 from gapa.framework.evaluator import BasicEvaluator
 from gapa.utils.functions import AS_Rate, current_time, init_dist, Acc, Num2Chunks
+from gapa.utils.comm_stats import CommTimer, finalize_comm_stats, timed_call
 from gapa.utils.functions import gcn_filter, tensorToSparse, adjReshapeAddDim
 
 
@@ -214,6 +215,7 @@ class SGAController(BasicController):
 
     def mp_calculate(self, rank, max_generation, evaluator, world_size, component_size_list, return_dict):
         device = init_dist(rank, world_size)
+        comm_timer = CommTimer()
         crossover_population = None
         elite_edge, elite_edge_score = None, None
         edge_list = self.edge_list.to(device)
@@ -229,8 +231,8 @@ class SGAController(BasicController):
             population = [torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for component_size in component_size_list]
             fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for component_size in component_size_list]
 
-            dist.all_gather(population, component_population)
-            dist.all_gather(fitness_list, component_fitness_list)
+            timed_call(comm_timer, "all_gather_init_pop", dist.all_gather, population, component_population)
+            timed_call(comm_timer, "all_gather_init_fit", dist.all_gather, fitness_list, component_fitness_list)
 
             population = torch.cat(population)
             fitness_list = torch.cat(fitness_list)
@@ -251,7 +253,7 @@ class SGAController(BasicController):
                     else:
                         crossover_population = [None for _ in range(world_size)]
                     component_crossover_population = [torch.tensor([0])]
-                    dist.scatter_object_list(component_crossover_population, crossover_population, src=0)
+                    timed_call(comm_timer, "scatter_crossover", dist.scatter_object_list, component_crossover_population, crossover_population, src=0)
                     component_crossover_population = component_crossover_population[0].to(device)
                     mutation_population = body.mutation(component_crossover_population, self.mutate_rate, ONE)
                     mutation_population = body.solve_conflict(mutation_population)
@@ -259,8 +261,8 @@ class SGAController(BasicController):
 
                     elitism_population = [torch.zeros((component_size, self.budget), dtype=component_population.dtype, device=device) for component_size in component_size_list]
                     elitism_fitness_list = [torch.empty((component_size,), dtype=new_component_fitness_list.dtype, device=device) for component_size in component_size_list]
-                    dist.all_gather(elitism_population, mutation_population)
-                    dist.all_gather(elitism_fitness_list, new_component_fitness_list)
+                    timed_call(comm_timer, "all_gather_elitism_pop", dist.all_gather, elitism_population, mutation_population)
+                    timed_call(comm_timer, "all_gather_elitism_fit", dist.all_gather, elitism_fitness_list, new_component_fitness_list)
 
                     if rank == 0:
                         elitism_population = torch.cat(elitism_population)
@@ -276,6 +278,7 @@ class SGAController(BasicController):
         if rank == 0:
             return_dict[rank] = [elite_edge.cpu(), elite_edge_score.cpu()]
         torch.cuda.empty_cache()
+        finalize_comm_stats(comm_timer, rank, world_size, getattr(self, "comm_path", None))
         dist.destroy_process_group()
         torch.cuda.synchronize()
 
@@ -381,9 +384,9 @@ class SGAAlgorithm:
                 self.n_added_labels = torch.hstack((self.labels, self.injected_nodes_classes))
                 evaluator = SGAEvaluator(feats=modified_features, adj=modified_adj, test_index=data_loader.test_index, labels=self.n_added_labels, pop_size=pop_size, device=self.device)
                 evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator, W=self.W, edge_list=final_potential_edges)
-                if controller.mode == "s" or controller.mode == "sm":
+                if controller.mode in ("s", "sm", "mnm"):
                     elite_edge, elite_edge_score = controller.calculate(max_generation=max_generation, evaluator=evaluator)
-                elif controller.mode == "m" or controller.mode == "mnm":
+                elif controller.mode == "m":
                     with Manager() as manager:
                         return_dict = manager.dict()
                         mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, component_size_list, return_dict), nprocs=world_size, join=True)

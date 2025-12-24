@@ -13,6 +13,7 @@ from gapa.framework.controller import BasicController
 from gapa.framework.evaluator import BasicEvaluator
 from gapa.utils.functions import current_time, Num2Chunks
 from gapa.utils.functions import init_dist
+from gapa.utils.comm_stats import CommTimer, finalize_comm_stats, timed_call
 
 
 def igraph_to_nx_mapping(edges):
@@ -447,6 +448,7 @@ class EDAController(BasicController):
 
     def mp_calculate(self, rank, max_generation, evaluator, world_size, component_size_list):
         device = init_dist(rank, world_size)
+        comm_timer = CommTimer()
         best_Pre = []
         best_AUC = []
         best_genes = []
@@ -465,8 +467,8 @@ class EDAController(BasicController):
 
             population = [torch.zeros(size=(component_size,) + component_population.shape[1:], dtype=component_population.dtype, device=device) for component_size in component_size_list]
             fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for component_size in component_size_list]
-            dist.all_gather(population, component_population)
-            dist.all_gather(fitness_list, component_fitness_list)
+            timed_call(comm_timer, "all_gather_init_pop", dist.all_gather, population, component_population)
+            timed_call(comm_timer, "all_gather_init_fit", dist.all_gather, fitness_list, component_fitness_list)
 
             population = torch.cat(population)
             fitness_list = torch.cat(fitness_list)
@@ -488,8 +490,8 @@ class EDAController(BasicController):
 
                     elitism_population = [torch.zeros(size=(component_size * 2,) + stack_component_population.shape[1:], dtype=stack_component_population.dtype, device=device) for component_size in component_size_list]
                     elitism_fitness_list = [torch.empty(size=(component_size * 2,), dtype=new_component_fitness_list.dtype, device=device) for component_size in component_size_list]
-                    dist.all_gather(elitism_population, stack_component_population)
-                    dist.all_gather(elitism_fitness_list, new_component_fitness_list)
+                    timed_call(comm_timer, "all_gather_elitism_pop", dist.all_gather, elitism_population, stack_component_population)
+                    timed_call(comm_timer, "all_gather_elitism_fit", dist.all_gather, elitism_fitness_list, new_component_fitness_list)
 
                     if rank == 0:
                         elitism_population = torch.cat(elitism_population)
@@ -501,8 +503,8 @@ class EDAController(BasicController):
                         population = torch.zeros(population.shape, dtype=population.dtype, device=device)
                         fitness_list = torch.empty(fitness_list.shape, dtype=fitness_list.dtype, device=device)
 
-                    dist.broadcast(population, src=0)
-                    dist.broadcast(fitness_list, src=0)
+                    timed_call(comm_timer, "broadcast_pop", dist.broadcast, population, src=0)
+                    timed_call(comm_timer, "broadcast_fit", dist.broadcast, fitness_list, src=0)
 
                     top_index = torch.argsort(fitness_list)[self.pop_size - component_size_list[rank]:]
                     component_population = population[top_index]
@@ -539,10 +541,10 @@ class EDAController(BasicController):
                 whole_genes = None
                 whole_Pre = None
                 whole_AUC = None
-            dist.barrier()
-            dist.gather(best_genes, whole_genes, dst=0)
-            dist.gather(best_Pre, whole_Pre, dst=0)
-            dist.gather(best_AUC, whole_AUC, dst=0)
+            timed_call(comm_timer, "barrier", dist.barrier)
+            timed_call(comm_timer, "gather_genes", dist.gather, best_genes, whole_genes, dst=0)
+            timed_call(comm_timer, "gather_pre", dist.gather, best_Pre, whole_Pre, dst=0)
+            timed_call(comm_timer, "gather_auc", dist.gather, best_AUC, whole_AUC, dst=0)
             if rank == 0:
                 whole_genes = torch.cat(whole_genes)
                 whole_Pre = torch.cat(whole_Pre)
@@ -553,6 +555,7 @@ class EDAController(BasicController):
                 print(f"Loop {loop} finished. Data saved in {self.path}...")
 
             torch.cuda.empty_cache()
+            finalize_comm_stats(comm_timer, rank, world_size, getattr(self, "comm_path", None))
             dist.destroy_process_group()
             torch.cuda.synchronize()
 
@@ -622,9 +625,9 @@ class EDAController(BasicController):
 def EDA(mode, max_generation, data_loader, controller: EDAController, evaluator, world_size, verbose=True):
     controller.mode = mode
     evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator)
-    if mode == "s" or mode == "sm":
+    if mode in ("s", "sm", "mnm"):
         controller.calculate(max_generation=max_generation, evaluator=evaluator)
-    elif mode == "m" or mode == "mnm":
+    elif mode == "m":
         component_size_list = Num2Chunks(controller.pop_size, world_size)
         if verbose:
             print(f"Component Size List: {component_size_list}")

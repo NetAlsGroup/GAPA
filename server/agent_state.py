@@ -18,6 +18,7 @@ class TaskState:
         self.process: Optional[mp.Process] = None
         self.queue: Any = None
         self.consumer: Optional[threading.Thread] = None
+        self.release_lock_on_finish: bool = False
 
     def reset_for_new_task(self, task_id: str) -> None:
         self.task_id = task_id
@@ -29,6 +30,7 @@ class TaskState:
         self.process = None
         self.queue = None
         self.consumer = None
+        self.release_lock_on_finish = False
 
     def append_log(self, line: str) -> None:
         self.logs.append(line)
@@ -68,8 +70,16 @@ def start_consumer(task: TaskState) -> None:
         with task.lock:
             if task.state == "running":
                 task.state = "completed" if task.result else "idle"
+            release_lock = task.release_lock_on_finish and task.state in ("completed", "error")
+
+        if release_lock:
+            try:
+                from server.resource_lock import LOCK_MANAGER
+
+                LOCK_MANAGER.release(reason="task_done")
+            except Exception:
+                pass
 
     t = threading.Thread(target=loop, daemon=True)
     task.consumer = t
     t.start()
-

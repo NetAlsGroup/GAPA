@@ -155,6 +155,11 @@ def _warmup_benchmark(candidates: List[tuple], iters: int) -> Dict[str, Any]:
             _run_once(a, b)
             _sync(device)
             ms.append((time.perf_counter() - start) * 1000.0)
+        try:
+            del a, b
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
         return ms
 
     def measure_multi_gpu(num_devices: int) -> Optional[List[float]]:
@@ -185,6 +190,12 @@ def _warmup_benchmark(candidates: List[tuple], iters: int) -> Dict[str, Any]:
             for dev, *_ in mats:
                 _sync(dev)
             ms.append((time.perf_counter() - start) * 1000.0)
+        try:
+            for _dev, a, b in mats:
+                del a, b
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
         return ms
 
     series: List[Dict[str, Any]] = []
@@ -232,4 +243,83 @@ def _warmup_benchmark(candidates: List[tuple], iters: int) -> Dict[str, Any]:
     if not series:
         return {"error": "no measurable candidates", "details": errors}
 
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
     return {"series": series, "avg_ms": avg_ms, "iters": iters, "errors": errors}
+
+
+def DistributedStrategyPlan(
+    *,
+    server_resources: Dict[str, Any],
+    server_plans: Optional[Dict[str, Plan]] = None,
+    per_server_gpus: int = 1,
+    min_gpu_free_mb: int = 1024,
+    gpu_busy_threshold: float = 85.0,
+) -> Dict[str, Any]:
+    """Heuristic distributed plan across servers (merge single-server plans/resources).
+
+    Returns:
+      {
+        "backend": "distributed",
+        "servers": {sid: {"backend": ..., "devices": [...], "reason": "..."}},
+        "devices_by_server": {sid: [...]},
+        "notes": "...",
+      }
+    """
+    per_server_gpus = max(1, int(per_server_gpus or 1))
+    min_gpu_free_mb = max(0, int(min_gpu_free_mb or 0))
+    gpu_busy_threshold = float(gpu_busy_threshold or 85.0)
+
+    def _rank_gpus(snap: Dict[str, Any]) -> list[int]:
+        gpus = snap.get("gpus") or []
+        scored = []
+        for g in gpus:
+            try:
+                gid = int(g.get("id"))
+            except Exception:
+                continue
+            free_mb = g.get("free_mb")
+            util = g.get("gpu_util_percent")
+            if free_mb is None:
+                free_mb = 0
+            if util is None:
+                util = 0
+            score = float(free_mb) - (float(util) * 10.0)
+            scored.append((gid, float(free_mb), float(util), score))
+        if not scored:
+            return []
+        # prefer low util and high free_mb
+        scored.sort(key=lambda x: (x[3], x[1]), reverse=True)
+        picks = []
+        for gid, free_mb, util, _ in scored:
+            if free_mb >= min_gpu_free_mb and util <= gpu_busy_threshold:
+                picks.append(gid)
+        return picks
+
+    servers_out: Dict[str, Any] = {}
+    devices_by_server: Dict[str, Any] = {}
+    for sid, snap in server_resources.items():
+        plan = server_plans.get(sid) if server_plans else None
+        if plan and plan.backend in ("cuda", "multi-gpu"):
+            devices = list(plan.devices or [])
+            backend = plan.backend
+            reason = "strategy_plan"
+        else:
+            ranked = _rank_gpus(snap or {})
+            devices = ranked[:per_server_gpus]
+            backend = "cuda" if len(devices) == 1 else ("multi-gpu" if len(devices) > 1 else "cpu")
+            reason = "resource_snapshot"
+        servers_out[sid] = {"backend": backend, "devices": devices, "reason": reason}
+        if devices:
+            devices_by_server[sid] = devices
+
+    return {
+        "backend": "distributed",
+        "servers": servers_out,
+        "devices_by_server": devices_by_server,
+        "notes": "heuristic: per-server plan merged; not a global optimizer",
+    }

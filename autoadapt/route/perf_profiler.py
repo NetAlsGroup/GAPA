@@ -347,6 +347,14 @@ class PerformanceProfiler:
         d2d_gbps = (size_gb * (1024**3)) / dt / 1e9
         # --- graph micro (CSR SpMV) ---
         ges = self._bench_spmv_cuda(idx)
+        try:
+            del A, B, C, x, y
+        except Exception:
+            pass
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
         # --- optional power ---
         avg_w = self._nvml_avg_power(idx, 0.2) if _HAS_NVML else None
         sc = self._score_gpu_compute(best_tflops)
@@ -474,6 +482,14 @@ class PerformanceProfiler:
             break
         nnz = int(A._nnz()) * passes
         ges = nnz / dt / 1e9
+        try:
+            del crow, col, val, A, x, y
+        except Exception:
+            pass
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
         return float(ges)
 
     def _bench_spmv_mps(self) -> Optional[float]:
@@ -534,6 +550,11 @@ class PerformanceProfiler:
         cpu = self.bench_cpu()
         gpus = self.bench_gpus(dev)
         hint = self._recommendation(dev, cpu, gpus)
+        try:
+            if _HAS_TORCH and torch and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
         return ProfileResult(device=dev, cpu=cpu, gpus=gpus, overall_hint=hint)
 
     def _recommendation(self, dev: DeviceInfo, cpu: CpuBench, gpus: List[GpuBench]) -> str:

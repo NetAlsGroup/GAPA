@@ -1,0 +1,5 @@
+{"generation": 1, "max_generation": 200, "metrics": {"PCG": 72350.0, "MCN": 109.0}}
+{"generation": 51, "max_generation": 200, "metrics": {"PCG": 57821.0, "MCN": 51.0}}
+{"generation": 101, "max_generation": 200, "metrics": {"PCG": 54122.0, "MCN": 44.0}}
+{"generation": 151, "max_generation": 200, "metrics": {"PCG": 36554.0, "MCN": 32.0}}
+{"generation": 200, "max_generation": 200, "metrics": {"PCG": 68039.0, "MCN": 31.0}}

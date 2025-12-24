@@ -14,6 +14,7 @@ from gapa.framework.evaluator import BasicEvaluator
 from gapa.utils.functions import CNDTest, Num2Chunks
 from gapa.utils.functions import current_time
 from gapa.utils.functions import init_dist
+from gapa.utils.comm_stats import CommTimer, finalize_comm_stats, timed_call
 from igraph import Graph as ig
 
 
@@ -238,6 +239,7 @@ class TDEController(BasicController):
 
     def mp_calculate(self, rank, max_generation, evaluator, world_size, component_size_list):
         device = init_dist(rank, world_size)
+        comm_timer = CommTimer()
         best_PCG = []
         best_MCN = []
         best_genes = []
@@ -262,8 +264,8 @@ class TDEController(BasicController):
 
             population_embed = [torch.zeros((component_size, self.budget), dtype=component_population_embed.dtype, device=device) for component_size in component_size_list]
             fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for component_size in component_size_list]
-            dist.all_gather(population_embed, component_population_embed)
-            dist.all_gather(fitness_list, component_fitness_list)
+            timed_call(comm_timer, "all_gather_init_pop", dist.all_gather, population_embed, component_population_embed)
+            timed_call(comm_timer, "all_gather_init_fit", dist.all_gather, fitness_list, component_fitness_list)
 
             population_embed = torch.cat(population_embed)
             fitness_list = torch.cat(fitness_list)
@@ -290,12 +292,12 @@ class TDEController(BasicController):
                         crossover_population_embed = [None for _ in range(world_size)]
 
                     component_crossover_population_embed = [torch.tensor([0])]
-                    dist.scatter_object_list(component_crossover_population_embed, crossover_population_embed, src=0)
+                    timed_call(comm_timer, "scatter_crossover", dist.scatter_object_list, component_crossover_population_embed, crossover_population_embed, src=0)
                     component_crossover_population_embed = component_crossover_population_embed[0].to(device)
                     new_fitness_list = evaluator(component_crossover_population_embed).to(device)
 
                     elitism_fitness_list = [torch.empty((component_size,), dtype=new_fitness_list.dtype, device=device) for component_size in component_size_list]
-                    dist.all_gather(elitism_fitness_list, new_fitness_list)
+                    timed_call(comm_timer, "all_gather_elitism_fit", dist.all_gather, elitism_fitness_list, new_fitness_list)
 
                     if rank == 0:
                         elitism_fitness_list = torch.cat(elitism_fitness_list)
@@ -306,8 +308,8 @@ class TDEController(BasicController):
                         population_embed = torch.zeros(population_embed.shape, dtype=population_embed.dtype, device=device)
                         fitness_list = torch.empty(fitness_list.shape, dtype=fitness_list.dtype, device=device)
 
-                    dist.broadcast(population_embed, src=0)
-                    dist.broadcast(fitness_list, src=0)
+                    timed_call(comm_timer, "broadcast_pop", dist.broadcast, population_embed, src=0)
+                    timed_call(comm_timer, "broadcast_fit", dist.broadcast, fitness_list, src=0)
 
                     top_index = torch.argsort(fitness_list)[self.pop_size - component_size_list[rank]:]
                     component_population_embed = population_embed[top_index]
@@ -344,10 +346,10 @@ class TDEController(BasicController):
                 whole_genes = None
                 whole_PCG = None
                 whole_MCN = None
-            dist.barrier()
-            dist.gather(best_genes, whole_genes, dst=0)
-            dist.gather(best_PCG, whole_PCG, dst=0)
-            dist.gather(best_MCN, whole_MCN, dst=0)
+            timed_call(comm_timer, "barrier", dist.barrier)
+            timed_call(comm_timer, "gather_genes", dist.gather, best_genes, whole_genes, dst=0)
+            timed_call(comm_timer, "gather_pcg", dist.gather, best_PCG, whole_PCG, dst=0)
+            timed_call(comm_timer, "gather_mcn", dist.gather, best_MCN, whole_MCN, dst=0)
             if rank == 0:
                 whole_genes = torch.cat(whole_genes)
                 whole_PCG = torch.cat(whole_PCG)
@@ -356,6 +358,7 @@ class TDEController(BasicController):
                 print(f"Best PC(G): {whole_PCG[top_index]}. Best connected num: {whole_MCN[top_index]}.")
                 self.save(self.dataset, whole_genes[top_index], [whole_PCG[top_index].item(), whole_MCN[top_index].item(), time_list[-1]], time_list, "TDE", bestPCG=best_PCG, bestMCN=best_MCN)
                 print(f"Loop {loop} finished. Data saved in {self.path}...")
+        finalize_comm_stats(comm_timer, rank, world_size, getattr(self, "comm_path", None))
 
     def save(self, dataset, gene, best_metric, time_list, method, **kwargs):
         save_path = self.path + dataset + '_crossover_rate_' + str(self.crossover_rate) + '_mutate_rate_' + str(self.mutate_rate) + f'_{method}.txt'
@@ -417,9 +420,9 @@ class TDEController(BasicController):
 def TDE(mode, max_generation, data_loader, controller: TDEController, evaluator, world_size, verbose=True):
     controller.mode = mode
     evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator)
-    if mode == "s" or mode == "sm":
+    if mode in ("s", "sm", "mnm"):
         controller.calculate(max_generation=max_generation, evaluator=evaluator)
-    elif mode == "m" or mode == "mnm":
+    elif mode == "m":
         component_size_list = Num2Chunks(controller.pop_size, world_size)
         if verbose:
             print(f"Component Size List: {component_size_list}")

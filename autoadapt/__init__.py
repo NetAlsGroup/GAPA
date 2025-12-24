@@ -5,7 +5,7 @@
 """
 
 from .api.schemas import JobSpec, Plan
-from .api.planner import StrategyCompare, StrategyPlan
+from .api.planner import StrategyCompare, StrategyPlan, DistributedStrategyPlan
 from .route.router_adapter import route_plan
 from .route.profiler_adapter import get_profile
 from .exec.executor import apply_plan_env, pick_mode, world_size
@@ -16,6 +16,7 @@ __all__ = [
     "Plan",
     "StrategyPlan",
     "StrategyCompare",
+    "DistributedStrategyPlan",
     "route_plan",
     "get_profile",
     "apply_plan_env",

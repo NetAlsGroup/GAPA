@@ -19,12 +19,15 @@ import time
 import uuid
 from typing import Any, Dict
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from server.agent_monitor import resources_payload
 from server.agent_state import TaskState, start_consumer
+from server.fitness_protocol import dumps as fitness_dumps, loads as fitness_loads
+from server.fitness_worker import compute_fitness_batch
 from server.ga_worker import ga_worker, select_run_mode
+from server.resource_lock import LOCK_MANAGER
 
 
 app = FastAPI(title="GAPA Server Agent", version="0.1.0")
@@ -44,6 +47,110 @@ def api_resources() -> Dict[str, Any]:
 
 TASK = TaskState()
 
+
+def _summarize_warmup_result(result: dict | None) -> dict:
+    if not isinstance(result, dict):
+        return {"summary": {}, "per_iter_ms": []}
+    timing = result.get("timing") or {}
+    summary = {
+        "iter_seconds": timing.get("iter_seconds"),
+        "iter_avg_ms": timing.get("iter_avg_ms"),
+        "throughput_ips": timing.get("throughput_ips"),
+        "iterations": (result.get("hyperparams") or {}).get("iterations"),
+        "pop_size": (result.get("hyperparams") or {}).get("pop_size"),
+        "mode": (result.get("selected") or {}).get("mode"),
+        "devices": (result.get("selected") or {}).get("devices"),
+        "remote_servers": (result.get("selected") or {}).get("remote_servers"),
+    }
+    points = result.get("points") or []
+    per_iter_ms = []
+    last = None
+    for item in points:
+        elapsed = item.get("elapsed_s")
+        if elapsed is None:
+            continue
+        if last is not None:
+            per_iter_ms.append((float(elapsed) - float(last)) * 1000.0)
+        last = float(elapsed)
+    return {"summary": summary, "per_iter_ms": per_iter_ms}
+
+
+def _run_ga_warmup_local(payload: Dict[str, Any]) -> Dict[str, Any] | tuple[Dict[str, Any], int]:
+    algorithm = str(payload.get("algorithm") or "")
+    dataset = str(payload.get("dataset") or "")
+    if not algorithm or not dataset:
+        return {"error": "algorithm and dataset are required"}, 400
+    iterations = int(payload.get("iterations") or payload.get("warmup_iters") or 2)
+    crossover_rate = float(payload.get("crossover_rate") or payload.get("pc") or 0.8)
+    mutate_rate = float(payload.get("mutate_rate") or payload.get("pm") or 0.2)
+    selected = select_run_mode(payload.get("mode"), payload.get("devices"))
+    remote_servers = payload.get("remote_servers") or payload.get("allowed_server_ids")
+    if remote_servers is not None:
+        selected["remote_servers"] = remote_servers
+    timeout_s = float(payload.get("timeout_s", 180) or 180)
+
+    with TASK.lock:
+        if TASK.state == "running":
+            return {"error": "Agent is busy running a GA task"}, 409
+
+    task_id = str(uuid.uuid4())
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    proc = ctx.Process(
+        target=_ga_entry,
+        args=(task_id, algorithm, dataset, iterations, crossover_rate, mutate_rate, selected, q),
+    )
+    proc.start()
+
+    logs = []
+    result = None
+    state = "running"
+    error = None
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        try:
+            evt = q.get(timeout=0.2)
+        except Exception:
+            if not proc.is_alive():
+                break
+            continue
+        if not isinstance(evt, dict):
+            continue
+        etype = evt.get("type")
+        if etype == "log":
+            logs.append(evt.get("line"))
+        elif etype == "result":
+            result = evt.get("result")
+        elif etype == "state":
+            state = evt.get("state") or state
+            error = evt.get("error") or error
+        if state in ("completed", "error") and result is not None:
+            break
+
+    if proc.is_alive():
+        try:
+            proc.terminate()
+            proc.join(timeout=1.0)
+        except Exception:
+            pass
+        state = "timeout"
+        error = error or "warmup timeout"
+    else:
+        try:
+            proc.join(timeout=0.2)
+        except Exception:
+            pass
+
+    summary = _summarize_warmup_result(result)
+    return {
+        "task_id": task_id,
+        "state": state,
+        "summary": summary["summary"],
+        "per_iter_ms": summary["per_iter_ms"],
+        "comm": (result or {}).get("comm"),
+        "logs": logs[-200:],
+        "error": error,
+    }
 def _ga_entry(
     task_id: str,
     algorithm: str,
@@ -70,12 +177,14 @@ def api_analysis_start(payload: Dict[str, Any]) -> Dict[str, Any]:
     crossover_rate = float(payload.get("crossover_rate") or payload.get("pc") or 0.8)
     mutate_rate = float(payload.get("mutate_rate") or payload.get("pm") or 0.2)
     selected = select_run_mode(payload.get("mode"), payload.get("devices"))
+    release_lock_on_finish = bool(payload.get("release_lock_on_finish", True))
 
     with TASK.lock:
         if TASK.state == "running":
             raise HTTPException(status_code=409, detail="A task is already running")
         task_id = str(uuid.uuid4())
         TASK.reset_for_new_task(task_id)
+        TASK.release_lock_on_finish = release_lock_on_finish
         TASK.append_log(f"[INFO] 运行模式: {selected.get('mode')} devices={selected.get('devices')}")
 
         ctx = mp.get_context("spawn")
@@ -90,6 +199,16 @@ def api_analysis_start(payload: Dict[str, Any]) -> Dict[str, Any]:
         start_consumer(TASK)
 
     return {"task_id": task_id, "status": "started"}
+
+
+@app.post("/api/ga_warmup")
+def api_ga_warmup(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Run a short real GA warmup to measure actual latency/throughput."""
+    result = _run_ga_warmup_local(payload)
+    if isinstance(result, tuple):
+        body, code = result
+        raise HTTPException(status_code=code, detail=body.get("error") or "warmup failed")
+    return result
 
 
 @app.get("/api/analysis/status")
@@ -183,6 +302,71 @@ def api_analysis_stop() -> Dict[str, Any]:
             TASK.append_log("[INFO] task stopped.")
 
     return {"status": "stopped", "task_id": TASK.task_id}
+
+@app.post("/api/fitness/batch")
+async def api_fitness_batch(req: Request) -> Response:
+    """Compute fitness for a population chunk (used by MNM distributed fitness mode)."""
+    with TASK.lock:
+        # Keep it simple: avoid fighting for GPU/CPU when a full GA task is running.
+        if TASK.state == "running":
+            raise HTTPException(status_code=409, detail="Agent is busy running a GA task")
+
+    raw = await req.body()
+    try:
+        msg = fitness_loads(raw)
+        algorithm = str(msg.get("algorithm") or "")
+        dataset = str(msg.get("dataset") or "")
+        population = msg.get("population")
+        fitness, meta = compute_fitness_batch(algorithm=algorithm, dataset=dataset, population_cpu=population)
+        out = fitness_dumps({"fitness": fitness, "meta": meta})
+        return Response(content=out, media_type="application/octet-stream")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/resource_lock")
+def api_resource_lock(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Lock local resources by allocating warmup + memory on best device."""
+    with TASK.lock:
+        if TASK.state == "running":
+            raise HTTPException(status_code=409, detail="Agent is busy running a GA task")
+    duration_s = float(payload.get("duration_s", 600) or 600)
+    warmup_iters = int(payload.get("warmup_iters", 2) or 2)
+    mem_mb = int(payload.get("mem_mb", 1024) or 1024)
+    strict_idle = bool(payload.get("strict_idle", False))
+    devices = payload.get("devices")
+    if devices is not None and not isinstance(devices, list):
+        devices = [devices]
+    try:
+        info = LOCK_MANAGER.lock(duration_s=duration_s, warmup_iters=warmup_iters, mem_mb=mem_mb, devices=devices, strict_idle=strict_idle)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return info
+
+
+@app.post("/api/resource_lock/release")
+def api_resource_lock_release() -> Dict[str, Any]:
+    try:
+        info = LOCK_MANAGER.release(reason="manual")
+        try:
+            from server.fitness_worker import clear_contexts
+
+            clear_contexts()
+        except Exception:
+            pass
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return info
+
+
+@app.get("/api/resource_lock/status")
+def api_resource_lock_status() -> Dict[str, Any]:
+    try:
+        return LOCK_MANAGER.status()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.post("/api/strategy_plan")

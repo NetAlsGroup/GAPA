@@ -240,13 +240,13 @@ class CustomController(BasicController):
 
 def Start(max_generation, data_loader, controller, evaluator, body, world_size, verbose=True, observer=None):
     evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator)
-    if controller.mode in ("s", "sm"):
+    if controller.mode in ("s", "sm", "mnm"):
         controller.calculate(max_generation=max_generation, evaluator=evaluator, body=body, observer=observer)
-    elif controller.mode in ("m", "mnm"):
+    elif controller.mode == "m":
         if observer is not None and verbose:
             print("Observer recording is currently supported in single-process mode. Distributed runs will skip observer writes.")
         if world_size < 1:
-            raise ValueError(f"Error in world_size -> {world_size} <- Since your device may not support for m or mnm mode, please re-choose s mode.")
+            raise ValueError(f"Error in world_size -> {world_size} <- Since your device may not support for m mode, please re-choose s mode.")
         component_size_list = Num2Chunks(controller.pop_size, world_size)
         if verbose:
             print(f"Component Size List: {component_size_list}")

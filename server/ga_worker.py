@@ -205,6 +205,7 @@ def ga_worker(
         from gapa.utils.DataLoader import Loader  # type: ignore
 
         ui_mode = (selected.get("mode") or "AUTO").upper()
+        distributed_fitness = ui_mode == "MNM"
         selected_devices = selected.get("devices") or []
         try:
             selected_devices = [int(x) for x in selected_devices]
@@ -224,6 +225,7 @@ def ga_worker(
             algo_mode = "m"
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
         elif ui_mode == "MNM":
+            # MNM: multi-machine fitness offload; keep GA loop single-process.
             algo_mode = "mnm"
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
         else:
@@ -235,9 +237,11 @@ def ga_worker(
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
         world_size = int(torch.cuda.device_count()) if device.startswith("cuda") else 1
-        if algo_mode in ("m", "mnm") and world_size < 2:
+        if algo_mode == "m" and world_size < 2:
             emit({"type": "log", "line": f"[WARN] mode={algo_mode} requires >=2 GPUs; fallback to S"})
             algo_mode = "s"
+            world_size = 1
+        if distributed_fitness:
             world_size = 1
         emit({"type": "log", "line": f"[INFO] Exec resolved: ui_mode={ui_mode} -> algo_mode={algo_mode} world_size={world_size} device={device}"})
 
@@ -310,7 +314,11 @@ def ga_worker(
                 "mutate_rate": float(mutate_rate),
                 "pop_size": int(os.getenv("GAPA_GA_POP_SIZE", "100")),
             },
-            "selected": {"mode": ui_mode, "devices": selected.get("devices")},
+            "selected": {
+                "mode": ui_mode,
+                "devices": selected.get("devices"),
+                "remote_servers": selected.get("remote_servers") or selected.get("allowed_server_ids"),
+            },
             "exec": {"algo_mode": algo_mode, "world_size": world_size, "device": device},
         }
         if objective.get("primary"):
@@ -399,6 +407,49 @@ def ga_worker(
         results_dir = Path(os.getenv("GAPA_RESULTS_DIR", str(repo_root / "results")))
         results_dir.mkdir(parents=True, exist_ok=True)
         fitness_goal = None
+        comm_path = results_dir / f"comm_{task_id}.json" if algo_mode == "m" else None
+
+        DISTRIBUTED_FITNESS_SUPPORTED = {"SixDST", "CutOff", "TDE"}
+
+        def maybe_wrap_distributed(evaluator_obj: Any) -> Any:
+            if not distributed_fitness:
+                return evaluator_obj
+            if algo_norm not in DISTRIBUTED_FITNESS_SUPPORTED:
+                emit(
+                    {
+                        "type": "log",
+                        "line": f"[WARN] MNM enabled but algorithm={algo_norm} is not supported for distributed fitness; fallback to local fitness.",
+                    }
+                )
+                return evaluator_obj
+            try:
+                allowed_ids = selected.get("remote_servers") or selected.get("allowed_server_ids")
+                if allowed_ids is not None and not isinstance(allowed_ids, list):
+                    allowed_ids = [allowed_ids]
+                from server.distributed_evaluator import DistributedEvaluator  # lazy import after CUDA env is set
+
+                use_plan = selected.get("use_strategy_plan")
+                if use_plan is None:
+                    use_plan = False
+                wrapped = DistributedEvaluator(
+                    evaluator_obj,
+                    algorithm=algo_norm,
+                    dataset=dataset,
+                    allowed_server_ids=allowed_ids,
+                    max_remote_workers=int(os.getenv("GAPA_MNM_MAX_WORKERS", "4")),
+                    refresh_interval_s=float(os.getenv("GAPA_MNM_REFRESH_S", "2.0")),
+                    use_strategy_plan=bool(use_plan),
+                )
+                if allowed_ids:
+                    emit({"type": "log", "line": f"[INFO] MNM enabled: remote servers={allowed_ids}."})
+                else:
+                    emit({"type": "log", "line": "[INFO] MNM enabled: distributed fitness offload to remote server agents."})
+                return wrapped
+            except Exception as exc:
+                emit({"type": "log", "line": f"[WARN] MNM setup failed ({exc}); fallback to local fitness."})
+                return evaluator_obj
+
+        comm_tracker = None
 
         def attach_observer(controller_obj: Any) -> None:
             nonlocal obs_path
@@ -415,6 +466,7 @@ def ga_worker(
 
         def run_cnd(method: str) -> None:
             nonlocal fitness_goal
+            nonlocal comm_tracker
             if method == "SixDST":
                 from gapa.algorithm.CND.SixDST import SixDST, SixDSTController, SixDSTEvaluator  # type: ignore
 
@@ -440,7 +492,12 @@ def ga_worker(
                     pop_size=int(result["hyperparams"]["pop_size"]),
                     device=device,
                 )
+                if comm_path:
+                    controller.comm_path = str(comm_path)
                 evaluator = SixDSTEvaluator(pop_size=int(result["hyperparams"]["pop_size"]), adj=data_loader.A, device=device)
+                evaluator = maybe_wrap_distributed(evaluator)
+                if hasattr(evaluator, "comm_stats"):
+                    comm_tracker = evaluator
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start SixDST: mode={algo_mode} device={device} world_size={world_size}"})
@@ -463,6 +520,9 @@ def ga_worker(
                 data_loader.world_size = world_size
 
                 evaluator = CutoffEvaluator(pop_size=int(result["hyperparams"]["pop_size"]), graph=data_loader.G, nodes=data_loader.nodes, device=device)
+                evaluator = maybe_wrap_distributed(evaluator)
+                if hasattr(evaluator, "comm_stats"):
+                    comm_tracker = evaluator
                 controller = CutoffController(
                     path=str(results_dir) + "/",
                     pattern="write",
@@ -474,6 +534,8 @@ def ga_worker(
                     pop_size=int(result["hyperparams"]["pop_size"]),
                     device=device,
                 )
+                if comm_path:
+                    controller.comm_path = str(comm_path)
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start CutOff: mode={algo_mode} device={device} world_size={world_size}"})
@@ -496,6 +558,9 @@ def ga_worker(
                 data_loader.world_size = world_size
 
                 evaluator = TDEEvaluator(pop_size=int(result["hyperparams"]["pop_size"]), graph=data_loader.G, budget=data_loader.k, device=device)
+                evaluator = maybe_wrap_distributed(evaluator)
+                if hasattr(evaluator, "comm_stats"):
+                    comm_tracker = evaluator
                 controller = TDEController(
                     path=str(results_dir) + "/",
                     pattern="write",
@@ -506,6 +571,8 @@ def ga_worker(
                     pop_size=int(result["hyperparams"]["pop_size"]),
                     device=device,
                 )
+                if comm_path:
+                    controller.comm_path = str(comm_path)
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start TDE: mode={algo_mode} device={device} world_size={world_size}"})
@@ -543,6 +610,8 @@ def ga_worker(
                     pop_size=int(result["hyperparams"]["pop_size"]),
                     device=device,
                 )
+                if comm_path:
+                    controller.comm_path = str(comm_path)
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start CDA-EDA: mode={algo_mode} device={device} world_size={world_size}"})
@@ -564,6 +633,8 @@ def ga_worker(
                     pop_size=int(result["hyperparams"]["pop_size"]),
                     device=device,
                 )
+                if comm_path:
+                    controller.comm_path = str(comm_path)
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start CGN: mode={algo_mode} device={device} world_size={world_size}"})
@@ -585,6 +656,8 @@ def ga_worker(
                     pop_size=int(result["hyperparams"]["pop_size"]),
                     device=device,
                 )
+                if comm_path:
+                    controller.comm_path = str(comm_path)
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start QAttack: mode={algo_mode} device={device} world_size={world_size}"})
@@ -628,6 +701,8 @@ def ga_worker(
                     num_eda_pop=int(result["hyperparams"]["pop_size"]),
                     device=device,
                 )
+                if comm_path:
+                    controller.comm_path = str(comm_path)
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start LPA-EDA: mode={algo_mode} device={device} world_size={world_size}"})
@@ -649,6 +724,8 @@ def ga_worker(
                     pop_size=int(result["hyperparams"]["pop_size"]),
                     device=device,
                 )
+                if comm_path:
+                    controller.comm_path = str(comm_path)
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start LPA-GA: mode={algo_mode} device={device} world_size={world_size}"})
@@ -719,6 +796,8 @@ def ga_worker(
                     pop_size=int(result["hyperparams"]["pop_size"]),
                     device=device,
                 )
+                if comm_path:
+                    controller.comm_path = str(comm_path)
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start NCA-GA: mode={algo_mode} device={device} world_size={world_size}"})
@@ -751,6 +830,8 @@ def ga_worker(
                     pop_size=int(result["hyperparams"]["pop_size"]),
                     device=device,
                 )
+                if comm_path:
+                    controller.comm_path = str(comm_path)
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start {method}: mode={algo_mode} device={device} world_size={world_size}"})
@@ -780,6 +861,13 @@ def ga_worker(
                 "iter_seconds": iter_seconds,
                 "note": "iter_seconds excludes preprocessing; timing starts at first iteration callback and ends at last callback",
             }
+            if iter_seconds is not None:
+                iters = int(iterations)
+                pop_size = int(result["hyperparams"].get("pop_size", 0) or 0)
+                iter_avg_ms = (iter_seconds / max(1, iters)) * 1000.0
+                throughput = (pop_size * iters / iter_seconds) if iter_seconds > 0 else None
+                result["timing"]["iter_avg_ms"] = float(iter_avg_ms)
+                result["timing"]["throughput_ips"] = float(throughput) if throughput is not None else None
         if result.get("timing", {}).get("iter_seconds") is not None:
             emit({"type": "log", "line": f"[INFO] iteration loop finished; iter_seconds={result['timing']['iter_seconds']:.3f}s"})
         else:
@@ -787,6 +875,22 @@ def ga_worker(
 
         if fitness_goal:
             result["fitness_goal"] = fitness_goal
+        if comm_path and comm_path.exists():
+            try:
+                import json
+
+                comm_data = json.loads(comm_path.read_text(encoding="utf-8"))
+                if result.get("comm"):
+                    result["comm_process"] = comm_data
+                else:
+                    result["comm"] = comm_data
+            except Exception:
+                pass
+        if comm_tracker is not None:
+            try:
+                result["comm"] = comm_tracker.comm_stats()
+            except Exception:
+                pass
 
         tail_stop = True
         primary = objective.get("primary") or "fitness"
