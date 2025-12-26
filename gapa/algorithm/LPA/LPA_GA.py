@@ -4,6 +4,7 @@ import torch.distributed as dist
 import numpy as np
 import networkx as nx
 from copy import deepcopy
+from typing import Any
 from itertools import combinations
 from tqdm import tqdm
 from time import time
@@ -12,6 +13,7 @@ from gapa.framework.controller import BasicController
 from gapa.framework.evaluator import BasicEvaluator
 from gapa.utils.functions import current_time, Num2Chunks
 from gapa.utils.functions import init_dist
+from gapa.utils.comm_stats import CommTimer, finalize_comm_stats, timed_call
 
 
 def igraph_to_nx_mapping(edges):
@@ -315,6 +317,26 @@ class GAController(BasicController):
         self.non_exist_edges_index = None
         self.non_exist_index_len = None
         self.all_edges = None
+        self.observer = None
+
+    def _emit_observer(self, generation: int, max_generation: int, payload: Any) -> None:
+        obs = self.observer
+        if obs is None:
+            return
+        if callable(obs):
+            obs(generation, max_generation, payload)
+            return
+        if isinstance(obs, dict) and obs.get("type") == "jsonl" and obs.get("path"):
+            try:
+                import json
+
+                with open(obs["path"], "a", encoding="utf-8") as f:
+                    if isinstance(payload, dict):
+                        f.write(json.dumps({"generation": generation, "max_generation": max_generation, "metrics": payload}) + "\n")
+                    else:
+                        f.write(json.dumps({"generation": generation, "max_generation": max_generation, "best_fitness": payload}) + "\n")
+            except Exception:
+                pass
 
     def setup(self, data_loader, evaluator: GAEvaluator):
         ori_G_edges = np.array(data_loader.G.edges())
@@ -420,6 +442,14 @@ class GAController(BasicController):
                         best_genes.append(genes)
                         end = time()
                         time_list.append(end - start)
+                        try:
+                            self._emit_observer(
+                                generation + 1,
+                                max_generation,
+                                {"Pre": float(best_Pre[-1]), "AUC": float(best_AUC[-1])},
+                            )
+                        except Exception:
+                            pass
                     pbar.set_postfix(fitness=max(fitness_list).item(), Pre=min(best_Pre), AUC=min(best_AUC))
                     pbar.update(1)
 
@@ -430,6 +460,7 @@ class GAController(BasicController):
 
     def mp_calculate(self, rank, max_generation, evaluator, world_size, component_size_list):
         device = init_dist(rank, world_size)
+        comm_timer = CommTimer()
         best_Pre = []
         best_AUC = []
         best_genes = []
@@ -447,8 +478,8 @@ class GAController(BasicController):
 
             population = [torch.zeros(size=(component_size,) + component_population.shape[1:], dtype=component_population.dtype, device=device) for component_size in component_size_list]
             fitness_list = [torch.empty((component_size,), dtype=component_fitness_list.dtype, device=device) for component_size in component_size_list]
-            dist.all_gather(population, component_population)
-            dist.all_gather(fitness_list, component_fitness_list)
+            timed_call(comm_timer, "all_gather_init_pop", dist.all_gather, population, component_population)
+            timed_call(comm_timer, "all_gather_init_fit", dist.all_gather, fitness_list, component_fitness_list)
 
             population = torch.cat(population)
             fitness_list = torch.cat(fitness_list)
@@ -468,13 +499,37 @@ class GAController(BasicController):
                         body.pop_size = component_size_list[rank]
                         body.budget = self.budget
 
+                    max_comp = max(component_size_list)
                     if rank == 0:
-                        crossover_population = list(torch.split(crossover_population, component_size_list))
+                        chunks = list(torch.split(crossover_population, component_size_list))
+                        scatter_list = []
+                        for chunk, size in zip(chunks, component_size_list):
+                            if size == max_comp:
+                                scatter_list.append(chunk.contiguous())
+                                continue
+                            pad_shape = (max_comp,) + chunk.shape[1:]
+                            padded = torch.zeros(pad_shape, dtype=chunk.dtype, device=chunk.device)
+                            padded[:size] = chunk
+                            scatter_list.append(padded)
                     else:
-                        crossover_population = [None for _ in range(world_size)]
-                    component_crossover_population = [torch.tensor([0])]
-                    dist.scatter_object_list(component_crossover_population, crossover_population, src=0)
-                    component_crossover_population = component_crossover_population[0].to(device)
+                        chunks = None
+                        scatter_list = None
+                    recv_shape = (max_comp,) + component_population.shape[1:]
+                    component_crossover_population = torch.empty(recv_shape, dtype=component_population.dtype, device=device)
+                    try:
+                        timed_call(comm_timer, "scatter_crossover", dist.scatter, component_crossover_population, scatter_list, 0)
+                        component_crossover_population = component_crossover_population[: component_size_list[rank]]
+                    except Exception:
+                        component_crossover_population = [torch.tensor([0])]
+                        timed_call(
+                            comm_timer,
+                            "scatter_crossover",
+                            dist.scatter_object_list,
+                            component_crossover_population,
+                            chunks if rank == 0 else [None for _ in range(world_size)],
+                            0,
+                        )
+                        component_crossover_population = component_crossover_population[0].to(device)
 
                     del_population = component_crossover_population[:, :self.budget]
                     del_mutation_population = body.del_mutation(del_population, self.mutate_rate, ONE)
@@ -491,8 +546,8 @@ class GAController(BasicController):
 
                     elitism_population = [torch.zeros(size=(component_size,) + component_mutation_population.shape[1:], dtype=component_mutation_population.dtype, device=device) for component_size in component_size_list]
                     elitism_fitness_list = [torch.empty((component_size,), dtype=new_component_fitness_list.dtype, device=device) for component_size in component_size_list]
-                    dist.all_gather(elitism_population, component_mutation_population)
-                    dist.all_gather(elitism_fitness_list, new_component_fitness_list)
+                    timed_call(comm_timer, "all_gather_elitism_pop", dist.all_gather, elitism_population, component_mutation_population)
+                    timed_call(comm_timer, "all_gather_elitism_fit", dist.all_gather, elitism_fitness_list, new_component_fitness_list)
 
                     if rank == 0:
                         elitism_population = torch.cat(elitism_population)
@@ -504,8 +559,8 @@ class GAController(BasicController):
                         population = torch.zeros(population.shape, dtype=population.dtype, device=device)
                         fitness_list = torch.empty(fitness_list.shape, dtype=fitness_list.dtype, device=device)
 
-                    dist.broadcast(population, src=0)
-                    dist.broadcast(fitness_list, src=0)
+                    timed_call(comm_timer, "broadcast_pop", dist.broadcast, population, src=0)
+                    timed_call(comm_timer, "broadcast_fit", dist.broadcast, fitness_list, src=0)
 
                     top_index = torch.argsort(fitness_list)[self.pop_size - component_size_list[rank]:]
                     component_population = population[top_index]
@@ -520,6 +575,15 @@ class GAController(BasicController):
                         best_genes.append(genes)
                         end = time()
                         time_list.append(end - start)
+                        if rank == 0:
+                            try:
+                                self._emit_observer(
+                                    generation + 1,
+                                    max_generation,
+                                    {"Pre": float(best_Pre[-1]), "AUC": float(best_AUC[-1])},
+                                )
+                            except Exception:
+                                pass
                     pbar.set_postfix(fitness=max(component_fitness_list).item(), Pre=min(best_Pre), AUC=min(best_AUC))
                     pbar.update(1)
             best_genes = torch.stack(best_genes)
@@ -533,10 +597,10 @@ class GAController(BasicController):
                 whole_genes = None
                 whole_Pre = None
                 whole_AUC = None
-            dist.barrier()
-            dist.gather(best_genes, whole_genes, dst=0)
-            dist.gather(best_Pre, whole_Pre, dst=0)
-            dist.gather(best_AUC, whole_AUC, dst=0)
+            timed_call(comm_timer, "barrier", dist.barrier)
+            timed_call(comm_timer, "gather_genes", dist.gather, best_genes, whole_genes, dst=0)
+            timed_call(comm_timer, "gather_pre", dist.gather, best_Pre, whole_Pre, dst=0)
+            timed_call(comm_timer, "gather_auc", dist.gather, best_AUC, whole_AUC, dst=0)
             if rank == 0:
                 whole_genes = torch.cat(whole_genes)
                 whole_Pre = torch.cat(whole_Pre)
@@ -547,6 +611,7 @@ class GAController(BasicController):
                 print(f"Loop {loop} finished. Data saved in {self.path}...")
 
             torch.cuda.empty_cache()
+            finalize_comm_stats(comm_timer, rank, world_size, getattr(self, "comm_path", None))
             dist.destroy_process_group()
             torch.cuda.synchronize()
 
@@ -635,23 +700,15 @@ class GAController(BasicController):
 def LPA_GA(mode, max_generation, data_loader, controller: GAController, evaluator, world_size, verbose=True):
     controller.mode = mode
     evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator)
-    if mode == "s" or mode == "sm":
+    if mode in ("s", "sm", "mnm"):
         controller.calculate(max_generation=max_generation, evaluator=evaluator)
-    elif mode == "m" or mode == "mnm":
+    elif mode == "m":
         component_size_list = Num2Chunks(controller.pop_size, world_size)
         if verbose:
             print(f"Component Size List: {component_size_list}")
         mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, component_size_list), nprocs=world_size, join=True)
     else:
         raise ValueError(f"No such mode. Please choose s, sm, m or mnm.")
-
-
-
-
-
-
-
-
 
 
 

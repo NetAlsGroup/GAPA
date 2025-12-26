@@ -1,0 +1,18 @@
+{
+  "by_algorithm": {
+    "CDA-EDA": ["karate", "dolphins", "football", "email-EU-core"],
+    "CGN": ["karate", "dolphins", "football", "email-EU-core"],
+    "QAttack": ["karate", "dolphins", "football", "email-EU-core"],
+
+    "TDE": ["Circuit", "A01", "humanDiseasome", "yeast1"],
+    "CutOff": ["Circuit", "A01", "humanDiseasome", "yeast1"],
+    "SixDST": ["Circuit", "A01", "humanDiseasome", "yeast1"],
+
+    "GANI": ["chameleon_filtered", "squirrel_filtered", "cora", "citeseer"],
+    "NCA-GA": ["chameleon_filtered", "squirrel_filtered", "cora", "citeseer"],
+
+    "LPA-EDA": ["dolphins", "humanDiseasome", "jazz", "USAir97"],
+    "LPA-GA": ["dolphins", "humanDiseasome", "jazz", "USAir97"]
+  }
+}
+

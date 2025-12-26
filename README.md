@@ -1,11 +1,38 @@
+<div align="center">
+  <img src="assets/LOGO.png" width="400" alt="GAPA Logo"/>
 
-  [![arXiv](https://img.shields.io/badge/arxiv-2412.20980-red)](https://arxiv.org/abs/2412.20980)
-  [![PyPI-Version](https://img.shields.io/pypi/v/gapa?logo=python)](https://pypi.org/project/gapa/)
-  [![Python-Version](https://img.shields.io/badge/python-3.9+-orange?logo=python)](https://pypi.org/project/gapa/)
-<img alt="GitHub last commit" src="https://img.shields.io/github/last-commit/NetAlsGroup/GAPA">
-<a href="https://github.com/NetAlsGroup/GAPA/issues"> <img alt="GitHub issues" src="https://img.shields.io/github/issues/NetAlsGroup/GAPA"> </a>
-  [![GitHub User's Stars](https://img.shields.io/github/stars/NetAlsGroup%2FGAPA)](https://github.com/NetAlsGroup/GAPA)
-    <!--[![PyPI-Downloads](https://img.shields.io/pypi/dm/evox?color=orange&logo=python)](https://pypi.org/project/evox/)-->
+  <h3>
+    GAPA: A Parallel Accelerated Framework for Graph Structure Optimization
+  </h3>
+
+  <p>
+    Efficiently solving PSSO problems (CND, CDA, NCA, LPA) via Unified Genetic Algorithms and Multi-level Parallelism.
+  </p>
+</div>
+
+
+<div align="center">
+  
+  <a href="https://arxiv.org/abs/2412.20980">
+    <img src="https://img.shields.io/badge/arxiv-2412.20980-red" alt="arXiv">
+  </a>
+  
+  <a href="https://pypi.org/project/gapa/">
+    <img src="https://img.shields.io/pypi/v/gapa?logo=python" alt="PyPI Version">
+  </a>
+  
+  <a href="https://pypi.org/project/gapa/">
+    <img src="https://img.shields.io/badge/python-3.9+-orange?logo=python" alt="Python Version">
+  </a>
+
+  <img src="https://img.shields.io/github/last-commit/NetAlsGroup/GAPA" alt="GitHub last commit">
+
+  <a href="https://github.com/NetAlsGroup/GAPA">
+    <img src="https://img.shields.io/github/stars/NetAlsGroup%2FGAPA" alt="GitHub Stars">
+  </a>
+
+  </div>
+
 
 GAPA is a Python library that accelerates Perturbed SubStructure Optimization(PSSO).
 This challenging field has many vital applications, such as Community Detection Attacks (CDA), Critical Node Detection(CND), Node Classification Attacks (NCA), and Link Prediction Attacks (LPA).
@@ -107,6 +134,30 @@ python CND_new.py --dataset=ForestFire_n500 --method=SixDST --pop_size=100 --mod
 ```
 or you can choose your way to start an algorithm.
 <br>
+
+<br>
+<h3>
+GAPA Console（资源监控 + 多机适应度加速）
+</h3>
+
+1) 本机启动控制台：
+
+```
+python app.py
+```
+
+2) 在每台远程服务器启动 agent（用于资源上报与适应度计算 RPC）：
+
+```
+uvicorn server_agent:app --host 0.0.0.0 --port 7777
+```
+
+3) 配置 `servers.json` 后，在 Console 的“算法运行与监控”里选择运行模式 `MNM（多机适应度加速）`。
+目前 MNM 分布式适应度计算优先支持 CND 系列算法：`SixDST` / `CutOff` / `TDE`。
+
+可选参数：
+- `GAPA_MNM_MAX_WORKERS`：每次适应度评估最多使用的远程节点数（默认 4）
+- `GAPA_MNM_REFRESH_S`：节点资源与 StrategyPlan 刷新间隔秒数（默认 2.0）
 
 <br>
 We also provide application examples of SixDST and CDA-EDA algorithms on Evotorch and Evox for users‘ reference.
