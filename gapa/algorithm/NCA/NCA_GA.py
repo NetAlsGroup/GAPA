@@ -189,13 +189,37 @@ class NCA_GAController(BasicController):
                         crossover_ONE = torch.ones((self.pop_size, self.budget), dtype=new_population1.dtype, device=device)
                         crossover_population = body.crossover(new_population1, new_population2, self.crossover_rate, crossover_ONE)
                         body.pop_size = component_size_list[rank]
+                    max_comp = max(component_size_list)
                     if rank == 0:
-                        crossover_population = list(torch.split(crossover_population, component_size_list))
+                        chunks = list(torch.split(crossover_population, component_size_list))
+                        scatter_list = []
+                        for chunk, size in zip(chunks, component_size_list):
+                            if size == max_comp:
+                                scatter_list.append(chunk.contiguous())
+                                continue
+                            pad_shape = (max_comp,) + chunk.shape[1:]
+                            padded = torch.zeros(pad_shape, dtype=chunk.dtype, device=chunk.device)
+                            padded[:size] = chunk
+                            scatter_list.append(padded)
                     else:
-                        crossover_population = [None for _ in range(world_size)]
-                    component_crossover_population = [torch.tensor([0])]
-                    timed_call(comm_timer, "scatter_crossover", dist.scatter_object_list, component_crossover_population, crossover_population, src=0)
-                    component_crossover_population = component_crossover_population[0].to(device)
+                        chunks = None
+                        scatter_list = None
+                    recv_shape = (max_comp,) + component_population.shape[1:]
+                    component_crossover_population = torch.empty(recv_shape, dtype=component_population.dtype, device=device)
+                    try:
+                        timed_call(comm_timer, "scatter_crossover", dist.scatter, component_crossover_population, scatter_list, 0)
+                        component_crossover_population = component_crossover_population[: component_size_list[rank]]
+                    except Exception:
+                        component_crossover_population = [torch.tensor([0])]
+                        timed_call(
+                            comm_timer,
+                            "scatter_crossover",
+                            dist.scatter_object_list,
+                            component_crossover_population,
+                            chunks if rank == 0 else [None for _ in range(world_size)],
+                            0,
+                        )
+                        component_crossover_population = component_crossover_population[0].to(device)
                     mutation_population = body.mutation(component_crossover_population, self.mutate_rate, ONE)
                     mutation_population = self._remove_repeat(mutation_population)
                     new_component_fitness_list = evaluator(mutation_population).to(device)

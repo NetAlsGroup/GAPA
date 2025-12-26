@@ -6,6 +6,7 @@ import multiprocessing as mp
 import os
 import signal
 from pathlib import Path
+import uuid
 
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -25,6 +26,26 @@ from server.ga_worker import ga_worker, select_run_mode
 
 import threading
 import time
+
+HISTORY_FILE = (Path(__file__).resolve().parent / "results" / "history.json").resolve()
+HISTORY_LOCK = threading.Lock()
+
+
+def _load_history() -> list[dict]:
+    try:
+        if not HISTORY_FILE.exists():
+            return []
+        return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+
+def _save_history(items: list[dict]) -> None:
+    try:
+        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        HISTORY_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
 
 
 def _resolve_server_base_url(server_id: str | None) -> str | None:
@@ -245,6 +266,8 @@ def api_strategy_plan():
     warmup = int(payload.get("warmup", 0) or 0)
     objective = str(payload.get("objective") or "time")
     multi_gpu = bool(payload.get("multi_gpu", True))
+    gpu_busy_threshold = payload.get("gpu_busy_threshold")
+    min_gpu_free_mb = payload.get("min_gpu_free_mb")
     algo = payload.get("algorithm")
     try:
         # If a remote server is selected, proxy to its own agent to compute plan locally.
@@ -279,6 +302,8 @@ def api_strategy_plan():
                         "warmup": warmup,
                         "objective": objective,
                         "multi_gpu": multi_gpu,
+                        "gpu_busy_threshold": gpu_busy_threshold,
+                        "min_gpu_free_mb": min_gpu_free_mb,
                     },
                     timeout=(3.0, timeout_s),
                 )
@@ -304,7 +329,16 @@ def api_strategy_plan():
             except Exception as exc:
                 return jsonify({"error": f"proxy failed: {exc}", "server_id": server_id, "base_url": base_url}), 502
 
-        plan = StrategyPlan(fitness=None, warmup=warmup, objective=objective, multi_gpu=multi_gpu)
+        snap = current_resource_snapshot()
+        plan = StrategyPlan(
+            fitness=None,
+            warmup=warmup,
+            objective=objective,
+            multi_gpu=multi_gpu,
+            resource_snapshot=snap,
+            gpu_busy_threshold=gpu_busy_threshold,
+            min_gpu_free_mb=min_gpu_free_mb,
+        )
         if algo:
             try:
                 plan.notes = (plan.notes + " " if plan.notes else "") + f"algorithm={algo}"
@@ -323,6 +357,8 @@ def api_strategy_compare():
     objective = str(payload.get("objective") or "time")
     multi_gpu = bool(payload.get("multi_gpu", True))
     warmup_iters = int(payload.get("warmup_iters", 0) or 0)
+    gpu_busy_threshold = payload.get("gpu_busy_threshold")
+    min_gpu_free_mb = payload.get("min_gpu_free_mb")
     try:
         if server_id and server_id != "local":
             base_url = _resolve_server_base_url(server_id)
@@ -336,7 +372,13 @@ def api_strategy_compare():
             timeout_s = float(payload.get("timeout_s", 30) or 30)
             resp = session.post(
                 base_url.rstrip("/") + "/api/strategy_compare",
-                json={"objective": objective, "multi_gpu": multi_gpu, "warmup_iters": warmup_iters},
+                json={
+                    "objective": objective,
+                    "multi_gpu": multi_gpu,
+                    "warmup_iters": warmup_iters,
+                    "gpu_busy_threshold": gpu_busy_threshold,
+                    "min_gpu_free_mb": min_gpu_free_mb,
+                },
                 timeout=(3.0, timeout_s),
             )
             if resp.ok:
@@ -361,7 +403,17 @@ def api_strategy_compare():
         # Local fallback
         from autoadapt import StrategyCompare
 
-        return jsonify(StrategyCompare(objective=objective, multi_gpu=multi_gpu, warmup_iters=warmup_iters))
+        snap = current_resource_snapshot()
+        return jsonify(
+            StrategyCompare(
+                objective=objective,
+                multi_gpu=multi_gpu,
+                warmup_iters=warmup_iters,
+                resource_snapshot=snap,
+                gpu_busy_threshold=gpu_busy_threshold,
+                min_gpu_free_mb=min_gpu_free_mb,
+            )
+        )
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
 
@@ -436,7 +488,13 @@ def api_distributed_strategy_plan():
         if sid == "local":
             server_resources[sid] = current_resource_snapshot()
             try:
-                plan = StrategyPlan(fitness=None, warmup=0, objective="time", multi_gpu=True)
+                plan = StrategyPlan(
+                    fitness=None,
+                    warmup=0,
+                    objective="time",
+                    multi_gpu=True,
+                    resource_snapshot=server_resources[sid],
+                )
                 server_plans[sid] = plan
             except Exception:
                 server_plans[sid] = None
@@ -452,7 +510,17 @@ def api_distributed_strategy_plan():
             session.trust_env = False
             r_resp = session.get(base_url.rstrip("/") + "/api/resources", timeout=(3.0, 8.0))
             server_resources[sid] = r_resp.json() if r_resp.ok else {"error": f"HTTP {r_resp.status_code}"}
-            p_resp = session.post(base_url.rstrip("/") + "/api/strategy_plan", json={"warmup": 0, "objective": "time", "multi_gpu": True}, timeout=(3.0, 20.0))
+            p_resp = session.post(
+                base_url.rstrip("/") + "/api/strategy_plan",
+                json={
+                    "warmup": 0,
+                    "objective": "time",
+                    "multi_gpu": True,
+                    "gpu_busy_threshold": gpu_busy_threshold,
+                    "min_gpu_free_mb": min_gpu_free_mb,
+                },
+                timeout=(3.0, 20.0),
+            )
             if p_resp.ok:
                 try:
                     from autoadapt.api.schemas import Plan
@@ -488,6 +556,51 @@ def api_actions(action: str):
 @app.route("/api/logs")
 def api_logs():
     return jsonify(store.logs)
+
+
+@app.route("/api/history", methods=["GET", "POST", "DELETE"])
+def api_history():
+    if request.method == "GET":
+        with HISTORY_LOCK:
+            return jsonify(_load_history())
+
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return jsonify({"error": "invalid payload"}), 400
+        with HISTORY_LOCK:
+            items = _load_history()
+            batch = payload.get("items")
+            if isinstance(batch, list) and batch:
+                normalized = []
+                for item in batch:
+                    if not isinstance(item, dict):
+                        continue
+                    item.setdefault("id", str(uuid.uuid4()))
+                    normalized.append(item)
+                if normalized:
+                    items = normalized + items
+            else:
+                payload.setdefault("id", str(uuid.uuid4()))
+                items.insert(0, payload)
+            items = items[:200]
+            _save_history(items)
+        return jsonify({"items": items, "id": payload.get("id")})
+
+    payload = request.get_json(silent=True) or {}
+    ids = payload.get("ids") or []
+    if payload.get("all"):
+        with HISTORY_LOCK:
+            _save_history([])
+        return jsonify({"items": []})
+    if isinstance(ids, str):
+        ids = [ids]
+    if not isinstance(ids, list) or not ids:
+        return jsonify({"error": "ids required"}), 400
+    with HISTORY_LOCK:
+        items = [it for it in _load_history() if it.get("id") not in set(ids)]
+        _save_history(items)
+    return jsonify({"items": items})
 
 
 @app.route("/api/state")
@@ -877,7 +990,7 @@ def api_resource_lock_status():
 if __name__ == "__main__":
     print("=" * 50)
     print("GAPA Console 启动成功！")
-    print("本地访问 → http://localhost:7777")
-    print("局域网访问 → http://本机IP:7777")
+    print("本地访问 → http://localhost:4467")
+    print("局域网访问 → http://本机IP:4467")
     print("=" * 50)
-    app.run(host="0.0.0.0", port=7777, threaded=True)
+    app.run(host="0.0.0.0", port=4467, threaded=True)

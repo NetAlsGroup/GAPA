@@ -286,14 +286,37 @@ class TDEController(BasicController):
                         crossover_population_embed[crossover_population_embed > 1] = 1
                         crossover_population_embed[crossover_population_embed < 0] = 0
                         elitism_population_embed = crossover_population_embed.clone()
+                    max_comp = max(component_size_list)
                     if rank == 0:
-                        crossover_population_embed = list(torch.split(crossover_population_embed, component_size_list))
+                        chunks = list(torch.split(crossover_population_embed, component_size_list))
+                        scatter_list = []
+                        for chunk, size in zip(chunks, component_size_list):
+                            if size == max_comp:
+                                scatter_list.append(chunk.contiguous())
+                                continue
+                            pad_shape = (max_comp,) + chunk.shape[1:]
+                            padded = torch.zeros(pad_shape, dtype=chunk.dtype, device=chunk.device)
+                            padded[:size] = chunk
+                            scatter_list.append(padded)
                     else:
-                        crossover_population_embed = [None for _ in range(world_size)]
-
-                    component_crossover_population_embed = [torch.tensor([0])]
-                    timed_call(comm_timer, "scatter_crossover", dist.scatter_object_list, component_crossover_population_embed, crossover_population_embed, src=0)
-                    component_crossover_population_embed = component_crossover_population_embed[0].to(device)
+                        chunks = None
+                        scatter_list = None
+                    recv_shape = (max_comp,) + component_population_embed.shape[1:]
+                    component_crossover_population_embed = torch.empty(recv_shape, dtype=component_population_embed.dtype, device=device)
+                    try:
+                        timed_call(comm_timer, "scatter_crossover", dist.scatter, component_crossover_population_embed, scatter_list, 0)
+                        component_crossover_population_embed = component_crossover_population_embed[: component_size_list[rank]]
+                    except Exception:
+                        component_crossover_population_embed = [torch.tensor([0])]
+                        timed_call(
+                            comm_timer,
+                            "scatter_crossover",
+                            dist.scatter_object_list,
+                            component_crossover_population_embed,
+                            chunks if rank == 0 else [None for _ in range(world_size)],
+                            0,
+                        )
+                        component_crossover_population_embed = component_crossover_population_embed[0].to(device)
                     new_fitness_list = evaluator(component_crossover_population_embed).to(device)
 
                     elitism_fitness_list = [torch.empty((component_size,), dtype=new_fitness_list.dtype, device=device) for component_size in component_size_list]

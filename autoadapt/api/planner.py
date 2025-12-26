@@ -2,10 +2,192 @@ from __future__ import annotations
 from typing import Callable, Optional, Tuple, Dict, Any, List
 
 import time
+import os
 from .schemas import Plan
 from ..route.perf_profiler import PerformanceProfiler
 from ..route.strategy_router import StrategyRouter
 from ..exec.executor import apply_plan_env
+
+
+def _gpu_filter_from_snapshot(
+    snapshot: Optional[Dict[str, Any]],
+    gpu_busy_threshold: float,
+    min_gpu_free_mb: int,
+) -> tuple[Optional[List[int]], Optional[List[int]]]:
+    if not isinstance(snapshot, dict):
+        return None, None
+    gpus = snapshot.get("gpus") or []
+    if not isinstance(gpus, list):
+        return None, None
+    allowed: List[int] = []
+    excluded: List[int] = []
+    for g in gpus:
+        if not isinstance(g, dict):
+            continue
+        gid = g.get("id")
+        try:
+            gid_int = int(gid)
+        except Exception:
+            continue
+        util = g.get("gpu_util_percent")
+        if util is None:
+            load = g.get("load")
+            if load is not None:
+                try:
+                    util = float(load) * 100.0
+                except Exception:
+                    util = None
+        if util is not None:
+            try:
+                util = float(util)
+            except Exception:
+                util = None
+        free_mb = g.get("free_mb")
+        if free_mb is not None:
+            try:
+                free_mb = float(free_mb)
+            except Exception:
+                free_mb = None
+        busy = False
+        if util is not None and util >= gpu_busy_threshold:
+            busy = True
+        if free_mb is not None and free_mb < min_gpu_free_mb:
+            busy = True
+        if busy:
+            excluded.append(gid_int)
+        else:
+            allowed.append(gid_int)
+    if not gpus:
+        return None, None
+    return allowed, excluded
+
+
+def _synthetic_executor(plan: Plan, iters: int) -> float:
+    try:
+        import torch
+    except Exception:
+        return float("inf")
+
+    def _sync(dev: str) -> None:
+        if dev.startswith("cuda") and torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+    def _prepare(device: str):
+        n = 1024 if device == "cpu" else 2048
+        a = torch.randn((n, n), device=device)
+        b = torch.randn((n, n), device=device)
+        return a, b
+
+    def _run_once(a, b) -> None:
+        y = a @ b
+        y = y.relu_()
+        _ = float(y[0, 0].item())
+
+    if plan.backend == "cpu":
+        a, b = _prepare("cpu")
+        start = time.perf_counter()
+        for _ in range(iters):
+            _run_once(a, b)
+        return (time.perf_counter() - start) * 1000.0
+
+    if not torch.cuda.is_available():
+        return float("inf")
+
+    if plan.backend == "cuda":
+        device = "cuda:0"
+        a, b = _prepare(device)
+        _sync(device)
+        start = time.perf_counter()
+        for _ in range(iters):
+            _run_once(a, b)
+        _sync(device)
+        return (time.perf_counter() - start) * 1000.0
+
+    if plan.backend == "multi-gpu":
+        dev_count = len(plan.devices or [])
+        dev_count = max(2, dev_count or int(plan.world_size or 2))
+        mats = []
+        for i in range(dev_count):
+            dev = f"cuda:{i}"
+            mats.append((dev, *_prepare(dev)))
+        import threading
+        _sync("cuda:0")
+        start = time.perf_counter()
+        for _ in range(iters):
+            threads = []
+            for dev, a, b in mats:
+                t = threading.Thread(target=_run_once, args=(a, b), daemon=True)
+                threads.append(t)
+                t.start()
+            for t in threads:
+                t.join()
+        _sync("cuda:0")
+        return (time.perf_counter() - start) * 1000.0
+
+    return float("inf")
+
+
+def _tpe_select(
+    plans: List[Plan],
+    executor: Callable[[Plan, int], float],
+    warmup_iters: int,
+    trials: int,
+    gamma: float = 0.25,
+) -> Plan:
+    if not plans:
+        raise ValueError("no candidate plans")
+    trials = max(1, int(trials))
+    warmup_iters = max(1, int(warmup_iters))
+    gamma = min(max(float(gamma), 0.1), 0.8)
+
+    ids = [f"{p.backend}:{','.join(str(d) for d in p.devices)}" for p in plans]
+    priors = {}
+    for pid, plan in zip(ids, plans):
+        t = max(plan.estimated_time_ms, 1e-6)
+        priors[pid] = 1.0 / t
+    prior_sum = sum(priors.values()) or 1.0
+    for k in priors:
+        priors[k] = priors[k] / prior_sum
+
+    observed: Dict[str, List[float]] = {}
+
+    def _pick_next() -> Plan:
+        tested = set(observed.keys())
+        untested = [p for p, pid in zip(plans, ids) if pid not in tested]
+        if len(observed) < max(2, int(len(plans) * gamma)):
+            untested.sort(key=lambda p: p.estimated_time_ms)
+            return untested[0] if untested else plans[0]
+        all_obs = [(pid, min(vals)) for pid, vals in observed.items() if vals]
+        all_obs.sort(key=lambda kv: kv[1])
+        cutoff_idx = max(1, int(len(all_obs) * gamma))
+        good_set = {pid for pid, _ in all_obs[:cutoff_idx]}
+        bad_set = {pid for pid, _ in all_obs[cutoff_idx:]}
+        scores = []
+        for plan, pid in zip(plans, ids):
+            if pid in tested:
+                continue
+            l = (1 if pid in good_set else 0) + priors[pid]
+            g = (1 if pid in bad_set else 0) + priors[pid]
+            scores.append((l / g, plan))
+        if scores:
+            scores.sort(key=lambda x: x[0], reverse=True)
+            return scores[0][1]
+        return plans[0]
+
+    best_plan = min(plans, key=lambda p: p.estimated_time_ms)
+    best_ms = float("inf")
+    for _ in range(trials):
+        plan = _pick_next()
+        ms = float(executor(plan, warmup_iters))
+        pid = f"{plan.backend}:{','.join(str(d) for d in plan.devices)}"
+        observed.setdefault(pid, []).append(ms)
+        if ms < best_ms:
+            best_ms = ms
+            best_plan = plan
+
+    best_plan.estimated_time_ms = max(1e-3, min(best_plan.estimated_time_ms, best_ms))
+    best_plan.reason += f" | tpe_trials={trials} warmup={warmup_iters}"
+    return best_plan
 
 
 def StrategyPlan(
@@ -15,6 +197,9 @@ def StrategyPlan(
         multi_gpu: bool = True,
         fitness_args: Optional[Tuple[Any, ...]] = None,
         fitness_kwargs: Optional[Dict[str, Any]] = None,
+        resource_snapshot: Optional[Dict[str, Any]] = None,
+        gpu_busy_threshold: Optional[float] = None,
+        min_gpu_free_mb: Optional[int] = None,
 ) -> Plan:
     """生成当前环境的资源执行方案。
 
@@ -24,7 +209,14 @@ def StrategyPlan(
       可以通过 ``fitness_args`` 与 ``fitness_kwargs`` 为 ``fitness`` 传参。
     """
     prof = PerformanceProfiler(quick=True).profile()
-    router = StrategyRouter(prof)
+    if gpu_busy_threshold is None:
+        gpu_busy_threshold = float(os.getenv("GAPA_STRATEGY_GPU_BUSY", "60") or 60)
+    if min_gpu_free_mb is None:
+        min_gpu_free_mb = int(os.getenv("GAPA_STRATEGY_MIN_FREE_MB", "1024") or 1024)
+    avail_gpus, excluded_gpus = _gpu_filter_from_snapshot(
+        resource_snapshot, float(gpu_busy_threshold), int(min_gpu_free_mb)
+    )
+    router = StrategyRouter(prof, available_gpus=avail_gpus)
 
     class _SyntheticWL:
         """Synthetic workload used when the caller does not supply one.
@@ -46,7 +238,13 @@ def StrategyPlan(
 
     wl = _SyntheticWL()
 
-    if fitness is not None and warmup > 0:
+    tpe_trials = int(os.getenv("GAPA_TPE_TRIALS", "6") or 6)
+    tpe_gamma = float(os.getenv("GAPA_TPE_GAMMA", "0.25") or 0.25)
+    tpe_warmup = int(os.getenv("GAPA_TPE_WARMUP_ITERS", "1") or 1)
+    if warmup > 0:
+        tpe_warmup = int(warmup)
+
+    if fitness is not None:
         args = fitness_args or ()
         kwargs = fitness_kwargs or {}
 
@@ -56,14 +254,23 @@ def StrategyPlan(
             for _ in range(iters):
                 fitness(*args, **kwargs)
             return (time.perf_counter() - start) * 1000.0
-
-        plan = router.choose_and_warmup(wl, executor,
-                                        objective=objective,
-                                        multi_gpu=multi_gpu,
-                                        warmup_iters=warmup)
     else:
-        plan = router.route(wl, objective=objective, multi_gpu=multi_gpu)
+        def executor(p: Plan, iters: int) -> float:
+            apply_plan_env(p)
+            return _synthetic_executor(p, iters)
 
+    candidates = router.candidate_plans(wl, objective=objective, multi_gpu=multi_gpu)
+    plan = _tpe_select(candidates, executor, tpe_warmup, tpe_trials, gamma=tpe_gamma)
+
+    if avail_gpus is not None:
+        try:
+            plan.notes = (
+                (plan.notes + " " if plan.notes else "")
+                + f"gpu_filter=allowed:{avail_gpus} excluded:{excluded_gpus or []}"
+            )
+            plan.reason = (plan.reason + f" | 过滤繁忙GPU:{excluded_gpus or []}").strip()
+        except Exception:
+            pass
     return plan
 
 
@@ -71,10 +278,20 @@ def StrategyCompare(
     objective: str = "time",
     multi_gpu: bool = True,
     warmup_iters: int = 0,
+    resource_snapshot: Optional[Dict[str, Any]] = None,
+    gpu_busy_threshold: Optional[float] = None,
+    min_gpu_free_mb: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Return best plan and key candidates for explaining the decision in UI."""
     prof = PerformanceProfiler(quick=True).profile()
-    router = StrategyRouter(prof)
+    if gpu_busy_threshold is None:
+        gpu_busy_threshold = float(os.getenv("GAPA_STRATEGY_GPU_BUSY", "60") or 60)
+    if min_gpu_free_mb is None:
+        min_gpu_free_mb = int(os.getenv("GAPA_STRATEGY_MIN_FREE_MB", "1024") or 1024)
+    avail_gpus, excluded_gpus = _gpu_filter_from_snapshot(
+        resource_snapshot, float(gpu_busy_threshold), int(min_gpu_free_mb)
+    )
+    router = StrategyRouter(prof, available_gpus=avail_gpus)
 
     class _SyntheticWL:
         n_nodes = 50_000
@@ -99,6 +316,7 @@ def StrategyCompare(
         "best": best_plan.to_dict(),
         "candidates": items,
         "profile": {"has_cuda": getattr(prof.device, "has_cuda", False), "gpus": prof.device.gpus},
+        "gpu_filter": {"allowed": avail_gpus, "excluded": excluded_gpus} if avail_gpus is not None else None,
         "warmup": measured,
     }
 

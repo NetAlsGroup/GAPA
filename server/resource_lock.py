@@ -104,8 +104,8 @@ class ResourceLockManager:
                     devices=[],
                     expires_at=0.0,
                     duration_s=0.0,
-                    mem_mb=mem_mb,
-                    warmup_iters=warmup_iters,
+                    mem_mb=0,
+                    warmup_iters=0,
                     note="no_available_gpu",
                 )
                 return self._info.to_dict()
@@ -171,6 +171,8 @@ class ResourceLockManager:
         self._info.backend = "cpu"
         self._info.expires_at = 0.0
         self._info.duration_s = 0.0
+        self._info.mem_mb = 0
+        self._info.warmup_iters = 0
 
     def _pick_backend(self) -> tuple[str, List[int]]:
         try:

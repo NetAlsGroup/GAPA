@@ -381,8 +381,19 @@ def api_strategy_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
     warmup = int(payload.get("warmup", 0) or 0)
     objective = str(payload.get("objective") or "time")
     multi_gpu = bool(payload.get("multi_gpu", True))
+    gpu_busy_threshold = payload.get("gpu_busy_threshold")
+    min_gpu_free_mb = payload.get("min_gpu_free_mb")
     algorithm = payload.get("algorithm")
-    plan = _StrategyPlan(fitness=None, warmup=warmup, objective=objective, multi_gpu=multi_gpu)
+    snap = resources_payload()
+    plan = _StrategyPlan(
+        fitness=None,
+        warmup=warmup,
+        objective=objective,
+        multi_gpu=multi_gpu,
+        resource_snapshot=snap,
+        gpu_busy_threshold=gpu_busy_threshold,
+        min_gpu_free_mb=min_gpu_free_mb,
+    )
     if algorithm:
         try:
             plan.notes = (plan.notes + " " if plan.notes else "") + f"algorithm={algorithm}"
@@ -403,12 +414,22 @@ def api_strategy_compare(payload: Dict[str, Any]) -> Dict[str, Any]:
     objective = str(payload.get("objective") or "time")
     multi_gpu = bool(payload.get("multi_gpu", True))
     warmup_iters = int(payload.get("warmup_iters", 0) or 0)
-    return _StrategyCompare(objective=objective, multi_gpu=multi_gpu, warmup_iters=warmup_iters)
+    gpu_busy_threshold = payload.get("gpu_busy_threshold")
+    min_gpu_free_mb = payload.get("min_gpu_free_mb")
+    snap = resources_payload()
+    return _StrategyCompare(
+        objective=objective,
+        multi_gpu=multi_gpu,
+        warmup_iters=warmup_iters,
+        resource_snapshot=snap,
+        gpu_busy_threshold=gpu_busy_threshold,
+        min_gpu_free_mb=min_gpu_free_mb,
+    )
 
 
 if __name__ == "__main__":
     import uvicorn
 
     host = os.getenv("GAPA_AGENT_HOST", "0.0.0.0")
-    port = int(os.getenv("GAPA_AGENT_PORT", "7777"))
+    port = int(os.getenv("GAPA_AGENT_PORT", "4467"))
     uvicorn.run("server_agent:app", host=host, port=port)

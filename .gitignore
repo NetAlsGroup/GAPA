@@ -16,3 +16,5 @@ __pycache__/
 /servers.json
 /main.py
 /tmp_test.py
+/results/
+

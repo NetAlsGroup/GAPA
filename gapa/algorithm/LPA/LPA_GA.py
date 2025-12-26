@@ -499,13 +499,37 @@ class GAController(BasicController):
                         body.pop_size = component_size_list[rank]
                         body.budget = self.budget
 
+                    max_comp = max(component_size_list)
                     if rank == 0:
-                        crossover_population = list(torch.split(crossover_population, component_size_list))
+                        chunks = list(torch.split(crossover_population, component_size_list))
+                        scatter_list = []
+                        for chunk, size in zip(chunks, component_size_list):
+                            if size == max_comp:
+                                scatter_list.append(chunk.contiguous())
+                                continue
+                            pad_shape = (max_comp,) + chunk.shape[1:]
+                            padded = torch.zeros(pad_shape, dtype=chunk.dtype, device=chunk.device)
+                            padded[:size] = chunk
+                            scatter_list.append(padded)
                     else:
-                        crossover_population = [None for _ in range(world_size)]
-                    component_crossover_population = [torch.tensor([0])]
-                    timed_call(comm_timer, "scatter_crossover", dist.scatter_object_list, component_crossover_population, crossover_population, src=0)
-                    component_crossover_population = component_crossover_population[0].to(device)
+                        chunks = None
+                        scatter_list = None
+                    recv_shape = (max_comp,) + component_population.shape[1:]
+                    component_crossover_population = torch.empty(recv_shape, dtype=component_population.dtype, device=device)
+                    try:
+                        timed_call(comm_timer, "scatter_crossover", dist.scatter, component_crossover_population, scatter_list, 0)
+                        component_crossover_population = component_crossover_population[: component_size_list[rank]]
+                    except Exception:
+                        component_crossover_population = [torch.tensor([0])]
+                        timed_call(
+                            comm_timer,
+                            "scatter_crossover",
+                            dist.scatter_object_list,
+                            component_crossover_population,
+                            chunks if rank == 0 else [None for _ in range(world_size)],
+                            0,
+                        )
+                        component_crossover_population = component_crossover_population[0].to(device)
 
                     del_population = component_crossover_population[:, :self.budget]
                     del_mutation_population = body.del_mutation(del_population, self.mutate_rate, ONE)
@@ -685,7 +709,6 @@ def LPA_GA(mode, max_generation, data_loader, controller: GAController, evaluato
         mp.spawn(controller.mp_calculate, args=(max_generation, deepcopy(evaluator), world_size, component_size_list), nprocs=world_size, join=True)
     else:
         raise ValueError(f"No such mode. Please choose s, sm, m or mnm.")
-
 
 
 

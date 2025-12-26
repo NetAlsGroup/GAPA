@@ -1,11 +1,38 @@
+<div align="center">
+  <img src="assets/LOGO.png" width="400" alt="GAPA Logo"/>
 
-  [![arXiv](https://img.shields.io/badge/arxiv-2412.20980-red)](https://arxiv.org/abs/2412.20980)
-  [![PyPI-Version](https://img.shields.io/pypi/v/gapa?logo=python)](https://pypi.org/project/gapa/)
-  [![Python-Version](https://img.shields.io/badge/python-3.9+-orange?logo=python)](https://pypi.org/project/gapa/)
-<img alt="GitHub last commit" src="https://img.shields.io/github/last-commit/NetAlsGroup/GAPA">
-<a href="https://github.com/NetAlsGroup/GAPA/issues"> <img alt="GitHub issues" src="https://img.shields.io/github/issues/NetAlsGroup/GAPA"> </a>
-  [![GitHub User's Stars](https://img.shields.io/github/stars/NetAlsGroup%2FGAPA)](https://github.com/NetAlsGroup/GAPA)
-    <!--[![PyPI-Downloads](https://img.shields.io/pypi/dm/evox?color=orange&logo=python)](https://pypi.org/project/evox/)-->
+  <h3>
+    GAPA: A Parallel Accelerated Framework for Graph Structure Optimization
+  </h3>
+
+  <p>
+    Efficiently solving PSSO problems (CND, CDA, NCA, LPA) via Unified Genetic Algorithms and Multi-level Parallelism.
+  </p>
+</div>
+
+
+<div align="center">
+  
+  <a href="https://arxiv.org/abs/2412.20980">
+    <img src="https://img.shields.io/badge/arxiv-2412.20980-red" alt="arXiv">
+  </a>
+  
+  <a href="https://pypi.org/project/gapa/">
+    <img src="https://img.shields.io/pypi/v/gapa?logo=python" alt="PyPI Version">
+  </a>
+  
+  <a href="https://pypi.org/project/gapa/">
+    <img src="https://img.shields.io/badge/python-3.9+-orange?logo=python" alt="Python Version">
+  </a>
+
+  <img src="https://img.shields.io/github/last-commit/NetAlsGroup/GAPA" alt="GitHub last commit">
+
+  <a href="https://github.com/NetAlsGroup/GAPA">
+    <img src="https://img.shields.io/github/stars/NetAlsGroup%2FGAPA" alt="GitHub Stars">
+  </a>
+
+  </div>
+
 
 GAPA is a Python library that accelerates Perturbed SubStructure Optimization(PSSO).
 This challenging field has many vital applications, such as Community Detection Attacks (CDA), Critical Node Detection(CND), Node Classification Attacks (NCA), and Link Prediction Attacks (LPA).

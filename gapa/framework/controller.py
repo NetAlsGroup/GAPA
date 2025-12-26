@@ -4,6 +4,8 @@ from copy import deepcopy
 from pathlib import Path
 from time import time
 from typing import Dict, List
+import os
+import time as time_mod
 
 import torch
 import torch.distributed as dist
@@ -155,6 +157,7 @@ class CustomController(BasicController):
         best_genes: List[Tensor] = []
         time_list: List[float] = []
         start = time()
+        log_every = int(os.getenv("GAPA_M_LOG_EVERY", "1") or 20)
         body.device = device
         body.pop_size = component_size_list[rank]
         ONE, component_population = self.init(body)
@@ -172,34 +175,69 @@ class CustomController(BasicController):
         with tqdm(total=max_generation, position=rank) as pbar:
             pbar.set_description(f'Rank {rank} in {self.dataset}')
             for generation in range(max_generation):
+                t_gen_start = time_mod.perf_counter()
+                t_sel = t_scatter = t_eval = t_gather = t_elit = t_bcast = 0.0
                 if rank == 0:
                     body.pop_size = self.pop_size
                     crossover_ONE = torch.ones((self.pop_size, self.budget), dtype=component_population.dtype, device=device)
+                    t_sel_start = time_mod.perf_counter()
                     crossover_population = self.SelectionAndCrossover(body, population, fitness_list, crossover_ONE)
+                    t_sel = time_mod.perf_counter() - t_sel_start
                     body.pop_size = component_size_list[rank]
-                crossover_population = list(torch.split(crossover_population, component_size_list)) if rank == 0 else [None for _ in range(world_size)]
-                component_crossover_population = [torch.tensor([0])]
-                dist.scatter_object_list(component_crossover_population, crossover_population, src=0)
-                component_crossover_population = component_crossover_population[0].to(device)
+                max_comp = max(component_size_list)
+                if rank == 0:
+                    scatter_list = []
+                    chunks = list(torch.split(crossover_population, component_size_list))
+                    for chunk, size in zip(chunks, component_size_list):
+                        if size == max_comp:
+                            scatter_list.append(chunk.contiguous())
+                            continue
+                        pad_shape = (max_comp,) + chunk.shape[1:]
+                        padded = torch.zeros(pad_shape, dtype=chunk.dtype, device=chunk.device)
+                        padded[:size] = chunk
+                        scatter_list.append(padded)
+                else:
+                    scatter_list = None
+                recv_shape = (max_comp,) + component_population.shape[1:]
+                component_crossover_population = torch.empty(recv_shape, dtype=component_population.dtype, device=device)
+                t_scatter_start = time_mod.perf_counter()
+                try:
+                    dist.scatter(component_crossover_population, scatter_list, src=0)
+                    t_scatter = time_mod.perf_counter() - t_scatter_start
+                    component_crossover_population = component_crossover_population[: component_size_list[rank]]
+                except Exception:
+                    # Fallback for older dist backends or mismatched shapes
+                    t_scatter = time_mod.perf_counter() - t_scatter_start
+                    component_crossover_population = [torch.tensor([0])]
+                    dist.scatter_object_list(component_crossover_population, chunks if rank == 0 else [None for _ in range(world_size)], src=0)
+                    component_crossover_population = component_crossover_population[0].to(device)
+                t_eval_start = time_mod.perf_counter()
                 mutation_population = self.Mutation(body, component_crossover_population, ONE)
                 new_component_fitness_list = evaluator(mutation_population).to(device)
+                t_eval = time_mod.perf_counter() - t_eval_start
                 elitism_population = [torch.zeros((component_size,) + mutation_population.shape[1:], dtype=mutation_population.dtype, device=device) for component_size in component_size_list]
                 elitism_fitness_list = [torch.empty((component_size,), dtype=new_component_fitness_list.dtype, device=device) for component_size in component_size_list]
+                t_gather_start = time_mod.perf_counter()
                 dist.all_gather(elitism_population, mutation_population)
                 dist.all_gather(elitism_fitness_list, new_component_fitness_list)
+                t_gather = time_mod.perf_counter() - t_gather_start
                 if rank == 0:
+                    t_elit_start = time_mod.perf_counter()
                     elitism_population = torch.cat(elitism_population)
                     elitism_fitness_list = torch.cat(elitism_fitness_list)
                     body.pop_size = self.pop_size
                     population, fitness_list = body.elitism(population, elitism_population, fitness_list, elitism_fitness_list)
                     best_fitness_list.append(self._best_metric(fitness_list))
+                    t_elit = time_mod.perf_counter() - t_elit_start
                     body.pop_size = component_size_list[rank]
                 else:
                     population = torch.zeros(population.shape, dtype=population.dtype, device=device)
                     fitness_list = torch.empty(fitness_list.shape, dtype=fitness_list.dtype, device=device)
 
+                t_bcast_start = time_mod.perf_counter()
                 dist.broadcast(population, src=0)
                 dist.broadcast(fitness_list, src=0)
+                t_bcast = time_mod.perf_counter() - t_bcast_start
 
                 top_index = (
                     torch.argsort(fitness_list, descending=True)[self.pop_size - component_size_list[rank] :]
@@ -225,6 +263,14 @@ class CustomController(BasicController):
                         best_gene=best_gene.detach(),
                         extra=results,
                         side=self.side,
+                    )
+                if rank == 0 and log_every > 0 and (generation % log_every == 0 or generation + 1 == max_generation):
+                    t_total = time_mod.perf_counter() - t_gen_start
+                    print(
+                        f"[M-LOG] gen={generation} total={t_total:.3f}s sel={t_sel:.3f}s "
+                        f"scatter={t_scatter:.3f}s eval={t_eval:.3f}s gather={t_gather:.3f}s "
+                        f"elitism={t_elit:.3f}s bcast={t_bcast:.3f}s",
+                        flush=True,
                     )
                 pbar.set_postfix(results)
                 pbar.update(1)

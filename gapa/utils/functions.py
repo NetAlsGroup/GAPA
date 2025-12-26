@@ -28,15 +28,18 @@ def Parsers():
 
 
 def init_dist(rank, world_size, async_op=False):
+    device = torch.device(f'cuda:{rank}')
+    torch.cuda.set_device(device)
     dist.init_process_group(
         backend='nccl',
         init_method=f"tcp://127.0.0.1:12355",
         rank=rank,
         world_size=world_size
     )
-    dist.barrier(async_op=async_op)
-    device = torch.device(f'cuda:{rank}')
-    torch.cuda.set_device(rank)
+    try:
+        dist.barrier(async_op=async_op, device_ids=[rank])
+    except TypeError:
+        dist.barrier(async_op=async_op)
     return device
 
 
@@ -104,14 +107,18 @@ def delete_files_in_folder(folder_path):
 
 def ga_dist_function(rank, world_size, population, algorithm, result_queue):
     try:
+        device = torch.device(f'cuda:{rank}')
+        torch.cuda.set_device(device)
         dist.init_process_group(
             backend='nccl',
             init_method=f"tcp://127.0.0.1:12355",
             rank=rank,
             world_size=world_size
         )
-        dist.barrier()
-        torch.cuda.set_device(rank)
+        try:
+            dist.barrier(device_ids=[rank])
+        except TypeError:
+            dist.barrier()
         rows_per_proc = len(population) // world_size
         start_index = rank * rows_per_proc
         end_index = start_index + rows_per_proc if rank != world_size - 1 else len(population)

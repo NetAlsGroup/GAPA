@@ -66,8 +66,11 @@ def _pow2_schedule(n: int) -> List[int]:
 
 # ---------- router ----------
 class StrategyRouter:
-    def __init__(self, profile: Any):
+    def __init__(self, profile: Any, *, available_gpus: Optional[List[int]] = None):
         self.p = profile  # 性能画像（CPU/GPU geps、功率、名称等）
+        self.available_gpus = (
+            sorted({int(i) for i in available_gpus}) if available_gpus else None
+        )
 
         # 建模参数（可按数据微调）
         self.kernel_overhead_ms_small = 0.20  # 小图每步固定开销
@@ -107,6 +110,9 @@ class StrategyRouter:
         g_infos = self._gpu_infos()
         gpu_map = {g['index']: g for g in g_infos}
         gpus = _avail_gpus()
+        if self.available_gpus is not None:
+            allowed = set(self.available_gpus)
+            gpus = [i for i in gpus if i in allowed]
 
         # 候选集
         cand: List[Plan] = []
@@ -169,6 +175,40 @@ class StrategyRouter:
 
         return best
 
+    def candidate_plans(self, wl, *, objective: str = "time", multi_gpu: bool = True) -> List[Plan]:
+        """Generate candidate plans for external optimizers (e.g., TPE)."""
+        cpu_geps = self._cpu_geps()
+        g_infos = self._gpu_infos()
+        gpu_map = {g['index']: g for g in g_infos}
+        gpus = _avail_gpus()
+        if self.available_gpus is not None:
+            allowed = set(self.available_gpus)
+            gpus = [i for i in gpus if i in allowed]
+
+        candidates: List[Plan] = []
+        t_cpu = self._estimate_time_cpu(wl, cpu_geps)
+        candidates.append(self._plan('cpu', [], {}, 1, t_cpu, self._energy_cpu(t_cpu),
+                                     reason=f"CPU GEps≈{cpu_geps:.2f}"))
+
+        for gi in gpus:
+            geps = float(gpu_map.get(gi, {}).get('geps', 1.0))
+            t = self._estimate_time_gpu_single(wl, geps)
+            candidates.append(self._plan('cuda', [gi], {gi: 1.0}, 1, t,
+                                         self._energy_gpu([gpu_map.get(gi, {})], t),
+                                         reason=f"GPU[{gi}] GEps≈{geps:.2f}"))
+
+        if multi_gpu and len(gpus) >= 2:
+            ranked = sorted(gpus, key=lambda i: float(gpu_map.get(i, {}).get('geps', 1.0)), reverse=True)
+            for k in _pow2_schedule(len(ranked)):
+                idxs = ranked[:k]
+                geps_eff, alloc = self._compose_multi_geps(gpu_map, idxs)
+                t = self._estimate_time_multi_gpu(wl, geps_eff)
+                candidates.append(self._plan('multi-gpu', idxs, alloc, len(idxs), t,
+                                             self._energy_gpu([gpu_map[i] for i in idxs], t),
+                                             reason=f"MGPU{idxs} GEps_eff≈{geps_eff:.2f}"))
+
+        return candidates
+
     # ======== Candidate generation ========
     def _candidates(self, wl, objective: str, multi_gpu: bool, power_cap_w: Optional[float]):
         out: List[Tuple[str, Plan]] = []
@@ -211,10 +251,13 @@ class StrategyRouter:
 
     def _gpu_infos(self) -> List[Dict]:
         infos: List[Dict] = []
+        allowed = set(self.available_gpus) if self.available_gpus is not None else None
         for g in getattr(self.p, 'gpus', []) or []:
             idx = int(getattr(g, 'device_index', 0))
             if getattr(g, 'backend', 'CUDA') == 'MPS':
                 idx = 0
+            if allowed is not None and idx not in allowed:
+                continue
             if getattr(g, 'spmv_ges', None) is not None:
                 geps = float(g.spmv_ges)
             elif getattr(g, 'd2d_gbps', None) is not None:

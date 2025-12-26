@@ -6,61 +6,66 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <style>
     :root {
-      --bg: #f8fafc;
+      --bg: #f5f7fb;
       --panel: #ffffff;
-      --panel-border: #dbeafe;
+      --panel-border: #e2e8f0;
       --text: #0f172a;
-      --muted: #64748b;
+      --muted: #6b7280;
       --blue-600: #2563eb;
       --blue-700: #1d4ed8;
       --blue-50: #eff6ff;
       --rose: #e11d48;
-      --card-border: #e2e8f0;
-      --soft-bg: #f1f5f9;
+      --card-border: #e5e7eb;
+      --soft-bg: #f8fafc;
+      --accent-weak: rgba(37, 99, 235, 0.12);
     }
 
     * { box-sizing: border-box; }
 
     body {
       margin: 0;
-      font-family: "Microsoft YaHei", system-ui, sans-serif;
-      background: var(--bg);
+      font-family: "IBM Plex Sans", "Source Sans 3", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      background: radial-gradient(1200px 400px at 20% -20%, #e9f0ff 0%, rgba(233,240,255,0) 60%),
+        linear-gradient(180deg, #f8fafc 0%, #f3f6fb 100%);
       color: var(--text);
       min-height: 100vh;
     }
 
     .hidden { display: none !important; }
-    .container { max-width: 1200px; margin: 0 auto; padding: 0 24px; }
+    .container { max-width: 1280px; margin: 0 auto; padding: 0 24px; }
 
     .header {
       position: sticky;
       top: 0;
       z-index: 10;
-      background: var(--panel);
+      background: rgba(255,255,255,0.9);
+      backdrop-filter: blur(10px);
       border-bottom: 1px solid var(--panel-border);
     }
-    .header-inner { display: flex; align-items: center; justify-content: space-between; padding: 16px 0; }
-    .title { font-size: 22px; font-weight: 800; letter-spacing: .2px; }
-    .subtitle { font-size: 13px; color: var(--muted); margin-top: 4px; }
+    .header-inner { display: flex; align-items: center; justify-content: space-between; padding: 14px 0; gap: 16px; }
+    .brand { display: flex; align-items: center; gap: 12px; }
+    .brand img { height: 36px; width: auto; }
+    .title { font-size: 20px; font-weight: 800; letter-spacing: .2px; }
+    .subtitle { font-size: 12px; color: var(--muted); margin-top: 2px; }
     .pill {
       padding: 6px 12px;
       border-radius: 999px;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 700;
       background: var(--blue-50);
-      color: var(--blue-600);
+      color: var(--blue-700);
       border: 1px solid var(--panel-border);
       white-space: nowrap;
     }
 
-    .layout { display: flex; gap: 16px; padding: 16px 0 20px; }
+    .layout { display: flex; gap: 18px; padding: 16px 0 24px; }
     .sidebar {
       width: 240px;
       flex: 0 0 240px;
       background: var(--panel);
       border: 1px solid var(--panel-border);
-      border-radius: 12px;
-      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+      border-radius: 10px;
+      box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
       padding: 10px;
       position: sticky;
       top: 72px;
@@ -75,7 +80,7 @@
       justify-content: space-between;
       gap: 10px;
       padding: 10px 10px;
-      border-radius: 10px;
+      border-radius: 8px;
       border: 1px solid transparent;
       background: transparent;
       color: var(--text);
@@ -84,16 +89,16 @@
       cursor: pointer;
       text-align: left;
     }
-    .nav-item:hover { background: var(--blue-50); border-color: var(--panel-border); }
-    .nav-item--active { background: var(--blue-50); border-color: #93c5fd; color: var(--blue-700); }
+    .nav-item:hover { background: #f1f5f9; border-color: var(--panel-border); }
+    .nav-item--active { background: #eef2ff; border-color: #c7d2fe; color: var(--blue-700); }
     .nav-badge {
       font-size: 11px;
       font-weight: 900;
       padding: 2px 8px;
       border-radius: 999px;
-      background: #eef2ff;
-      color: #3730a3;
-      border: 1px solid #e0e7ff;
+      background: #e5edff;
+      color: #1e3a8a;
+      border: 1px solid #dbeafe;
     }
     .content { flex: 1; min-width: 0; }
 
@@ -101,7 +106,7 @@
       background: var(--panel);
       border: 1px solid var(--panel-border);
       border-radius: 12px;
-      box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05);
+      box-shadow: 0 2px 12px rgba(15, 23, 42, 0.04);
       padding: 18px;
     }
     .section-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -110,16 +115,16 @@
     .btn {
       border-radius: 8px;
       padding: 8px 12px;
-      font-size: 13px;
+      font-size: 12px;
       font-weight: 700;
       cursor: pointer;
       border: 1px solid transparent;
       white-space: nowrap;
     }
-    .btn-primary { background: var(--blue-600); color: #fff; box-shadow: 0 1px 2px rgba(37,99,235,.25); }
+    .btn-primary { background: var(--blue-600); color: #fff; box-shadow: 0 1px 2px rgba(37,99,235,.2); }
     .btn-primary:hover { background: var(--blue-700); }
-    .btn-secondary { background: var(--blue-50); color: var(--blue-700); border-color: var(--panel-border); }
-    .btn-secondary:hover { background: #e6f0ff; }
+    .btn-secondary { background: #f8fafc; color: #1e293b; border-color: #e2e8f0; }
+    .btn-secondary:hover { background: #eef2ff; border-color: #c7d2fe; }
 
     .view { display: none; }
     .view--active { display: grid; gap: 20px; }
@@ -136,7 +141,7 @@
       display: grid;
       gap: 12px;
     }
-    .card:hover { box-shadow: 0 6px 18px rgba(15,23,42,.08); transform: translateY(-2px); border-color: #bfdbfe; }
+    .card:hover { box-shadow: 0 10px 22px rgba(15,23,42,.08); transform: translateY(-2px); border-color: #c7d2fe; }
     .card--expanded { border-color: #93c5fd; }
     .card-top { display: flex; gap: 14px; align-items: stretch; }
     .card-left { width: 280px; flex: 0 0 280px; display: grid; gap: 10px; }
@@ -302,29 +307,68 @@
     .history-item { border: 1px solid var(--card-border); background: #fff; border-radius: 10px; padding: 10px; cursor: pointer; }
     .history-item:hover { border-color: #bfdbfe; box-shadow: 0 6px 18px rgba(15,23,42,.06); }
     .history-item--active { border-color: #93c5fd; background: var(--blue-50); }
+    .history-item-row { display: grid; grid-template-columns: 16px 1fr; gap: 10px; align-items: center; }
+    .history-item-check { margin: 0; }
     .history-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
     .history-actions { display: flex; gap: 8px; margin-top: 10px; }
     .server-multi-item {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
       border: 1px solid var(--card-border);
       border-radius: 10px;
       padding: 8px 10px;
       background: #fff;
     }
-    .server-multi-item input { margin: 0; }
-    .server-multi-name { font-weight: 900; }
+    .server-multi-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .server-multi-toggle label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0;
+    }
+    .server-multi-hint { font-size: 11px; color: var(--muted); }
+    .server-multi-label {
+      display: grid;
+      grid-template-columns: 16px 1fr;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
+    }
+    .server-multi-check { margin: 0; }
+    .server-multi-info { display: grid; gap: 2px; }
+    .server-multi-name { font-weight: 900; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .server-multi-sub { font-size: 11px; color: var(--muted); }
+    .eval-steps { display: grid; gap: 10px; margin-bottom: 12px; }
+    .eval-step { border: 1px dashed var(--card-border); border-radius: 12px; padding: 12px; background: var(--soft-bg); }
+    .eval-step-title { font-weight: 900; margin-bottom: 8px; }
+    .eval-step-actions { display: flex; gap: 8px; justify-content: space-between; margin-top: 12px; }
+    .eval-step-actions .btn { min-width: 120px; }
+    .eval-mode-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+    .eval-mode-card { border: 1px solid var(--card-border); border-radius: 10px; padding: 10px; background: #fff; }
+    .eval-mode-card label { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--muted); }
+    .eval-progress { margin-top: 10px; display: grid; gap: 6px; }
+    .eval-progress-bar { height: 8px; background: #e2e8f0; border-radius: 999px; overflow: hidden; }
+    .eval-progress-bar span { display: block; width: 40%; height: 100%; background: #2563eb; animation: evalpulse 1.2s ease-in-out infinite; }
+    @keyframes evalpulse {
+      0% { transform: translateX(-100%); }
+      100% { transform: translateX(250%); }
+    }
   </style>
 </head>
 <body>
   <header class="header">
     <div class="container header-inner">
-      <div>
-        <div class="title">GAPA Console</div>
-        <div class="subtitle">资源实时监控 · 算法运行与监控</div>
+      <div class="brand">
+        <img src="/static/assets/LOGO.png" alt="GAPA Logo" />
+        <div>
+          <div class="title">GAPA Console</div>
+          <div class="subtitle">资源实时监控 · 算法运行与监控</div>
+        </div>
       </div>
     </div>
   </header>
@@ -350,13 +394,14 @@
             <div class="section-title">资源池</div>
             <div>
               <button id="btn-lock" class="btn btn-primary">锁定空闲资源</button>
+              <button id="btn-open-eval" class="btn btn-secondary">服务器测试评估</button>
               <button id="btn-refresh" class="btn btn-secondary">全部刷新</button>
             </div>
           </div>
           <div class="cards" id="cards">
             <div style="text-align:center;color:var(--muted);padding:28px 0;">正在加载本地资源…</div>
           </div>
-          <div class="split" style="margin-top:16px;">
+          <div style="margin-top:16px;display:grid;gap:16px;">
             <div class="section panel">
               <div class="section-header">
                 <div class="section-title">资源锁定状态</div>
@@ -373,59 +418,6 @@
                   <button id="btn-lock-log-clear" class="log-clear">清空</button>
                 </div>
                 <div id="lock-log" class="log-box">暂无锁定操作。</div>
-              </div>
-            </div>
-
-            <div class="section panel">
-              <div class="section-title">服务器测试评估</div>
-              <div class="form">
-              <div>
-                <div style="font-size:12px;color:var(--muted);font-weight:800;margin-bottom:6px;">单服务器</div>
-                <select id="select-server">
-                  <option value="local">本机</option>
-                </select>
-              </div>
-              <div>
-                <div style="font-size:12px;color:var(--muted);font-weight:800;margin-bottom:6px;">多服务器</div>
-                <label style="display:flex;gap:8px;align-items:center;font-size:12px;color:var(--muted);">
-                  <input type="checkbox" id="select-server-multi" />
-                  启用多机分布式加速
-                </label>
-                <select id="select-server-multi-mode" class="hidden">
-                  <option value="distributed">多机分布式加速（资源汇总）</option>
-                  <option value="compare">多台服务器对比</option>
-                </select>
-                <div id="select-server-multi-list" class="hidden" style="display:grid;gap:8px;"></div>
-              </div>
-                <div>
-                  <label>选择算法</label>
-                  <select id="select-algo">
-                    <option value="monitor" data-kind="monitor">仅监控资源</option>
-                  </select>
-                </div>
-                <div>
-                  <label>选择数据集</label>
-                  <select id="select-dataset"></select>
-                </div>
-                <div id="warmup-wrap" class="hidden">
-                  <label>Warm up 次数</label>
-                  <input id="input-warmup" type="number" min="0" value="2" />
-                </div>
-                <button id="btn-analyze" class="btn btn-primary" style="width:100%;">开始分析</button>
-                <button id="btn-analyze-lock" class="btn btn-secondary" style="width:100%;" disabled>设置为资源锁定策略</button>
-              </div>
-
-              <div class="log-wrap">
-                <div class="log-head">
-                  <div class="log-title">分析日志</div>
-                  <button id="btn-clear-log" class="log-clear">清空</button>
-                </div>
-                <div id="log-box" class="log-box">等待操作…</div>
-              </div>
-
-              <div style="margin-top:12px;">
-                <div class="log-title">遗传算法分析</div>
-                <div id="ga-panel" class="ga-panel">等待数据...</div>
               </div>
             </div>
           </div>
@@ -570,6 +562,11 @@
           <div class="section-header">
             <div class="section-title">历史记录</div>
             <div class="history-actions">
+              <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);">
+                <input id="history-select-all" type="checkbox" />
+                全选
+              </label>
+              <button id="btn-history-delete" class="btn btn-secondary" disabled>删除选中</button>
               <button id="btn-history-clear" class="btn btn-secondary">清空历史</button>
             </div>
           </div>
@@ -620,6 +617,118 @@
       <div class="modal-foot">
         <button id="btn-cancel" class="btn btn-secondary">取消</button>
         <button id="btn-add" class="btn btn-primary">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Eval Modal -->
+  <div id="eval-modal" class="modal-backdrop hidden">
+    <div class="modal" style="max-width:820px;">
+      <div class="modal-head">
+        <div class="modal-title">服务器测试评估</div>
+        <button id="btn-eval-close" class="modal-close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="eval-steps">
+          <div class="eval-step" data-step="1">
+            <div class="eval-step-title">步骤 1 · 选择评估模式</div>
+            <div class="eval-mode-grid">
+              <div class="eval-mode-card">
+                <label>
+                  <input type="radio" name="eval-mode" value="single" checked />
+                  <span>
+                    <div style="font-weight:900;color:var(--ink);">单服务器</div>
+                    <div>仅评估一台服务器</div>
+                  </span>
+                </label>
+              </div>
+              <div class="eval-mode-card">
+                <label>
+                  <input type="radio" name="eval-mode" value="multi" />
+                  <span>
+                    <div style="font-weight:900;color:var(--ink);">多服务器</div>
+                    <div>多台服务器对比或分布式</div>
+                  </span>
+                </label>
+              </div>
+            </div>
+            <div class="eval-step-actions">
+              <span></span>
+              <button id="eval-next-1" class="btn btn-primary">下一步</button>
+            </div>
+          </div>
+
+          <div class="eval-step hidden" data-step="2">
+            <div class="eval-step-title">步骤 2 · 选择服务器</div>
+            <div id="eval-single-wrap">
+              <label>单服务器</label>
+              <select id="select-server">
+                <option value="local">本机</option>
+              </select>
+            </div>
+            <div id="eval-multi-wrap" class="hidden" style="margin-top:10px;">
+              <div class="server-multi-toggle">
+                <label>
+                  <input type="checkbox" id="select-server-multi" />
+                  启用多机分布式加速
+                </label>
+                <span class="server-multi-hint">勾选后可选择多台服务器</span>
+              </div>
+              <select id="select-server-multi-mode" class="hidden">
+                <option value="distributed">多机分布式加速（资源汇总）</option>
+                <option value="compare">多台服务器对比</option>
+              </select>
+              <div id="select-server-multi-list" class="hidden" style="display:grid;gap:8px;margin-top:8px;"></div>
+            </div>
+            <div class="eval-step-actions">
+              <button id="eval-prev-2" class="btn btn-secondary">上一步</button>
+              <button id="eval-next-2" class="btn btn-primary">下一步</button>
+            </div>
+          </div>
+
+          <div class="eval-step hidden" data-step="3">
+            <div class="eval-step-title">步骤 3 · 选择算法并开始评估</div>
+            <div class="form" style="margin-top:0;">
+              <div>
+                <label>选择算法</label>
+                <select id="select-algo">
+                  <option value="monitor" data-kind="monitor">仅监控资源</option>
+                </select>
+              </div>
+              <div>
+                <label>选择数据集</label>
+                <select id="select-dataset"></select>
+              </div>
+              <div id="warmup-wrap" class="hidden">
+                <label>Warm up 次数</label>
+                <input id="input-warmup" type="number" min="0" value="2" />
+              </div>
+              <button id="btn-analyze" class="btn btn-primary" style="width:100%;">开始分析</button>
+              <button id="btn-analyze-lock" class="btn btn-secondary" style="width:100%;" disabled>设置为资源锁定策略</button>
+            </div>
+
+            <div class="log-wrap" style="margin-top:12px;">
+              <div class="log-head">
+                <div class="log-title">分析日志</div>
+                <button id="btn-clear-log" class="log-clear">清空</button>
+              </div>
+              <div id="log-box" class="log-box">等待操作…</div>
+            </div>
+
+            <div style="margin-top:12px;">
+              <div class="log-title">遗传算法分析</div>
+              <div id="ga-panel" class="ga-panel">等待数据...</div>
+            </div>
+            <div id="eval-progress" class="eval-progress hidden">
+              <div style="font-size:12px;color:var(--muted);">评估进行中，请稍候…</div>
+              <div class="eval-progress-bar"><span></span></div>
+            </div>
+            <div class="eval-step-actions">
+              <button id="eval-prev-3" class="btn btn-secondary">上一步</button>
+              <span></span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -712,6 +821,16 @@
     const btnCloseModal = document.getElementById("btn-close-modal");
     const btnCancel = document.getElementById("btn-cancel");
     const btnAdd = document.getElementById("btn-add");
+    const evalModal = document.getElementById("eval-modal");
+    const btnOpenEval = document.getElementById("btn-open-eval");
+    const btnEvalClose = document.getElementById("btn-eval-close");
+    const evalNext1 = document.getElementById("eval-next-1");
+    const evalNext2 = document.getElementById("eval-next-2");
+    const evalPrev2 = document.getElementById("eval-prev-2");
+    const evalPrev3 = document.getElementById("eval-prev-3");
+    const evalSingleWrap = document.getElementById("eval-single-wrap");
+    const evalMultiWrap = document.getElementById("eval-multi-wrap");
+    const evalProgress = document.getElementById("eval-progress");
     const btnLock = document.getElementById("btn-lock");
     const lockModal = document.getElementById("lock-modal");
     const lockClose = document.getElementById("lock-close");
@@ -765,17 +884,19 @@
     const btnRunLockRefresh = document.getElementById("btn-run-lock-refresh");
     const btnRunLockRelease = document.getElementById("btn-run-lock-release");
     const btnAnalyzeLock = document.getElementById("btn-analyze-lock");
+    const RUN_CONFIG_KEY = "gapa_run_config_v1";
 
     // History DOM
     const historyList = document.getElementById("history-list");
     const historyDetail = document.getElementById("history-detail");
     const btnHistoryClear = document.getElementById("btn-history-clear");
-
-    const HISTORY_KEY = "gapa_history_v1";
+    const btnHistoryDelete = document.getElementById("btn-history-delete");
+    const historySelectAll = document.getElementById("history-select-all");
     const PLAN_KEY = "gapa_saved_plans_v1";
     let datasetsManifest = null;
     let lastEvalPlan = null;
     let lastEvalMode = null; // "single" | "distributed"
+    let lastEvalTarget = null;
     let currentPoll = null;
     let lastLogCount = 0;
 
@@ -815,6 +936,40 @@
       document.getElementById("modal-pass").value = "";
     }
 
+    function openEvalModal() {
+      if (!evalModal) return;
+      evalModal.classList.remove("hidden");
+      evalModal.classList.add("flex");
+      setEvalStep(1);
+    }
+    function closeEvalModal() {
+      if (!evalModal) return;
+      evalModal.classList.add("hidden");
+      evalModal.classList.remove("flex");
+    }
+    let evalStep = 1;
+    function currentEvalMode() {
+      const el = document.querySelector('input[name="eval-mode"]:checked');
+      return el ? el.value : "single";
+    }
+    function updateEvalModeUI() {
+      const mode = currentEvalMode();
+      const multiEnabled = mode === "multi";
+      if (evalSingleWrap) evalSingleWrap.classList.toggle("hidden", multiEnabled);
+      if (evalMultiWrap) evalMultiWrap.classList.toggle("hidden", !multiEnabled);
+      if (serverSelectMulti) {
+        serverSelectMulti.checked = multiEnabled;
+        serverSelectMulti.dispatchEvent(new Event("change"));
+      }
+    }
+    function setEvalStep(step) {
+      evalStep = step;
+      evalModal?.querySelectorAll(".eval-step").forEach((el) => {
+        el.classList.toggle("hidden", Number(el.dataset.step) !== step);
+      });
+      if (step === 2) updateEvalModeUI();
+    }
+
     function openLockModal() {
       lockModal.classList.remove("hidden");
       lockModal.classList.add("flex");
@@ -831,6 +986,18 @@
     btnCancel.addEventListener("click", closeModal);
     modal.addEventListener("click", (e) => {
       if (e.target === modal) closeModal();
+    });
+    btnOpenEval?.addEventListener("click", openEvalModal);
+    btnEvalClose?.addEventListener("click", closeEvalModal);
+    evalModal?.addEventListener("click", (e) => {
+      if (e.target === evalModal) closeEvalModal();
+    });
+    evalNext1?.addEventListener("click", () => setEvalStep(2));
+    evalNext2?.addEventListener("click", () => setEvalStep(3));
+    evalPrev2?.addEventListener("click", () => setEvalStep(1));
+    evalPrev3?.addEventListener("click", () => setEvalStep(2));
+    document.querySelectorAll('input[name="eval-mode"]').forEach((el) => {
+      el.addEventListener("change", updateEvalModeUI);
     });
     btnLock?.addEventListener("click", openLockModal);
     lockClose?.addEventListener("click", closeLockModal);
@@ -857,9 +1024,9 @@
           const gpus = Array.isArray(snap.gpus) ? snap.gpus : [];
           return `
             <div class="server-multi-item">
-              <label style="display:flex;align-items:center;gap:10px;flex:1;">
+              <label class="server-multi-label">
                 <input type="checkbox" class="server-multi-check" value="${s.id}" />
-                <div>
+                <div class="server-multi-info">
                   <div class="server-multi-name">${s.label}</div>
                   <div class="server-multi-sub">GPU ${gpus.length} 张</div>
                 </div>
@@ -1116,7 +1283,83 @@
       updateRunGpuOptions();
       updateRunModeVisibility();
       refreshRunLockStatus();
+      saveRunConfig();
     });
+
+    function saveRunConfig() {
+      if (!runAlgo) return;
+      try {
+        const multi = runGpuMulti
+          ? Array.from(runGpuMulti.querySelectorAll(".run-gpu-check") || [])
+              .filter((el) => el.checked)
+              .map((el) => String(el.value))
+          : [];
+        const payload = {
+          runAlgo: runAlgo.value,
+          runDataset: runDataset?.value || "",
+          runServer: runServer?.value || RUN_SERVER_ID,
+          runMode: runMode?.value || "AUTO",
+          runGpuSingle: runGpuSingle?.value || "",
+          runGpuMulti: multi,
+          runIters: runIters?.value || "",
+          runPc: runPc?.value || "",
+          runPm: runPm?.value || "",
+        };
+        localStorage.setItem(RUN_CONFIG_KEY, JSON.stringify(payload));
+      } catch (e) {}
+    }
+
+    function applyRunConfig() {
+      if (!runAlgo) return;
+      let cfg = null;
+      try {
+        cfg = JSON.parse(localStorage.getItem(RUN_CONFIG_KEY) || "null");
+      } catch (e) {
+        cfg = null;
+      }
+      if (!cfg) return;
+      if (cfg.runAlgo && runAlgo.querySelector(`option[value="${cfg.runAlgo}"]`)) {
+        runAlgo.value = cfg.runAlgo;
+      }
+      updateRunDatasetOptions();
+      if (cfg.runDataset && runDataset?.querySelector(`option[value="${cfg.runDataset}"]`)) {
+        runDataset.value = cfg.runDataset;
+      }
+      if (cfg.runServer && runServer?.querySelector(`option[value="${cfg.runServer}"]`)) {
+        runServer.value = cfg.runServer;
+        RUN_SERVER_ID = cfg.runServer;
+      }
+      updateRunModeOptions();
+      if (cfg.runMode && runMode?.querySelector(`option[value="${cfg.runMode}"]`)) {
+        runMode.value = cfg.runMode;
+      }
+      updateRunGpuOptions();
+      updateRunModeVisibility();
+      if (cfg.runGpuSingle && runGpuSingle?.querySelector(`option[value="${cfg.runGpuSingle}"]`)) {
+        runGpuSingle.value = cfg.runGpuSingle;
+      }
+      if (Array.isArray(cfg.runGpuMulti) && runGpuMulti) {
+        const want = new Set(cfg.runGpuMulti.map((v) => String(v)));
+        runGpuMulti.querySelectorAll(".run-gpu-check").forEach((el) => {
+          el.checked = want.has(String(el.value));
+        });
+      }
+      if (cfg.runIters && runIters) runIters.value = cfg.runIters;
+      if (cfg.runPc && runPc) runPc.value = cfg.runPc;
+      if (cfg.runPm && runPm) runPm.value = cfg.runPm;
+    }
+
+    runAlgo?.addEventListener("change", () => {
+      updateRunDatasetOptions();
+      saveRunConfig();
+    });
+    runDataset?.addEventListener("change", saveRunConfig);
+    runMode?.addEventListener("change", saveRunConfig);
+    runGpuSingle?.addEventListener("change", saveRunConfig);
+    runGpuMulti?.addEventListener("change", saveRunConfig);
+    runIters?.addEventListener("change", saveRunConfig);
+    runPc?.addEventListener("change", saveRunConfig);
+    runPm?.addEventListener("change", saveRunConfig);
 
     btnAdd.addEventListener("click", () => {
       const ip = document.getElementById("modal-ip").value.trim();
@@ -1367,7 +1610,10 @@
     document.getElementById("btn-analyze").addEventListener("click", async () => {
       lastEvalPlan = null;
       lastEvalMode = null;
+      lastEvalTarget = null;
       if (btnAnalyzeLock) btnAnalyzeLock.disabled = true;
+      if (evalProgress) evalProgress.classList.remove("hidden");
+      try {
       const algo = algoSelect.value;
       const warmup = Math.max(0, Number(warmupInput.value || 0));
       const isMonitor = algo === "monitor";
@@ -1720,6 +1966,7 @@
         if (results.length === 1 && results[0].plan) {
           lastEvalPlan = results[0].plan;
           lastEvalMode = "single";
+          lastEvalTarget = results[0].sid;
           if (btnAnalyzeLock) btnAnalyzeLock.disabled = false;
         }
         return;
@@ -1739,6 +1986,7 @@
           }
           lastEvalPlan = data;
           lastEvalMode = "distributed";
+          lastEvalTarget = null;
           if (btnAnalyzeLock) btnAnalyzeLock.disabled = false;
 
           const cards = targets
@@ -1828,44 +2076,153 @@
           ${cards}
         </div>
       `;
+      } finally {
+        if (evalProgress) evalProgress.classList.add("hidden");
+      }
     });
 
     // ---------- Module 3: run & monitor ----------
-    function historyLoad() {
+    const HISTORY_KEY = "gapa_history_v1";
+    let historyCache = [];
+    let historySelected = new Set();
+
+    async function historyImport(items) {
+      if (!Array.isArray(items) || !items.length) return false;
       try {
-        return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]") || [];
+        const resp = await fetch("/api/history", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ items }),
+        });
+        if (!resp.ok) return false;
+        const data = await resp.json();
+        historyCache = Array.isArray(data.items) ? data.items : historyCache;
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    async function historyLoad() {
+      try {
+        const resp = await fetch("/api/history", { cache: "no-store" });
+        if (!resp.ok) return [];
+        const items = await resp.json();
+        historyCache = Array.isArray(items) ? items : [];
+        if (!historyCache.length) {
+          try {
+            const legacy = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]") || [];
+            if (legacy.length) {
+              const ok = await historyImport(legacy);
+              if (ok) {
+                localStorage.removeItem(HISTORY_KEY);
+                return historyCache;
+              }
+            }
+          } catch (e) {}
+        }
+        return historyCache;
       } catch (e) {
         return [];
       }
     }
-    function historySave(items) {
+    async function historyAdd(item) {
       try {
-        localStorage.setItem(HISTORY_KEY, JSON.stringify(items.slice(0, 50)));
-      } catch (e) {}
+        const resp = await fetch("/api/history", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(item),
+        });
+        if (!resp.ok) return false;
+        const data = await resp.json();
+        historyCache = Array.isArray(data.items) ? data.items : historyCache;
+        return true;
+      } catch (e) {
+        return false;
+      }
     }
+    async function historyDelete(ids) {
+      if (!Array.isArray(ids) || !ids.length) return false;
+      try {
+        const resp = await fetch("/api/history", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids }),
+        });
+        if (!resp.ok) return false;
+        const data = await resp.json();
+        historyCache = Array.isArray(data.items) ? data.items : historyCache;
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+    async function historyClear() {
+      try {
+        const resp = await fetch("/api/history", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ all: true }),
+        });
+        if (!resp.ok) return false;
+        historyCache = [];
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    function updateHistoryActions() {
+      const hasSelection = historySelected.size > 0;
+      if (btnHistoryDelete) btnHistoryDelete.disabled = !hasSelection;
+      if (historySelectAll) {
+        historySelectAll.checked = historyCache.length > 0 && historySelected.size === historyCache.length;
+        historySelectAll.indeterminate = historySelected.size > 0 && historySelected.size < historyCache.length;
+      }
+    }
+
     function historyRender() {
-      const items = historyLoad();
+      const items = historyCache;
       if (!items.length) {
         historyList.innerHTML = `<div style="color:var(--muted);font-size:13px;">暂无历史记录。</div>`;
+        historySelected = new Set();
+        updateHistoryActions();
         return;
       }
       historyList.innerHTML = items
         .map((it, idx) => {
           const commMs = it.comm_avg_ms != null ? `${Number(it.comm_avg_ms).toFixed(2)}ms` : "-";
+          const checked = historySelected.has(it.id) ? "checked" : "";
           return `
-            <div class="history-item" data-idx="${idx}">
-              <div style="font-weight:900;">${it.algorithm} · ${it.server_label || it.server_id}</div>
-              <div class="history-meta">${it.timestamp} · state=${it.state} · best=${it.best_score ?? "-"} · comm=${commMs}</div>
+            <div class="history-item" data-idx="${idx}" data-id="${it.id || ""}">
+              <div class="history-item-row">
+                <input type="checkbox" class="history-item-check" data-id="${it.id || ""}" ${checked} />
+                <div>
+                  <div style="font-weight:900;">${it.algorithm} · ${it.server_label || it.server_id}</div>
+                  <div class="history-meta">${it.timestamp} · state=${it.state} · best=${it.best_score ?? "-"} · comm=${commMs}</div>
+                </div>
+              </div>
             </div>
           `;
         })
         .join("");
+      historyList.querySelectorAll(".history-item-check").forEach((el) => {
+        el.addEventListener("click", (evt) => {
+          evt.stopPropagation();
+          const id = el.dataset.id;
+          if (!id) return;
+          if (el.checked) historySelected.add(id);
+          else historySelected.delete(id);
+          updateHistoryActions();
+        });
+      });
       historyList.querySelectorAll(".history-item").forEach((el) => {
-        el.addEventListener("click", () => {
+        el.addEventListener("click", (evt) => {
+          if (evt.target && evt.target.classList.contains("history-item-check")) return;
           historyList.querySelectorAll(".history-item").forEach((x) => x.classList.remove("history-item--active"));
           el.classList.add("history-item--active");
           const idx = Number(el.dataset.idx);
-          const it = historyLoad()[idx];
+          const it = historyCache[idx];
           if (!it) return;
           const comm = it.result?.comm || {};
           const perRank = comm.per_rank_avg_ms || {};
@@ -1904,11 +2261,32 @@
             .join("\n");
         });
       });
+      updateHistoryActions();
     }
-    btnHistoryClear?.addEventListener("click", () => {
-      historySave([]);
+    btnHistoryClear?.addEventListener("click", async () => {
+      const ok = await historyClear();
+      if (ok) {
+        historyRender();
+        historyDetail.textContent = "历史已清空。";
+      }
+    });
+    btnHistoryDelete?.addEventListener("click", async () => {
+      const ids = Array.from(historySelected);
+      if (!ids.length) return;
+      const ok = await historyDelete(ids);
+      if (ok) {
+        historySelected = new Set();
+        historyRender();
+        historyDetail.textContent = "已删除选中历史。";
+      }
+    });
+    historySelectAll?.addEventListener("change", () => {
+      if (!historyCache.length) return;
+      historySelected = new Set();
+      if (historySelectAll.checked) {
+        historyCache.forEach((it) => it.id && historySelected.add(it.id));
+      }
       historyRender();
-      historyDetail.textContent = "历史已清空。";
     });
 
     function appendRunLog(lines) {
@@ -2177,8 +2555,7 @@
           currentPoll = null;
         }
         // persist to history
-        const items = historyLoad();
-        items.unshift({
+        const saved = {
           timestamp: new Date().toLocaleString(),
           server_id,
           server_label: (sources.find((s) => s.id === server_id) || {}).label,
@@ -2191,9 +2568,11 @@
           hyperparams: st.result ? st.result.hyperparams : null,
           logs: logs.slice(-500),
           result: st.result || null,
-        });
-        historySave(items);
-        historyRender();
+        };
+        const ok = await historyAdd(saved);
+        if (ok) {
+          historyRender();
+        }
       }
     }
 
@@ -2278,10 +2657,15 @@
       }
 
       const devices = Array.isArray(lastEvalPlan.devices) ? lastEvalPlan.devices : [];
+      if (!devices.length) {
+        alert("评估结果未包含可用设备，无法锁定。");
+        return;
+      }
+      const scope = lastEvalTarget || "local";
       const resp = await fetch("/api/resource_lock", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ scope: "local", devices }),
+        body: JSON.stringify({ scope, devices }),
       });
       const data = await resp.json();
       if (!resp.ok) {
@@ -2382,7 +2766,9 @@
       updateServerMultiList();
       refreshAll();
       fetchLockStatus("all");
-      refreshRunLockStatus();
+      await refreshRunLockStatus();
+      applyRunConfig();
+      await historyLoad();
       historyRender();
       updateRunDatasetOptions();
       updateEvalDatasetOptions();
