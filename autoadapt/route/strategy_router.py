@@ -80,6 +80,9 @@ class StrategyRouter:
 
         # 轻量校准：key -> measured/predicted 的指数滑动平均
         self.calib: Dict[str, float] = {}
+        
+        # 负载权重：当显卡负载较高时，对其 GEps 施加惩罚
+        self.util_penalty_factor = 2.0  # 负载每增加 100%，GEps 虚拟折减比例
 
     # ======== Public APIs ========
     def route(self, wl, *, objective: str = 'time', multi_gpu: bool = True,
@@ -132,14 +135,25 @@ class StrategyRouter:
 
         # --- 多卡候选（最强前 k 张，k∈{2,4,...,N}） ---
         if multi_gpu and len(gpus) >= 2:
-            ranked = sorted(gpus, key=lambda i: float(gpu_map.get(i, {}).get('geps', 1.0)), reverse=True)
+            # 改进：不仅按 GEps 排序，还要考虑哪些是“空闲”的
+            # 这里的排序应该综合 GEps 和负载，但在 candidate_plans 中我们更倾向于枚举合理的组合
+            ranked = sorted(gpus, key=lambda i: self._gpu_effective_geps(gpu_map.get(i, {})), reverse=True)
             for k in _pow2_schedule(len(ranked)):
                 idxs = ranked[:k]
                 geps_eff, alloc = self._compose_multi_geps(gpu_map, idxs)
                 t = self._estimate_time_multi_gpu(wl, geps_eff)
                 cand.append(self._plan('multi-gpu', idxs, alloc, len(idxs), t,
                                        self._energy_gpu([gpu_map[i] for i in idxs], t),
-                                       reason=f"MGPU{idxs} GEps_eff≈{geps_eff:.2f}"))
+                                       reason=f"MGPU{idxs} GEps_eff≈{geps_eff:.2f} (基于负载倾斜)"))
+        
+        # 补充：如果存在大量空闲卡且当前最快方案包含忙卡，额外增加一个“仅空闲卡”的组合方案
+        idle_gpus = [i for i in gpus if float(gpu_map.get(i, {}).get('util', 0)) < 10.0]
+        if multi_gpu and len(idle_gpus) >= 2 and len(idle_gpus) != len(gpus):
+             geps_eff, alloc = self._compose_multi_geps(gpu_map, idle_gpus)
+             t = self._estimate_time_multi_gpu(wl, geps_eff)
+             cand.append(self._plan('multi-gpu', idle_gpus, alloc, len(idle_gpus), t,
+                                    self._energy_gpu([gpu_map[i] for i in idle_gpus], t),
+                                    reason=f"MGPU_IDLE{idle_gpus} GEps_eff≈{geps_eff:.2f} (强制全空闲组合)"))
 
         # 预选：按预测时间取前 max_candidates
         cand.sort(key=lambda p: p.estimated_time_ms)
@@ -198,14 +212,24 @@ class StrategyRouter:
                                          reason=f"GPU[{gi}] GEps≈{geps:.2f}"))
 
         if multi_gpu and len(gpus) >= 2:
-            ranked = sorted(gpus, key=lambda i: float(gpu_map.get(i, {}).get('geps', 1.0)), reverse=True)
+            # Consistent with choose_and_warmup: rank by effective GEps
+            ranked = sorted(gpus, key=lambda i: self._gpu_effective_geps(gpu_map.get(i, {})), reverse=True)
             for k in _pow2_schedule(len(ranked)):
                 idxs = ranked[:k]
                 geps_eff, alloc = self._compose_multi_geps(gpu_map, idxs)
                 t = self._estimate_time_multi_gpu(wl, geps_eff)
                 candidates.append(self._plan('multi-gpu', idxs, alloc, len(idxs), t,
                                              self._energy_gpu([gpu_map[i] for i in idxs], t),
-                                             reason=f"MGPU{idxs} GEps_eff≈{geps_eff:.2f}"))
+                                             reason=f"MGPU{idxs} GEps_eff≈{geps_eff:.2f} (基于负载倾斜)"))
+        
+        # Idle-only candidate for TPE as well
+        idle_gpus = [i for i in gpus if float(gpu_map.get(i, {}).get('util', 0)) < 10.0]
+        if multi_gpu and len(idle_gpus) >= 2 and len(idle_gpus) != len(gpus):
+             geps_eff, alloc = self._compose_multi_geps(gpu_map, idle_gpus)
+             t = self._estimate_time_multi_gpu(wl, geps_eff)
+             candidates.append(self._plan('multi-gpu', idle_gpus, alloc, len(idle_gpus), t,
+                                          self._energy_gpu([gpu_map[i] for i in idle_gpus], t),
+                                          reason=f"MGPU_IDLE{idle_gpus} GEps_eff≈{geps_eff:.2f} (强制全空闲组合)"))
 
         return candidates
 
@@ -264,14 +288,27 @@ class StrategyRouter:
                 geps = (float(g.d2d_gbps) * 1e9) / (12.0 * 2.0) / 1e9
             else:
                 geps = 5.0  # 合理的兜底
+            
+            # 提取负载信息（如果画像中包含）
+            util = float(getattr(g, 'gpu_util_percent', 0.0) or 0.0)
+            
             infos.append({
                 'index': idx,
                 'name': str(getattr(g, 'name', f'GPU{idx}')),
                 'geps': geps,
+                'util': util,
                 'power_w': float(getattr(g, 'avg_power_w', 250.0) or 250.0),
                 'score_graph': int(getattr(g, 'score_graph', 0)),
             })
         return infos
+
+    def _gpu_effective_geps(self, g_info: Dict) -> float:
+        """根据当前负载折减静态 GEps 能力"""
+        base_geps = float(g_info.get('geps', 1.0))
+        util = float(g_info.get('util', 0.0))
+        # 惩罚项：如果 util=50%, 能力折减 1/(1 + 0.5*2) = 1/2
+        penalty = 1.0 + (util / 100.0) * self.util_penalty_factor
+        return base_geps / penalty
 
     # ---------- Picking helpers ----------
     def _pick_by_objective(self, candidates, objective: str) -> Plan:
@@ -313,14 +350,14 @@ class StrategyRouter:
         return max(time_s * 1000.0, 0.5)
 
     def _compose_multi_geps(self, gpu_map: Dict[int, Dict], idxs: List[int]):
-        """并行吞吐求和 × 效率折减；同时给出 allocation（按各卡 geps 归一化）"""
-        geps_list = [float(gpu_map.get(i, {}).get('geps', 1.0)) for i in idxs]
-        base = sum(geps_list)
+        """并行吞吐求和 × 效率折减；同时给出 allocation（按各卡有效 geps 归一化）"""
+        eff_geps_list = [self._gpu_effective_geps(gpu_map.get(i, {})) for i in idxs]
+        base = sum(eff_geps_list)
         k = len(idxs)
         eff = max(0.6, 0.9 - 0.05 * (k - 1))
         geps_eff = base * eff
-        denom = sum(geps_list) or 1.0
-        alloc = {i: (float(gpu_map.get(i, {}).get('geps', 1.0)) / denom) for i in idxs}
+        denom = sum(eff_geps_list) or 1.0
+        alloc = {i: (self._gpu_effective_geps(gpu_map.get(i, {})) / denom) for i in idxs}
         return geps_eff, alloc
 
     def _estimate_time_multi_gpu(self, wl, geps_eff: float) -> float:

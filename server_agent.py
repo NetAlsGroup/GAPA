@@ -46,6 +46,7 @@ def api_resources() -> Dict[str, Any]:
 
 
 TASK = TaskState()
+STRATEGY_PROGRESS: Dict[str, Dict[str, Any]] = {}
 
 
 def _summarize_warmup_result(result: dict | None) -> dict:
@@ -383,8 +384,18 @@ def api_strategy_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
     multi_gpu = bool(payload.get("multi_gpu", True))
     gpu_busy_threshold = payload.get("gpu_busy_threshold")
     min_gpu_free_mb = payload.get("min_gpu_free_mb")
+    tpe_trials = payload.get("tpe_trials")
+    tpe_warmup = payload.get("tpe_warmup")
+    progress_id = payload.get("progress_id")
     algorithm = payload.get("algorithm")
     snap = resources_payload()
+    if progress_id:
+        total_trials = int(tpe_trials or os.getenv("GAPA_TPE_TRIALS", "6") or 6)
+        STRATEGY_PROGRESS[progress_id] = {"current": 0, "total": total_trials, "status": "running"}
+    def _progress_cb(cur: int, total: int, status: str) -> None:
+        if not progress_id:
+            return
+        STRATEGY_PROGRESS[progress_id] = {"current": int(cur), "total": int(total), "status": str(status)}
     plan = _StrategyPlan(
         fitness=None,
         warmup=warmup,
@@ -393,6 +404,9 @@ def api_strategy_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
         resource_snapshot=snap,
         gpu_busy_threshold=gpu_busy_threshold,
         min_gpu_free_mb=min_gpu_free_mb,
+        tpe_trials=tpe_trials,
+        tpe_warmup=tpe_warmup,
+        progress_cb=_progress_cb if progress_id else None,
     )
     if algorithm:
         try:
@@ -400,6 +414,13 @@ def api_strategy_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
         except Exception:
             pass
     return plan.to_dict()
+
+
+@app.get("/api/strategy_plan/progress")
+def api_strategy_plan_progress(progress_id: str) -> Dict[str, Any]:
+    if not progress_id:
+        raise HTTPException(status_code=400, detail="progress_id required")
+    return STRATEGY_PROGRESS.get(progress_id, {"status": "unknown", "current": 0, "total": 0})
 
 
 @app.post("/api/strategy_compare")
