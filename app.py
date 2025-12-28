@@ -29,6 +29,8 @@ import time
 
 HISTORY_FILE = (Path(__file__).resolve().parent / "results" / "history.json").resolve()
 HISTORY_LOCK = threading.Lock()
+STRATEGY_PROGRESS: dict[str, dict[str, object]] = {}
+STRATEGY_PROGRESS_LOCK = threading.Lock()
 
 
 def _load_history() -> list[dict]:
@@ -46,6 +48,24 @@ def _save_history(items: list[dict]) -> None:
         HISTORY_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass
+
+
+def _set_strategy_progress(progress_id: str, *, current: int, total: int, status: str, server_id: str | None = None) -> None:
+    if not progress_id:
+        return
+    with STRATEGY_PROGRESS_LOCK:
+        STRATEGY_PROGRESS[progress_id] = {
+            "current": int(current),
+            "total": int(total),
+            "status": str(status),
+            "server_id": server_id,
+            "updated_at": time.time(),
+        }
+
+
+def _get_strategy_progress(progress_id: str) -> dict[str, object] | None:
+    with STRATEGY_PROGRESS_LOCK:
+        return STRATEGY_PROGRESS.get(progress_id)
 
 
 def _resolve_server_base_url(server_id: str | None) -> str | None:
@@ -268,6 +288,9 @@ def api_strategy_plan():
     multi_gpu = bool(payload.get("multi_gpu", True))
     gpu_busy_threshold = payload.get("gpu_busy_threshold")
     min_gpu_free_mb = payload.get("min_gpu_free_mb")
+    tpe_trials = payload.get("tpe_trials")
+    tpe_warmup = payload.get("tpe_warmup")
+    progress_id = payload.get("progress_id")
     algo = payload.get("algorithm")
     try:
         # If a remote server is selected, proxy to its own agent to compute plan locally.
@@ -294,7 +317,7 @@ def api_strategy_plan():
 
                 session = requests.Session()
                 session.trust_env = False  # avoid routing LAN traffic via HTTP(S)_PROXY
-                timeout_s = float(payload.get("timeout_s", 120) or 120)
+                timeout_s = float(payload.get("timeout_s", 600) or 600)
                 resp = session.post(
                     base_url.rstrip("/") + "/api/strategy_plan",
                     json={
@@ -304,6 +327,9 @@ def api_strategy_plan():
                         "multi_gpu": multi_gpu,
                         "gpu_busy_threshold": gpu_busy_threshold,
                         "min_gpu_free_mb": min_gpu_free_mb,
+                        "tpe_trials": tpe_trials,
+                        "tpe_warmup": tpe_warmup,
+                        "progress_id": progress_id,
                     },
                     timeout=(3.0, timeout_s),
                 )
@@ -330,6 +356,11 @@ def api_strategy_plan():
                 return jsonify({"error": f"proxy failed: {exc}", "server_id": server_id, "base_url": base_url}), 502
 
         snap = current_resource_snapshot()
+        if progress_id:
+            total_trials = int(tpe_trials or os.getenv("GAPA_TPE_TRIALS", "6") or 6)
+            _set_strategy_progress(progress_id, current=0, total=total_trials, status="running", server_id=str(server_id or "local"))
+        def _progress_cb(cur: int, total: int, status: str) -> None:
+            _set_strategy_progress(progress_id, current=cur, total=total, status=status, server_id=str(server_id or "local"))
         plan = StrategyPlan(
             fitness=None,
             warmup=warmup,
@@ -338,12 +369,18 @@ def api_strategy_plan():
             resource_snapshot=snap,
             gpu_busy_threshold=gpu_busy_threshold,
             min_gpu_free_mb=min_gpu_free_mb,
+            tpe_trials=tpe_trials,
+            tpe_warmup=tpe_warmup,
+            progress_cb=_progress_cb if progress_id else None,
         )
         if algo:
             try:
                 plan.notes = (plan.notes + " " if plan.notes else "") + f"algorithm={algo}"
             except Exception:
                 pass
+        if progress_id:
+            total_trials = int(tpe_trials or os.getenv("GAPA_TPE_TRIALS", "6") or 6)
+            _set_strategy_progress(progress_id, current=total_trials, total=total_trials, status="done", server_id=str(server_id or "local"))
         return jsonify(plan.to_dict())
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
@@ -416,6 +453,35 @@ def api_strategy_compare():
         )
     except Exception as exc:
         return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/strategy_plan/progress", methods=["GET"])
+def api_strategy_plan_progress():
+    progress_id = request.args.get("progress_id") or request.args.get("id") or ""
+    server_id = request.args.get("server_id") or request.args.get("server")
+    if not progress_id:
+        return jsonify({"error": "progress_id required"}), 400
+    if server_id and server_id != "local":
+        base_url = _resolve_server_base_url(server_id)
+        if not base_url:
+            return jsonify({"error": "unknown server_id or missing base_url", "server_id": server_id}), 404
+        try:
+            import requests
+
+            session = requests.Session()
+            session.trust_env = False
+            resp = session.get(
+                base_url.rstrip("/") + "/api/strategy_plan/progress",
+                params={"progress_id": progress_id},
+                timeout=(3.0, 10.0),
+            )
+            if resp.ok:
+                return jsonify(resp.json())
+            return jsonify({"error": f"HTTP {resp.status_code}"}), resp.status_code
+        except Exception as exc:
+            return jsonify({"error": f"proxy failed: {exc}", "server_id": server_id, "base_url": base_url}), 502
+    data = _get_strategy_progress(progress_id)
+    return jsonify(data or {"status": "unknown", "current": 0, "total": 0})
 
 
 @app.route("/api/ga_warmup", methods=["POST"])

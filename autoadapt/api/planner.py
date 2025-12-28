@@ -94,7 +94,15 @@ def _synthetic_executor(plan: Plan, iters: int) -> float:
         return float("inf")
 
     if plan.backend == "cuda":
-        device = "cuda:0"
+        dev_id = None
+        if isinstance(plan.devices, list) and plan.devices:
+            try:
+                dev_id = int(plan.devices[0])
+            except Exception:
+                dev_id = None
+        if dev_id is None:
+            dev_id = 0
+        device = f"cuda:{dev_id}"
         a, b = _prepare(device)
         _sync(device)
         start = time.perf_counter()
@@ -104,25 +112,61 @@ def _synthetic_executor(plan: Plan, iters: int) -> float:
         return (time.perf_counter() - start) * 1000.0
 
     if plan.backend == "multi-gpu":
-        dev_count = len(plan.devices or [])
-        dev_count = max(2, dev_count or int(plan.world_size or 2))
+        devices = []
+        if isinstance(plan.devices, list) and plan.devices:
+            for d in plan.devices:
+                try:
+                    devices.append(int(d))
+                except Exception:
+                    continue
+        if not devices:
+            dev_count = int(plan.world_size or 2)
+            devices = list(range(max(2, dev_count)))
+        if torch.cuda.is_available():
+            try:
+                max_idx = torch.cuda.device_count() - 1
+                devices = [d for d in devices if d <= max_idx]
+            except Exception:
+                pass
+        if len(devices) < 2:
+            return float("inf")
+        
+        # Optimization: Use a larger matrix for multi-GPU synthetic test to dilute overhead,
+        # or use sync points properly. In GAPA, multi-GPU is typically process-parallel,
+        # but here we use threads for a quick check. GIL is a bottleneck for tiny tasks.
+        # We'll increase the iterations per thread slightly to ensure CUDA kernels overlap.
         mats = []
-        for i in range(dev_count):
-            dev = f"cuda:{i}"
+        for dev_id in devices:
+            dev = f"cuda:{dev_id}"
             mats.append((dev, *_prepare(dev)))
+        
         import threading
-        _sync("cuda:0")
+        # Ensure all GPUs are ready
+        for dev, _, _ in mats:
+            _sync(dev)
+        
         start = time.perf_counter()
-        for _ in range(iters):
-            threads = []
-            for dev, a, b in mats:
-                t = threading.Thread(target=_run_once, args=(a, b), daemon=True)
-                threads.append(t)
-                t.start()
-            for t in threads:
-                t.join()
-        _sync("cuda:0")
-        return (time.perf_counter() - start) * 1000.0
+        # We run the loop inside threads to allow some CUDA overlap even with GIL,
+        # although Python bytecode still serializes.
+        def _thread_worker(dev, a, b, i_count):
+            for _ in range(i_count):
+                _run_once(a, b)
+            _sync(dev)
+
+        threads = []
+        for dev, a, b in mats:
+            t = threading.Thread(target=_thread_worker, args=(dev, a, b, iters), daemon=True)
+            threads.append(t)
+            t.start()
+        for t in threads:
+            t.join()
+            
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        # Multi-GPU in GAPA is usually distributed, so the "latency" is the max of all workers.
+        # However, for throughput it's different. Since TPE evaluates "time per fitness",
+        # and GAPA parallelizes population evaluations, the expected time should be
+        # roughly (single_card_time / card_count) * (1 / efficiency).
+        return elapsed_ms
 
     return float("inf")
 
@@ -133,6 +177,7 @@ def _tpe_select(
     warmup_iters: int,
     trials: int,
     gamma: float = 0.25,
+    progress_cb: Optional[Callable[[int, int, str], None]] = None,
 ) -> Plan:
     if not plans:
         raise ValueError("no candidate plans")
@@ -143,50 +188,113 @@ def _tpe_select(
     ids = [f"{p.backend}:{','.join(str(d) for d in p.devices)}" for p in plans]
     priors = {}
     for pid, plan in zip(ids, plans):
+        # We use a blend of estimated time and priority
         t = max(plan.estimated_time_ms, 1e-6)
         priors[pid] = 1.0 / t
+    
     prior_sum = sum(priors.values()) or 1.0
     for k in priors:
         priors[k] = priors[k] / prior_sum
 
     observed: Dict[str, List[float]] = {}
+    
+    # Heuristic: Always test the static "best" plan first to establish a strong baseline.
+    static_best_idx = 0
+    min_est = float('inf')
+    for i, p in enumerate(plans):
+        if p.estimated_time_ms < min_est:
+            min_est = p.estimated_time_ms
+            static_best_idx = i
 
     def _pick_next() -> Plan:
+        tested_count = len(observed)
+        # Forced exploration of static top-2 if we have enough trials
+        if tested_count < min(trials, 2):
+            sorted_indices = sorted(range(len(plans)), key=lambda i: plans[i].estimated_time_ms)
+            for idx in sorted_indices:
+                if ids[idx] not in observed:
+                    return plans[idx]
+
         tested = set(observed.keys())
         untested = [p for p, pid in zip(plans, ids) if pid not in tested]
-        if len(observed) < max(2, int(len(plans) * gamma)):
-            untested.sort(key=lambda p: p.estimated_time_ms)
-            return untested[0] if untested else plans[0]
+        
+        # Before we have enough data, act greedily on priors/estimates
+        if len(observed) < max(2, int(trials * gamma)):
+            if untested:
+                untested.sort(key=lambda p: p.estimated_time_ms)
+                return untested[0]
+            return plans[0]
+
         all_obs = [(pid, min(vals)) for pid, vals in observed.items() if vals]
         all_obs.sort(key=lambda kv: kv[1])
+        
         cutoff_idx = max(1, int(len(all_obs) * gamma))
         good_set = {pid for pid, _ in all_obs[:cutoff_idx]}
         bad_set = {pid for pid, _ in all_obs[cutoff_idx:]}
+        
         scores = []
         for plan, pid in zip(plans, ids):
             if pid in tested:
+                # We can re-test to refine, but usually prioritize untested
                 continue
             l = (1 if pid in good_set else 0) + priors[pid]
             g = (1 if pid in bad_set else 0) + priors[pid]
             scores.append((l / g, plan))
+            
         if scores:
             scores.sort(key=lambda x: x[0], reverse=True)
             return scores[0][1]
-        return plans[0]
+        
+        # If all tested, pick best observed
+        best_pid = all_obs[0][0]
+        return next(p for p, pid in zip(plans, ids) if pid == best_pid)
 
-    best_plan = min(plans, key=lambda p: p.estimated_time_ms)
+    best_plan = plans[static_best_idx]
     best_ms = float("inf")
-    for _ in range(trials):
+    
+    if progress_cb:
+        try:
+            progress_cb(0, trials, "running")
+        except Exception:
+            pass
+            
+    for i in range(trials):
         plan = _pick_next()
-        ms = float(executor(plan, warmup_iters))
+        try:
+            ms = float(executor(plan, warmup_iters))
+        except Exception:
+            ms = float("inf")
+            
         pid = f"{plan.backend}:{','.join(str(d) for d in plan.devices)}"
         observed.setdefault(pid, []).append(ms)
+        
         if ms < best_ms:
             best_ms = ms
             best_plan = plan
+            
+        if progress_cb:
+            try:
+                progress_cb(i + 1, trials, "running")
+            except Exception:
+                pass
 
+    # Final "Voting" Logic: 
+    # If the TPE best is significantly worse than static best expectation, 
+    # and the static best wasn't tested or had noisy results, check if we should trust static.
+    # However, here we always test static best. 
+    # Let's ensure we don't pick a "fluke" result.
+    
+    # If the difference between TPE best and static best is small (< 15%), 
+    # and static best has more devices (potential for more scaling), we might prefer static.
+    # But for now, we trust measurements as the user specifically wants TPE for "real" evaluation.
+    
     best_plan.estimated_time_ms = max(1e-3, min(best_plan.estimated_time_ms, best_ms))
     best_plan.reason += f" | tpe_trials={trials} warmup={warmup_iters}"
+    if progress_cb:
+        try:
+            progress_cb(trials, trials, "done")
+        except Exception:
+            pass
     return best_plan
 
 
@@ -200,6 +308,9 @@ def StrategyPlan(
         resource_snapshot: Optional[Dict[str, Any]] = None,
         gpu_busy_threshold: Optional[float] = None,
         min_gpu_free_mb: Optional[int] = None,
+        tpe_trials: Optional[int] = None,
+        tpe_warmup: Optional[int] = None,
+        progress_cb: Optional[Callable[[int, int, str], None]] = None,
 ) -> Plan:
     """生成当前环境的资源执行方案。
 
@@ -208,7 +319,19 @@ def StrategyPlan(
       ``fitness`` 调用以做热身评估，并返回实测耗时最短的方案。
       可以通过 ``fitness_args`` 与 ``fitness_kwargs`` 为 ``fitness`` 传参。
     """
-    prof = PerformanceProfiler(quick=True).profile()
+    # Extract GPU utilization mapping from snapshot
+    util_map = {}
+    if resource_snapshot and "gpus" in resource_snapshot:
+        for g in resource_snapshot["gpus"]:
+            gid = g.get("id")
+            util = g.get("gpu_util_percent")
+            if gid is not None and util is not None:
+                try:
+                    util_map[int(gid)] = float(util)
+                except Exception:
+                    pass
+
+    prof = PerformanceProfiler(quick=True).profile(gpu_utils=util_map)
     if gpu_busy_threshold is None:
         gpu_busy_threshold = float(os.getenv("GAPA_STRATEGY_GPU_BUSY", "60") or 60)
     if min_gpu_free_mb is None:
@@ -238,9 +361,9 @@ def StrategyPlan(
 
     wl = _SyntheticWL()
 
-    tpe_trials = int(os.getenv("GAPA_TPE_TRIALS", "6") or 6)
+    tpe_trials = int(tpe_trials or os.getenv("GAPA_TPE_TRIALS", "6") or 6)
     tpe_gamma = float(os.getenv("GAPA_TPE_GAMMA", "0.25") or 0.25)
-    tpe_warmup = int(os.getenv("GAPA_TPE_WARMUP_ITERS", "1") or 1)
+    tpe_warmup = int(tpe_warmup or os.getenv("GAPA_TPE_WARMUP_ITERS", "1") or 1)
     if warmup > 0:
         tpe_warmup = int(warmup)
 
@@ -260,7 +383,7 @@ def StrategyPlan(
             return _synthetic_executor(p, iters)
 
     candidates = router.candidate_plans(wl, objective=objective, multi_gpu=multi_gpu)
-    plan = _tpe_select(candidates, executor, tpe_warmup, tpe_trials, gamma=tpe_gamma)
+    plan = _tpe_select(candidates, executor, tpe_warmup, tpe_trials, gamma=tpe_gamma, progress_cb=progress_cb)
 
     if avail_gpus is not None:
         try:
@@ -283,7 +406,19 @@ def StrategyCompare(
     min_gpu_free_mb: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Return best plan and key candidates for explaining the decision in UI."""
-    prof = PerformanceProfiler(quick=True).profile()
+    # Extract GPU utilization mapping from snapshot
+    util_map = {}
+    if resource_snapshot and "gpus" in resource_snapshot:
+        for g in resource_snapshot["gpus"]:
+            gid = g.get("id")
+            util = g.get("gpu_util_percent")
+            if gid is not None and util is not None:
+                try:
+                    util_map[int(gid)] = float(util)
+                except Exception:
+                    pass
+
+    prof = PerformanceProfiler(quick=True).profile(gpu_utils=util_map)
     if gpu_busy_threshold is None:
         gpu_busy_threshold = float(os.getenv("GAPA_STRATEGY_GPU_BUSY", "60") or 60)
     if min_gpu_free_mb is None:

@@ -109,6 +109,7 @@ class GpuBench:
     score_graph: int
     memory_gb: Optional[float]
     driver: Optional[str]
+    gpu_util_percent: float = 0.0  # Real-time utilization
 
 
 @dataclass
@@ -123,6 +124,7 @@ class PerformanceProfiler:
     def __init__(self, quick: bool = True, seed: int = 1234):
         self.quick = quick
         self.rng = np.random.default_rng(seed)
+        self.external_gpu_utils: Dict[int, float] = {}
         # Target runtimes (seconds) per microbench
         if quick:
             self.t_target_cpu = 0.35
@@ -310,12 +312,17 @@ class PerformanceProfiler:
                 if g.get('driver') == 'Metal':
                     continue
                 try:
-                    out.append(self._bench_one_cuda(g))
+                    res = self._bench_one_cuda(g)
+                    idx = int(g.get('index', 0))
+                    res.gpu_util_percent = self.external_gpu_utils.get(idx, float(g.get('gpu_util_percent', 0.0) or 0.0))
+                    out.append(res)
                 except Exception:
                     pass
         if devinfo.has_mps:
             try:
-                out.append(self._bench_one_mps())
+                res = self._bench_one_mps()
+                res.gpu_util_percent = self.external_gpu_utils.get(-1, 0.0) # MPS usually single
+                out.append(res)
             except Exception:
                 pass
         return out
@@ -545,7 +552,9 @@ class PerformanceProfiler:
                 pass
 
     # -------------------- orchestration --------------------
-    def profile(self) -> ProfileResult:
+    def profile(self, gpu_utils: Optional[Dict[int, float]] = None) -> ProfileResult:
+        if gpu_utils:
+            self.external_gpu_utils.update(gpu_utils)
         dev = self.probe_device()
         cpu = self.bench_cpu()
         gpus = self.bench_gpus(dev)
