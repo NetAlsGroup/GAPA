@@ -6,6 +6,8 @@ import networkx as nx
 import random
 from copy import deepcopy
 from typing import Any
+import os
+import time as time_mod
 from tqdm import tqdm
 from time import time
 from gapa.framework.body import Body
@@ -202,6 +204,7 @@ class TDEController(BasicController):
             with tqdm(total=max_generation) as pbar:
                 pbar.set_description(f'Training....{self.dataset} in Loop: {loop}...')
                 for generation in range(max_generation):
+                    t_gen_start = time_mod.perf_counter()
                     rotary_table_1 = self._calc_rotary_table(fitness_list, self.device)
                     rotary_table_2 = self._calc_rotary_table(fitness_list, self.device, pattern="trans")
                     new_population_1 = population_embed[[self._roulette(rotary_table_1) for _ in range(self.pop_size)]]
@@ -230,8 +233,17 @@ class TDEController(BasicController):
                             )
                         except Exception:
                             pass
-                    pbar.set_postfix(fitness=max(fitness_list).item(), PCG=min(best_PCG), MCN=min(best_MCN))
-                    pbar.update(1)
+                if self.mode == "mnm" and (generation % 50 == 0 or (generation + 1) == max_generation):
+                    t_total = time_mod.perf_counter() - t_gen_start
+                    comm = evaluator.comm_stats() if hasattr(evaluator, "comm_stats") else {}
+                    avg_ms = comm.get("avg_ms", 0.0)
+                    total_ms = comm.get("total_ms", 0.0)
+                    print(
+                        f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
+                        flush=True,
+                    )
+                pbar.set_postfix(fitness=max(fitness_list).item(), PCG=min(best_PCG), MCN=min(best_MCN))
+                pbar.update(1)
             top_index = best_PCG.index(min(best_PCG))
             print(f"Best PC(G): {best_PCG[top_index]}. Best connected num: {best_MCN[top_index]}.")
             self.save(self.dataset, best_genes[top_index], [best_PCG[top_index], best_MCN[top_index], time_list[-1]], time_list, "TDE", bestPCG=best_PCG, bestMCN=best_MCN)

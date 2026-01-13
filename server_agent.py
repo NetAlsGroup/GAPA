@@ -16,6 +16,7 @@ import multiprocessing as mp
 import os
 import signal
 import time
+import traceback
 import uuid
 from typing import Any, Dict
 
@@ -30,7 +31,38 @@ from server.ga_worker import ga_worker, select_run_mode
 from server.resource_lock import LOCK_MANAGER
 
 
+
 app = FastAPI(title="GAPA Server Agent", version="0.1.0")
+
+def check_dependencies():
+    """Check for essential packages and print warnings if missing."""
+    missing = []
+    try:
+        import psutil
+    except ImportError:
+        missing.append("psutil (REQUIRED for CPU/Memory monitoring)")
+    
+    try:
+        import pynvml
+    except ImportError:
+        missing.append("pynvml (REQUIRED for GPU monitoring)")
+
+    try:
+        import torch
+    except ImportError:
+        missing.append("torch (REQUIRED for GA execution)")
+
+    if missing:
+        print("\n" + "!" * 60)
+        print("  WARNING: Missing Dependencies Detected!")
+        for item in missing:
+            print(f"  - {item}")
+        print("\n  Please install missing packages via:")
+        print("  pip install " + " ".join([m.split()[0] for m in missing]))
+        print("!" * 60 + "\n")
+    else:
+        print("\n[INFO] All critical dependencies (psutil, pynvml, torch) are installed.\n")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -237,63 +269,41 @@ def api_analysis_stop() -> Dict[str, Any]:
 
     # terminate outside lock
     try:
-        # Best-effort: terminate child processes as well (torch/mp.spawn).
-        def kill_children(sig: int) -> None:
+        def kill_process_tree(pid: int, sig: int = signal.SIGTERM):
             try:
-                import psutil  # type: ignore
-            except Exception:
-                return
-            try:
-                parent = psutil.Process(pid) if pid else None
-                if not parent:
-                    return
-                for ch in parent.children(recursive=True):
+                import psutil
+                parent = psutil.Process(pid)
+                children = parent.children(recursive=True)
+                for child in children:
                     try:
-                        ch.send_signal(sig)
+                        child.send_signal(sig)
+                    except psutil.NoSuchProcess:
+                        pass
+                parent.send_signal(sig)
+            except Exception:
+                # Fallback if psutil fails or pid is gone
+                if os.name == "posix":
+                    try:
+                        os.killpg(pid, sig)
+                    except Exception:
+                        try:
+                            os.kill(pid, sig)
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        proc.terminate() if sig == signal.SIGTERM else proc.kill()
                     except Exception:
                         pass
-            except Exception:
-                pass
 
-        if pid and os.name == "posix":
-            try:
-                os.killpg(pid, signal.SIGTERM)
-            except Exception:
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except Exception:
-                    pass
-            kill_children(signal.SIGTERM)
-        else:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
-            try:
-                kill_children(signal.SIGTERM)
-            except Exception:
-                pass
-
-        proc.join(timeout=3.0)
+        if pid:
+            kill_process_tree(pid, signal.SIGTERM)
+        
+        proc.join(timeout=2.0)
         if proc.is_alive():
-            if pid and os.name == "posix":
-                try:
-                    os.killpg(pid, signal.SIGKILL)
-                except Exception:
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                    except Exception:
-                        pass
-                kill_children(signal.SIGKILL)
-            else:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-                try:
-                    kill_children(signal.SIGKILL)
-                except Exception:
-                    pass
+            print(f"[WARN] Process {pid} still alive after SIGTERM, sending SIGKILL...")
+            if pid:
+                kill_process_tree(pid, signal.SIGKILL)
             proc.join(timeout=1.0)
     finally:
         with TASK.lock:
@@ -324,6 +334,8 @@ async def api_fitness_batch(req: Request) -> Response:
     except HTTPException:
         raise
     except Exception as exc:
+        print(f"[ERROR] fitness_batch failed: {exc}")
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(exc))
 
 
@@ -453,4 +465,5 @@ if __name__ == "__main__":
 
     host = os.getenv("GAPA_AGENT_HOST", "0.0.0.0")
     port = int(os.getenv("GAPA_AGENT_PORT", "4467"))
+    check_dependencies()
     uvicorn.run("server_agent:app", host=host, port=port)

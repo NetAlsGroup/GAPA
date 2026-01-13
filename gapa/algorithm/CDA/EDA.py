@@ -3,6 +3,8 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 import networkx as nx
 from copy import deepcopy
+import os
+import time as time_mod
 from typing import Any
 from tqdm import tqdm
 from time import time
@@ -162,6 +164,7 @@ class EDAController(BasicController):
             with tqdm(total=max_generation) as pbar:
                 pbar.set_description(f'Training....{self.dataset} in Loop: {loop}...')
                 for generation in range(max_generation):
+                    t_gen_start = time_mod.perf_counter()
                     new_population1 = population.clone()
                     new_population2 = body.selection(population, fitness_list)
                     crossover_population = body.crossover(new_population1, new_population2, self.crossover_rate, ONE)
@@ -186,8 +189,17 @@ class EDAController(BasicController):
                             )
                         except Exception:
                             pass
-                    pbar.set_postfix(fitness=max(fitness_list).item(), Q=min(best_Q), NMI=min(best_NMI))
-                    pbar.update(1)
+                if self.mode == "mnm" and (generation % 50 == 0 or (generation + 1) == max_generation):
+                    t_total = time_mod.perf_counter() - t_gen_start
+                    comm = evaluator.comm_stats() if hasattr(evaluator, "comm_stats") else {}
+                    avg_ms = comm.get("avg_ms", 0.0)
+                    total_ms = comm.get("total_ms", 0.0)
+                    print(
+                        f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
+                        flush=True,
+                    )
+                pbar.set_postfix(fitness=max(fitness_list).item(), Q=min(best_Q), NMI=min(best_NMI))
+                pbar.update(1)
             end = time()
             global_time = end - start
             top_index = best_Q.index(min(best_Q))

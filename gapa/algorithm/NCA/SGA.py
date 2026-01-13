@@ -4,6 +4,8 @@ from torch.multiprocessing import Manager
 import torch.distributed as dist
 import numpy as np
 import pandas as pd
+import os
+import time as time_mod
 from copy import deepcopy
 from typing import Any
 from tqdm import tqdm
@@ -202,6 +204,7 @@ class SGAController(BasicController):
             with tqdm(total=max_generation) as pbar:
                 pbar.set_description(f"GA")
                 for generation in range(max_generation):
+                    t_gen_start = time_mod.perf_counter()
                     new_population1 = population.clone()
                     new_population2 = body.selection(population, fitness_list)
                     crossover_population = body.crossover(new_population1, new_population2, self.crossover_rate, ONE)
@@ -210,6 +213,15 @@ class SGAController(BasicController):
                     mutation_population = body.solve_conflict(mutation_population)
                     new_fitness_list = evaluator(mutation_population)
                     population, fitness_list, elite_edge, elite_edge_score = body.elitism(population, mutation_population, fitness_list, new_fitness_list)
+                    if self.mode == "mnm" and (generation % 30 == 0 or (generation + 1) == max_generation):
+                        t_total = time_mod.perf_counter() - t_gen_start
+                        comm = evaluator.comm_stats() if hasattr(evaluator, "comm_stats") else {}
+                        avg_ms = comm.get("avg_ms", 0.0)
+                        total_ms = comm.get("total_ms", 0.0)
+                        print(
+                            f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
+                            flush=True,
+                        )
                     pbar.update(1)
         return elite_edge, elite_edge_score
 
@@ -369,7 +381,7 @@ class SGAAlgorithm:
         self.W = None
         self.n_added_labels = None
 
-    def main(self, data_loader, controller, max_generation, world_size, component_size_list):
+    def main(self, data_loader, controller, max_generation, world_size, component_size_list, wrap_evaluator=None):
         best_acc = []
         best_asr = []
         time_list = []
@@ -395,6 +407,8 @@ class SGAAlgorithm:
             pop_size = len(first_potential_edges)
             self.n_added_labels = torch.hstack((self.labels, self.injected_nodes_classes))
             evaluator = SGAEvaluator(feats=modified_features, adj=modified_adj, test_index=data_loader.test_index, labels=self.n_added_labels, pop_size=pop_size, device=self.device)
+            if wrap_evaluator:
+                evaluator = wrap_evaluator(evaluator)
             evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator, W=self.W, edge_list=first_potential_edges)
             edges_ranks_score = evaluator(torch.randperm(len(first_potential_edges), device=self.device).int())
             edges_ranks = first_potential_edges
@@ -407,6 +421,8 @@ class SGAAlgorithm:
             if selected_degree_distribution[added_node] != 1:
                 self.n_added_labels = torch.hstack((self.labels, self.injected_nodes_classes))
                 evaluator = SGAEvaluator(feats=modified_features, adj=modified_adj, test_index=data_loader.test_index, labels=self.n_added_labels, pop_size=pop_size, device=self.device)
+                if wrap_evaluator:
+                    evaluator = wrap_evaluator(evaluator)
                 evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator, W=self.W, edge_list=final_potential_edges)
                 if controller.mode in ("s", "sm", "mnm"):
                     elite_edge, elite_edge_score = controller.calculate(max_generation=max_generation, evaluator=evaluator)
@@ -540,7 +556,7 @@ class SGAAlgorithm:
         return modified_adj
 
 
-def SGA(mode, max_generation, data_loader, controller: SGAController, surrogate, classifier, homophily_ratio, world_size, verbose=True):
+def SGA(mode, max_generation, data_loader, controller: SGAController, surrogate, classifier, homophily_ratio, world_size, wrap_evaluator=None, verbose=True):
     controller.mode = mode
     # mapping matrix to handle continuous feature
     zeroone_features = data_loader.feats.clone().to_dense()
@@ -560,4 +576,4 @@ def SGA(mode, max_generation, data_loader, controller: SGAController, surrogate,
             print(f"Component Size List: {component_size_list}")
     else:
         component_size_list = None
-    algorithm.main(data_loader=data_loader, controller=controller, max_generation=max_generation, world_size=world_size, component_size_list=component_size_list)
+    algorithm.main(data_loader=data_loader, controller=controller, max_generation=max_generation, world_size=world_size, component_size_list=component_size_list, wrap_evaluator=wrap_evaluator)

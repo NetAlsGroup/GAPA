@@ -252,13 +252,19 @@ class DistributedEvaluator(nn.Module):
         try:
             return super().__getattr__(name)
         except AttributeError:
-            return getattr(self._base, name)
+            # Safely check if _base exists and has the attribute
+            base = getattr(self, "_base", None)
+            if base is not None:
+                return getattr(base, name)
+            raise
 
     def __setattr__(self, name: str, value: Any) -> None:  # pragma: no cover (delegation)
         if name in {"_base", "algorithm", "dataset", "_pool"} or name.startswith("_"):
             return super().__setattr__(name, value)
-        if "_base" in self.__dict__ and hasattr(self.__dict__["_base"], name):
-            setattr(self.__dict__["_base"], name, value)
+        
+        base = getattr(self, "_base", None)
+        if base is not None and hasattr(base, name):
+            setattr(base, name, value)
             return
         super().__setattr__(name, value)
 

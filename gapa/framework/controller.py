@@ -114,10 +114,12 @@ class CustomController(BasicController):
         if self.mode == "sm":
             evaluator = torch.nn.DataParallel(evaluator)
         fitness_list = evaluator(population)
+        log_every = int(os.getenv("GAPA_M_LOG_EVERY", "1") or 20)
         best_fitness_list: List[Tensor] = []
         with tqdm(total=max_generation) as pbar:
             pbar.set_description(f'Training....{self.dataset}')
             for generation in range(max_generation):
+                t_gen_start = time_mod.perf_counter()
                 crossover_population = self.SelectionAndCrossover(body, population, fitness_list, ONE)
                 mutation_population = self.Mutation(body, crossover_population, ONE)
                 new_fitness_list = evaluator(mutation_population)
@@ -142,6 +144,15 @@ class CustomController(BasicController):
                         best_gene=population[best_gene_idx].detach(),
                         extra=results,
                         side=self.side,
+                    )
+                if self.mode == "mnm" and log_every > 0 and (generation % log_every == 0 or generation + 1 == max_generation):
+                    t_total = time_mod.perf_counter() - t_gen_start
+                    comm = evaluator.comm_stats() if hasattr(evaluator, "comm_stats") else {}
+                    avg_ms = comm.get("avg_ms", 0.0)
+                    total_ms = comm.get("total_ms", 0.0)
+                    print(
+                        f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
+                        flush=True,
                     )
                 pbar.set_postfix(results)
                 pbar.update(1)

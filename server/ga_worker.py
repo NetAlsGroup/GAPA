@@ -53,8 +53,10 @@ def ga_worker(
     mutate_rate: float,
     selected: Dict[str, Any],
     q: Any,
+    resume_state: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Run GA in a subprocess and emit events to parent via queue."""
+    from .db_manager import db_manager
     try:
         cvd = selected.get("cuda_visible_devices")
         if selected.get("mode") == "CPU":
@@ -409,7 +411,19 @@ def ga_worker(
         fitness_goal = None
         comm_path = results_dir / f"comm_{task_id}.json" if algo_mode == "m" else None
 
-        DISTRIBUTED_FITNESS_SUPPORTED = {"SixDST", "CutOff", "TDE"}
+        DISTRIBUTED_FITNESS_SUPPORTED = {
+            "SixDST",
+            "CutOff",
+            "TDE",
+            "CDA-EDA",
+            "CGN",
+            "QAttack",
+            "LPA-EDA",
+            "LPA-GA",
+            "NCA-GA",
+            "SGA",
+            "GANI",
+        }
 
         def maybe_wrap_distributed(evaluator_obj: Any) -> Any:
             if not distributed_fitness:
@@ -600,6 +614,7 @@ def ga_worker(
                 from gapa.algorithm.CDA.EDA import EDA as CDA_EDA, EDAController as CDA_EDAController, EDAEvaluator as CDA_EDAEvaluator  # type: ignore
 
                 evaluator = CDA_EDAEvaluator(pop_size=int(result["hyperparams"]["pop_size"]), graph=data_loader.G.copy(), nodes_num=data_loader.nodes_num, adj=data_loader.A, device=device)
+                evaluator = maybe_wrap_distributed(evaluator)
                 controller = CDA_EDAController(
                     path=str(results_dir) + "/",
                     pattern="write",
@@ -612,6 +627,8 @@ def ga_worker(
                 )
                 if comm_path:
                     controller.comm_path = str(comm_path)
+                if hasattr(evaluator, "comm_stats"):
+                    comm_tracker = evaluator
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start CDA-EDA: mode={algo_mode} device={device} world_size={world_size}"})
@@ -623,6 +640,7 @@ def ga_worker(
                 from gapa.algorithm.CDA.CGN import CGN, CGNController, CGNEvaluator  # type: ignore
 
                 evaluator = CGNEvaluator(pop_size=int(result["hyperparams"]["pop_size"]), graph=data_loader.G.copy(), device=device)
+                evaluator = maybe_wrap_distributed(evaluator)
                 controller = CGNController(
                     path=str(results_dir) + "/",
                     pattern="write",
@@ -635,6 +653,8 @@ def ga_worker(
                 )
                 if comm_path:
                     controller.comm_path = str(comm_path)
+                if hasattr(evaluator, "comm_stats"):
+                    comm_tracker = evaluator
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start CGN: mode={algo_mode} device={device} world_size={world_size}"})
@@ -646,6 +666,7 @@ def ga_worker(
                 from gapa.algorithm.CDA.QAttack import QAttack, QAttackController, QAttackEvaluator  # type: ignore
 
                 evaluator = QAttackEvaluator(pop_size=int(result["hyperparams"]["pop_size"]), graph=data_loader.G.copy(), device=device)
+                evaluator = maybe_wrap_distributed(evaluator)
                 controller = QAttackController(
                     path=str(results_dir) + "/",
                     pattern="write",
@@ -658,6 +679,8 @@ def ga_worker(
                 )
                 if comm_path:
                     controller.comm_path = str(comm_path)
+                if hasattr(evaluator, "comm_stats"):
+                    comm_tracker = evaluator
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start QAttack: mode={algo_mode} device={device} world_size={world_size}"})
@@ -691,6 +714,7 @@ def ga_worker(
                 from gapa.algorithm.LPA.EDA import EDA as LPA_EDA, EDAController as LPA_EDAController, EDAEvaluator as LPA_EDAEvaluator  # type: ignore
 
                 evaluator = LPA_EDAEvaluator(pop_size=int(result["hyperparams"]["pop_size"]), graph=data_loader.G, ratio=0, device=device)
+                evaluator = maybe_wrap_distributed(evaluator)
                 controller = LPA_EDAController(
                     path=str(results_dir) + "/",
                     pattern="write",
@@ -703,6 +727,8 @@ def ga_worker(
                 )
                 if comm_path:
                     controller.comm_path = str(comm_path)
+                if hasattr(evaluator, "comm_stats"):
+                    comm_tracker = evaluator
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start LPA-EDA: mode={algo_mode} device={device} world_size={world_size}"})
@@ -714,6 +740,7 @@ def ga_worker(
                 from gapa.algorithm.LPA.LPA_GA import LPA_GA, GAController, GAEvaluator  # type: ignore
 
                 evaluator = GAEvaluator(pop_size=int(result["hyperparams"]["pop_size"]), graph=data_loader.G, ratio=0, device=device)
+                evaluator = maybe_wrap_distributed(evaluator)
                 controller = GAController(
                     path=str(results_dir) + "/",
                     pattern="write",
@@ -726,6 +753,8 @@ def ga_worker(
                 )
                 if comm_path:
                     controller.comm_path = str(comm_path)
+                if hasattr(evaluator, "comm_stats"):
+                    comm_tracker = evaluator
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start LPA-GA: mode={algo_mode} device={device} world_size={world_size}"})
@@ -785,6 +814,7 @@ def ga_worker(
                 attack_rate = float(os.getenv("GAPA_NCA_EDGE_ATTACK_RATE", "0.025"))
                 data_loader.k = int(attack_rate * num_edge)
                 evaluator = NCA_GAEvaluator(classifier=gcn, feats=data_loader.feats, adj=data_loader.adj, test_index=data_loader.test_index, labels=data_loader.labels, pop_size=int(result["hyperparams"]["pop_size"]), device=device)
+                evaluator = maybe_wrap_distributed(evaluator)
                 controller = NCA_GAController(
                     path=str(results_dir) + "/",
                     pattern="write",
@@ -798,6 +828,8 @@ def ga_worker(
                 )
                 if comm_path:
                     controller.comm_path = str(comm_path)
+                if hasattr(evaluator, "comm_stats"):
+                    comm_tracker = evaluator
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start NCA-GA: mode={algo_mode} device={device} world_size={world_size}"})
@@ -836,7 +868,8 @@ def ga_worker(
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start {method}: mode={algo_mode} device={device} world_size={world_size}"})
                 result["metrics"].append({"stage": "init", **snapshot()})
-                SGA(mode=algo_mode, max_generation=int(iterations), data_loader=data_loader, controller=controller, surrogate=surrogate, classifier=gcn, homophily_ratio=0.7, world_size=world_size, verbose=False)
+                # SGA/GANI internally create evaluators; we pass maybe_wrap_distributed to wrap them
+                SGA(mode=algo_mode, max_generation=int(iterations), data_loader=data_loader, controller=controller, surrogate=surrogate, classifier=gcn, homophily_ratio=0.7, world_size=world_size, wrap_evaluator=maybe_wrap_distributed, verbose=False)
                 return
 
             raise RuntimeError(f"Unsupported NCA algorithm: {method}")
@@ -915,6 +948,16 @@ def ga_worker(
             result["best_score"] = None
 
         emit({"type": "log", "line": "[INFO] 分析完成。"})
+        
+        # Save GA state for potential resume
+        try:
+            db_manager.save_ga_state(task_id, algorithm, dataset, {
+                "last_result": result,
+                "timestamp": time.time()
+            })
+        except Exception as e:
+            emit({"type": "log", "line": f"[WARN] 状态保存失败: {e}"})
+
         emit({"type": "result", "result": result})
         emit({"type": "state", "state": "completed"})
     except Exception as exc:

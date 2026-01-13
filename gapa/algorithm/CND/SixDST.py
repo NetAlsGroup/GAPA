@@ -3,6 +3,8 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 import networkx as nx
 from copy import deepcopy
+import os
+import time as time_mod
 from typing import Any
 from tqdm import tqdm
 from time import time
@@ -27,8 +29,12 @@ class SixDSTEvaluator(BasicEvaluator):
         self.genes_index = None
 
     def forward(self, population):
+        if self.genes_index is None:
+            raise RuntimeError("SixDSTEvaluator: genes_index is not initialized. Ensure controller.setup() was called.")
         population_component_list = []
         genes_index = self.genes_index.clone().to(population.device)
+        if genes_index.dim() == 0:
+            genes_index = genes_index.unsqueeze(0)
         AMatrix = self.AMatrix.clone().to(population.device)
         IMatrix = self.IMatrix.clone().to(population.device)
         for i in range(len(population)):
@@ -118,6 +124,7 @@ class SixDSTController(BasicController):
             with tqdm(total=max_generation) as pbar:
                 pbar.set_description(f'Training....{self.dataset} in Loop: {loop}...')
                 for generation in range(max_generation):
+                    t_gen_start = time_mod.perf_counter()
                     new_population1 = population.clone()
                     new_population2 = body.selection(population, fitness_list)
                     crossover_population = body.crossover(new_population1, new_population2, self.crossover_rate, ONE)
@@ -141,8 +148,17 @@ class SixDSTController(BasicController):
                             )
                         except Exception:
                             pass
-                    pbar.set_postfix(fitness=min(fitness_list).item(), PCG=min(best_PCG))
-                    pbar.update(1)
+                if self.mode == "mnm" and (generation % 50 == 0 or (generation + 1) == max_generation):
+                    t_total = time_mod.perf_counter() - t_gen_start
+                    comm = evaluator.comm_stats() if hasattr(evaluator, "comm_stats") else {}
+                    avg_ms = comm.get("avg_ms", 0.0)
+                    total_ms = comm.get("total_ms", 0.0)
+                    print(
+                        f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
+                        flush=True,
+                    )
+                pbar.set_postfix(fitness=min(fitness_list).item(), PCG=min(best_PCG))
+                pbar.update(1)
             top_index = best_PCG.index(min(best_PCG))
             print(f"Best PC(G): {best_PCG[top_index]}. Best connected num: {best_MCN[top_index]}.")
             self.save(self.dataset, best_genes[top_index], [best_PCG[top_index], best_MCN[top_index], time_list[-1]], time_list, "SixDST", bestPCG=best_PCG, bestMCN=best_MCN)

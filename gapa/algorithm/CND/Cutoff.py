@@ -4,6 +4,8 @@ import torch.distributed as dist
 import networkx as nx
 from igraph import Graph as ig
 from copy import deepcopy
+import os
+import time as time_mod
 from typing import Any
 from tqdm import tqdm
 from time import time
@@ -120,6 +122,7 @@ class CutoffController(BasicController):
             with tqdm(total=max_generation) as pbar:
                 pbar.set_description(f'Training....{self.dataset} in Loop: {loop}...')
                 for generation in range(max_generation):
+                    t_gen_start = time_mod.perf_counter()
                     try:
                         rotary_table = self._calc_rotary_table(fitness_list, self.device)
                         new_population1 = population[[self._roulette(rotary_table, self.device) for _ in range(self.pop_size)]]
@@ -149,8 +152,17 @@ class CutoffController(BasicController):
                             )
                         except Exception:
                             pass
-                    pbar.set_postfix(MCN=min(best_MCN), PCG=min(best_PCG), fitness=min(fitness_list).item())
-                    pbar.update(1)
+                if self.mode == "mnm" and (generation % 50 == 0 or (generation + 1) == max_generation):
+                    t_total = time_mod.perf_counter() - t_gen_start
+                    comm = evaluator.comm_stats() if hasattr(evaluator, "comm_stats") else {}
+                    avg_ms = comm.get("avg_ms", 0.0)
+                    total_ms = comm.get("total_ms", 0.0)
+                    print(
+                        f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
+                        flush=True,
+                    )
+                pbar.set_postfix(MCN=min(best_MCN), PCG=min(best_PCG), fitness=min(fitness_list).item())
+                pbar.update(1)
             top_index = best_PCG.index(min(best_PCG))
             print(f"Best PC(G): {best_PCG[top_index]}. Best connected num: {best_MCN[top_index]}.")
             self.save(self.dataset, best_genes[top_index], [best_PCG[top_index], best_MCN[top_index], time_list[-1]], time_list, "CutOff", bestPCG=best_PCG, bestMCN=best_MCN)

@@ -148,7 +148,9 @@ def _gpu_snapshot() -> List[Dict[str, Any]]:
             count = pynvml.nvmlDeviceGetCount()
             for i in range(count):
                 h = pynvml.nvmlDeviceGetHandleByIndex(i)
-                name = pynvml.nvmlDeviceGetName(h).decode("utf-8")
+                name = pynvml.nvmlDeviceGetName(h)
+                if isinstance(name, bytes):
+                    name = name.decode("utf-8")
                 mem = pynvml.nvmlDeviceGetMemoryInfo(h)
                 try:
                     util = pynvml.nvmlDeviceGetUtilizationRates(h)
