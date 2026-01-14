@@ -316,7 +316,11 @@ def api_analysis_stop() -> Dict[str, Any]:
 
 @app.post("/api/fitness/batch")
 async def api_fitness_batch(req: Request) -> Response:
-    """Compute fitness for a population chunk (used by MNM distributed fitness mode)."""
+    """Compute fitness for a population chunk (used by MNM distributed fitness mode).
+    
+    The caller can specify a device in the request. If not specified, uses the first
+    locked GPU or falls back to default.
+    """
     with TASK.lock:
         # Keep it simple: avoid fighting for GPU/CPU when a full GA task is running.
         if TASK.state == "running":
@@ -328,8 +332,38 @@ async def api_fitness_batch(req: Request) -> Response:
         algorithm = str(msg.get("algorithm") or "")
         dataset = str(msg.get("dataset") or "")
         population = msg.get("population")
-        fitness, meta = compute_fitness_batch(algorithm=algorithm, dataset=dataset, population_cpu=population)
-        out = fitness_dumps({"fitness": fitness, "meta": meta})
+        
+        # Check if caller specified a device
+        requested_device = msg.get("device")
+        
+        if requested_device:
+            # Use the caller-specified device
+            device = str(requested_device)
+        else:
+            # Fallback: use first locked device or default
+            device = None
+            try:
+                from server.resource_lock import LOCK_MANAGER
+                lock_status = LOCK_MANAGER.status()
+                if lock_status.get("active") and lock_status.get("devices"):
+                    device = f"cuda:{lock_status['devices'][0]}"
+            except Exception:
+                pass
+            if not device:
+                device = "cuda:0" if torch.cuda.is_available() else "cpu"
+        
+        t0 = time.perf_counter()
+        fitness, meta = compute_fitness_batch(algorithm=algorithm, dataset=dataset, population_cpu=population, device=device)
+        compute_ms = (time.perf_counter() - t0) * 1000.0
+        
+        meta["device"] = device
+        
+        # Include compute_ms in response for timing breakdown
+        out = fitness_dumps({
+            "fitness": fitness,
+            "meta": meta,
+            "compute_ms": compute_ms,
+        })
         return Response(content=out, media_type="application/octet-stream")
     except HTTPException:
         raise

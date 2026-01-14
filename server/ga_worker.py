@@ -191,7 +191,23 @@ def ga_worker(
                 "line": f"[INFO] 任务 {task_id} 启动，算法={algorithm} dataset={dataset} pc={crossover_rate:.3f} pm={mutate_rate:.3f} iters={iterations}",
             }
         )
-        emit({"type": "log", "line": f"[INFO] 运行模式: {selected.get('mode')} devices={selected.get('devices')}"})
+        mode = selected.get('mode')
+        devices = selected.get('devices') or []
+        remote_servers = selected.get('remote_servers') or selected.get('allowed_server_ids') or []
+        
+        # Build descriptive resource string
+        resources = []
+        if mode == "CPU" or (mode == "MNM" and not devices):
+            resources.append("Local CPU")
+        elif devices:
+            resources.append(f"Local GPU {','.join(str(d) for d in devices)}")
+        
+        for srv in remote_servers:
+            # Try to get GPU info from server name - for now just add server name
+            resources.append(srv)
+        
+        resource_str = " + ".join(resources) if resources else "未知"
+        emit({"type": "log", "line": f"[INFO] 运行模式: {mode} 资源: {resource_str}"})
         emit({"type": "progress", "value": 1})
 
         try:
@@ -245,7 +261,9 @@ def ga_worker(
             world_size = 1
         if distributed_fitness:
             world_size = 1
-        emit({"type": "log", "line": f"[INFO] Exec resolved: ui_mode={ui_mode} -> algo_mode={algo_mode} world_size={world_size} device={device}"})
+            emit({"type": "log", "line": f"[INFO] Exec resolved: ui_mode={ui_mode} -> algo_mode={algo_mode} local_device={device} (远程服务器使用其锁定的 GPU)"})
+        else:
+            emit({"type": "log", "line": f"[INFO] Exec resolved: ui_mode={ui_mode} -> algo_mode={algo_mode} world_size={world_size} device={device}"})
 
         algo_raw = (algorithm or "").strip()
         algo_key = algo_raw.replace("_", "-")
@@ -598,6 +616,7 @@ def ga_worker(
 
         def run_cda(method: str) -> None:
             nonlocal fitness_goal
+            nonlocal comm_tracker
             attack_rate = float(os.getenv("GAPA_CDA_ATTACK_RATE", "0.1"))
             loaded = _load_gml(dataset, sort_nodes=True, rebuild_from_adj=False)
             data_loader = Loader(dataset=dataset, device=device)
@@ -692,6 +711,7 @@ def ga_worker(
 
         def run_lpa(method: str) -> None:
             nonlocal fitness_goal
+            nonlocal comm_tracker
             attack_rate = float(os.getenv("GAPA_LPA_ATTACK_RATE", "0.1"))
             try:
                 loaded = _load_gml(dataset, sort_nodes=True, rebuild_from_adj=True)
@@ -905,6 +925,9 @@ def ga_worker(
             emit({"type": "log", "line": f"[INFO] iteration loop finished; iter_seconds={result['timing']['iter_seconds']:.3f}s"})
         else:
             emit({"type": "log", "line": "[WARN] iteration timing not available (no per-iteration callbacks captured)"})
+        
+        # Ensure progress reaches 100% after completion
+        emit({"type": "progress", "value": 100})
 
         if fitness_goal:
             result["fitness_goal"] = fitness_goal
@@ -921,9 +944,76 @@ def ga_worker(
                 pass
         if comm_tracker is not None:
             try:
-                result["comm"] = comm_tracker.comm_stats()
+                comm_stats = comm_tracker.comm_stats()
+                result["comm"] = comm_stats
+                # Collect detailed stats if available
+                if hasattr(comm_tracker, "detailed_stats"):
+                    result["comm_detailed"] = comm_tracker.detailed_stats()
+                
+                # Emit detailed comm timing log for user visibility
+                if comm_stats.get("avg_ms") is not None:
+                    emit({"type": "log", "line": f"[INFO] Comm avg: {comm_stats['avg_ms']:.2f}ms total: {comm_stats.get('total_ms', 0):.2f}ms calls: {comm_stats.get('calls', 0)}"})
+                
+                # Log per-op breakdown for M mode (torch.distributed)
+                per_op_ms = comm_stats.get("per_rank_ops", {}).get("0", {}) or {}
+                if per_op_ms:
+                    op_items = [f"{op} {ms:.1f}ms" for op, ms in per_op_ms.items()]
+                    if op_items:
+                        emit({"type": "log", "line": f"[INFO] Comm breakdown: {', '.join(op_items)}"})
+                
+                # Log MNM mode detailed breakdown
+                detailed = result.get("comm_detailed") or {}
+                if detailed.get("total_comm_ms", 0) > 0:
+                    total_ms = detailed.get("total_comm_ms", 0)
+                    calls = detailed.get("calls", 0)
+                    serialize_ms = detailed.get("total_serialize_ms", 0)
+                    network_ms = detailed.get("total_network_ms", 0)
+                    compute_ms = detailed.get("total_compute_ms", 0)
+                    deserialize_ms = detailed.get("total_deserialize_ms", 0)
+                    total_bytes = detailed.get("total_bytes", 0)
+                    
+                    # Calculate percentages
+                    def pct(v): return (v / total_ms * 100) if total_ms > 0 else 0
+                    
+                    # Format bytes
+                    if total_bytes >= 1024 * 1024:
+                        bytes_str = f"{total_bytes / (1024 * 1024):.1f} MB"
+                    elif total_bytes >= 1024:
+                        bytes_str = f"{total_bytes / 1024:.1f} KB"
+                    else:
+                        bytes_str = f"{total_bytes} B"
+                    
+                    emit({"type": "log", "line": "─" * 60})
+                    emit({"type": "log", "line": f"[INFO] ▼ 通信统计 ({calls}次调用, 总数据量: {bytes_str})"})
+                    emit({"type": "log", "line": f"[INFO]   总通信时间: {total_ms:.1f} ms"})
+                    emit({"type": "log", "line": f"[INFO]   ├─ 序列化:    {serialize_ms:.1f} ms ({pct(serialize_ms):.1f}%)"})
+                    emit({"type": "log", "line": f"[INFO]   ├─ 网络传输: {network_ms:.1f} ms ({pct(network_ms):.1f}%)"})
+                    emit({"type": "log", "line": f"[INFO]   ├─ 远程计算: {compute_ms:.1f} ms ({pct(compute_ms):.1f}%)"})
+                    emit({"type": "log", "line": f"[INFO]   └─ 反序列化: {deserialize_ms:.1f} ms ({pct(deserialize_ms):.1f}%)"})
+                    
+                    # Per-worker breakdown
+                    per_worker = detailed.get("per_worker", {})
+                    if per_worker:
+                        emit({"type": "log", "line": f"[INFO]   ▼ 按 Worker 分解"})
+                        for wid, ws in per_worker.items():
+                            w_calls = ws.get("calls", 0)
+                            w_total = ws.get("total_ms", 0)
+                            w_avg = ws.get("avg_ms", 0)
+                            w_bytes = ws.get("total_bytes", 0)
+                            if w_bytes >= 1024 * 1024:
+                                w_bytes_str = f"{w_bytes / (1024 * 1024):.1f} MB"
+                            elif w_bytes >= 1024:
+                                w_bytes_str = f"{w_bytes / 1024:.1f} KB"
+                            else:
+                                w_bytes_str = f"{w_bytes} B"
+                            emit({"type": "log", "line": f"[INFO]     {wid}: {w_calls}次 avg={w_avg:.1f}ms total={w_total:.1f}ms data={w_bytes_str}"})
+                    emit({"type": "log", "line": "─" * 60})
             except Exception:
                 pass
+        else:
+            # No comm_tracker available
+            if distributed_fitness:
+                emit({"type": "log", "line": "[WARN] MNM 模式已启用但无法获取通信统计（evaluator 可能未被包装或不支持）"})
 
         tail_stop = True
         primary = objective.get("primary") or "fitness"

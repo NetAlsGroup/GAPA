@@ -764,7 +764,8 @@ def api_v1_history_list():
 
     total = db_manager.count_history()
     offset = (page - 1) * page_size
-    items = db_manager.get_history(limit=page_size, offset=offset)
+    order = request.args.get("order", "DESC")
+    items = db_manager.get_history(limit=page_size, offset=offset, order=order)
     
     return jsonify(make_paginated_response(items, total, page, page_size))
 

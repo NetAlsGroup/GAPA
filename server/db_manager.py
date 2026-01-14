@@ -19,18 +19,44 @@ class DBManager:
             if cls._instance is None:
                 cls._instance = super(DBManager, cls).__new__(cls)
                 cls._instance._initialized = False
+                cls._instance._conn = None
+                cls._instance._instance_pid = None
             return cls._instance
 
     def __init__(self):
-        if self._initialized:
-            return
+        self._ensure_connection()
+
+    def _ensure_connection(self):
+        """Ensure we have a valid connection for the current process."""
+        current_pid = os.getpid()
+        if self._conn is not None and self._instance_pid == current_pid:
+            return  # Connection is valid for this process
+        
+        # Close old connection if it exists (shouldn't be used across processes anyway)
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
         
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self._init_db()
-        self._migrate_from_json()
-        self._initialized = True
+        # Use WAL mode and timeout for better concurrent access
+        self._conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30.0, isolation_level=None)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=30000")
+        self._conn.row_factory = sqlite3.Row
+        self._instance_pid = current_pid
+        
+        if not self._initialized:
+            self._init_db()
+            self._migrate_from_json()
+            self._initialized = True
+
+    @property
+    def conn(self):
+        """Get connection, ensuring it's valid for current process."""
+        self._ensure_connection()
+        return self._conn
 
     def _init_db(self):
         with self.conn:
@@ -47,9 +73,19 @@ class DBManager:
                     best_score REAL,
                     comm_avg_ms REAL,
                     result_json TEXT,
+                    logs_json TEXT,
                     created_at REAL
                 )
             """)
+            
+            # Migration: add logs_json column if it doesn't exist
+            try:
+                cursor = self.conn.execute("PRAGMA table_info(history)")
+                columns = [row[1] for row in cursor.fetchall()]
+                if "logs_json" not in columns:
+                    self.conn.execute("ALTER TABLE history ADD COLUMN logs_json TEXT")
+            except Exception:
+                pass
             
             # GA State table for resuming
             self.conn.execute("""
@@ -85,13 +121,15 @@ class DBManager:
     def add_history(self, item: Dict[str, Any]):
         hid = item.get("id") or str(int(time.time() * 1000))
         result_json = json.dumps(item.get("result") or {}, ensure_ascii=False)
+        logs = item.get("logs") or []
+        logs_json = json.dumps(logs, ensure_ascii=False) if logs else None
         
         with self.lock_for_write():
             self.conn.execute("""
                 INSERT OR REPLACE INTO history (
                     id, algorithm, dataset, server_id, server_label, 
-                    state, timestamp, best_score, comm_avg_ms, result_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    state, timestamp, best_score, comm_avg_ms, result_json, logs_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 hid,
                 item.get("algorithm"),
@@ -103,12 +141,17 @@ class DBManager:
                 item.get("best_score"),
                 item.get("comm_avg_ms"),
                 result_json,
+                logs_json,
                 time.time()
             ))
 
-    def get_history(self, limit: int = 100, offset: int = 0) -> List[Dict[str, Any]]:
+    def get_history(self, limit: int = 100, offset: int = 0, order: str = "DESC") -> List[Dict[str, Any]]:
+        # Validate order to prevent SQL injection
+        if order.upper() not in ("ASC", "DESC"):
+            order = "DESC"
+        
         cursor = self.conn.execute(
-            "SELECT * FROM history ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM history ORDER BY created_at {order}, id {order} LIMIT ? OFFSET ?",
             (limit, offset)
         )
         rows = cursor.fetchall()
@@ -116,6 +159,8 @@ class DBManager:
         for row in rows:
             d = dict(row)
             d["result"] = json.loads(d.pop("result_json") or "{}")
+            logs_json = d.pop("logs_json", None)
+            d["logs"] = json.loads(logs_json) if logs_json else []
             results.append(d)
         return results
 

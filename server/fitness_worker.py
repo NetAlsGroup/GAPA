@@ -64,6 +64,51 @@ def _find_dataset_file(name: str) -> Optional[Path]:
     return None
 
 
+def _find_dataset_gml(name: str) -> Optional[Path]:
+    if not name:
+        return None
+    dataset_dir = _dataset_dir()
+    candidates: list[Path] = []
+    candidates.append(dataset_dir / name / f"{name}.gml")
+    candidates.append(dataset_dir / name.lower() / f"{name.lower()}.gml")
+    norm = name.replace("_", "-")
+    candidates.append(dataset_dir / norm / f"{norm}.gml")
+    candidates.append(dataset_dir / norm.lower() / f"{norm.lower()}.gml")
+    for p in candidates:
+        if p.exists():
+            return p
+    target = name.lower()
+    target2 = norm.lower()
+    try:
+        for p in dataset_dir.glob("**/*.gml"):
+            if p.name.lower() in (f"{target}.gml", f"{target2}.gml"):
+                return p
+    except Exception:
+        pass
+    return None
+
+
+def _load_gml(name: str, *, sort_nodes: bool, rebuild_from_adj: bool, device: str) -> Dict[str, Any]:
+    import networkx as nx  # type: ignore
+    import torch  # type: ignore
+    
+    gml = _find_dataset_gml(name)
+    if gml is None:
+        dataset_dir = _dataset_dir()
+        raise FileNotFoundError(f"dataset .gml not found for '{name}' under {dataset_dir}")
+    
+    G0 = nx.read_gml(str(gml), label="id")
+    nodelist0 = sorted(list(G0.nodes())) if sort_nodes else list(G0.nodes())
+    A0 = torch.tensor(nx.to_numpy_array(G0, nodelist=nodelist0), dtype=torch.float32)
+    
+    if rebuild_from_adj:
+        G1 = nx.from_numpy_array(A0.cpu().numpy())
+        return {"G": G1, "A": A0.to(device) if device != "cpu" else A0, "nodelist": list(G1.nodes())}
+    
+    return {"G": G0, "A": A0.to(device) if device != "cpu" else A0, "nodelist": nodelist0}
+
+
+
 @dataclass(frozen=True)
 class _ContextKey:
     algorithm: str
@@ -203,12 +248,49 @@ class _FitnessContext:
 
             self._data = data_loader
             self._evaluator_setup = _setup
+            self._data = data_loader
+            self._evaluator_setup = _setup
             return
 
-        if algo in ("CDA-EDA", "CGN", "QAttack", "LPA-EDA", "LPA-GA"):
-            raise RuntimeError(f"fitness RPC for algorithm={algo} is not implemented yet on worker")
+        if algo == "QAttack":
+            from gapa.algorithm.CDA.QAttack import QAttackController, QAttackEvaluator  # type: ignore
 
-        raise RuntimeError(f"Unsupported algorithm for fitness RPC: {algo}")
+            loaded = _load_gml(self.dataset, sort_nodes=True, rebuild_from_adj=False, device=self.device)
+            data_loader = SimpleNamespace(dataset=self.dataset, device=self.device)
+            data_loader.G = loaded["G"]
+            data_loader.A = loaded["A"]
+            data_loader.nodes_num = int(data_loader.A.shape[0])
+            data_loader.nodes = torch.tensor(loaded["nodelist"], device=self.device)
+            
+            # Replicate ga_worker logic for attack rate
+            attack_rate = float(os.getenv("GAPA_CDA_ATTACK_RATE", "0.1"))
+            data_loader.selected_genes_num = int(attack_rate * 4 * data_loader.nodes_num)
+            data_loader.k = int(attack_rate * data_loader.nodes_num)
+
+            controller = QAttackController(
+                path=None,
+                pattern=None,
+                data_loader=data_loader,
+                loops=1,
+                crossover_rate=0.8,
+                mutate_rate=0.2,
+                pop_size=1,
+                device=self.device,
+            )
+
+            def _setup(pop_size: int):
+                # QAttackEvaluator modifies graph, so pass a copy if needed, though here we create fresh one per worker usually
+                # But fitness_worker reuses context. data_loader.G is shared.
+                # QAttackEvaluator init: self.G = graph
+                # Check QAttackEvaluator source if it modifies G. Usually Evaluators might.
+                # ga_worker passes graph=data_loader.G.copy()
+                evaluator = QAttackEvaluator(pop_size=pop_size, graph=data_loader.G.copy(), device=self.device)
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    return controller.setup(data_loader=data_loader, evaluator=evaluator)
+
+            self._data = data_loader
+            self._evaluator_setup = _setup
+            return
 
     def eval(self, population_cpu: Any) -> Tuple[Any, Dict[str, Any]]:
         torch = _require_torch()

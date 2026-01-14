@@ -289,6 +289,8 @@
                 <div style="width: 1px; height: 16px; background: var(--panel-border);"></div>
                 <button id="btn-history-delete" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px;"
                   disabled>删除选中</button>
+                <button id="btn-history-sort" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px;">时间倒序
+                  ▼</button>
                 <button id="btn-history-clear" class="btn btn-secondary"
                   style="padding: 4px 12px; font-size: 13px;">全部清空</button>
               </div>
@@ -296,7 +298,8 @@
 
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 32px;">
               <div>
-                <div id="history-list" class="history-list" style="display: grid; gap: 12px;"></div>
+                <div id="history-list" class="history-list"
+                  style="display: grid; gap: 12px; height: 600px; overflow-y: auto; padding-right: 8px;"></div>
               </div>
               <div>
                 <div class="log-title" style="margin-bottom: 12px;">历史执行记录及日志详情</div>
@@ -402,29 +405,87 @@
 
           <!-- Step 2 -->
           <div class="eval-step hidden" data-step="2">
+            <!-- Single Server Mode -->
             <div id="eval-single-wrap">
-              <label class="form-label">选择目标服务器</label>
-              <select id="select-server" class="form-select"></select>
+              <div class="eval-section">
+                <div class="eval-section-header">
+                  <div class="eval-section-icon">🎯</div>
+                  <div>
+                    <div class="eval-section-title">选择目标服务器</div>
+                    <div class="eval-section-desc">选择要进行性能评估的服务器</div>
+                  </div>
+                </div>
+                <select id="select-server" class="form-select eval-server-select"></select>
+              </div>
             </div>
+
+            <!-- Multi Server Mode -->
             <div id="eval-multi-wrap" class="hidden">
-              <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px;">
-                <label class="form-label" style="margin: 0;">启用分布式汇总分析</label>
-                <input type="checkbox" id="select-server-multi" />
-              </div>
-              <div id="multi-options-container" class="hidden">
-                <label class="form-label">评估目的</label>
-                <select id="select-server-multi-mode" class="form-select">
-                  <option value="distributed">资源汇总与负载均衡建议</option>
-                  <option value="compare">服务器间性能对比</option>
-                </select>
-                <label class="form-label" style="margin-top: 16px;">选择参与评估的节点</label>
-                <div id="select-server-multi-list"
-                  style="display: grid; gap: 8px; padding: 12px; background: #f8fafc; border-radius: 8px;"></div>
+              <div class="eval-section eval-section-cluster">
+                <div class="eval-section-header">
+                  <div class="eval-section-icon">🌐</div>
+                  <div>
+                    <div class="eval-section-title">集群分布式评估配置</div>
+                    <div class="eval-section-desc">配置多服务器性能评估参数</div>
+                  </div>
+                </div>
+
+                <!-- Toggle for distributed analysis -->
+                <div class="eval-toggle-row">
+                  <div class="eval-toggle-info">
+                    <span class="eval-toggle-label">启用分布式汇总分析</span>
+                    <span class="eval-toggle-hint">聚合多节点资源进行综合评估</span>
+                  </div>
+                  <label class="eval-toggle">
+                    <input type="checkbox" id="select-server-multi" />
+                    <span class="eval-toggle-slider"></span>
+                  </label>
+                </div>
+
+                <!-- Multi options container -->
+                <div id="multi-options-container" class="hidden eval-multi-options">
+                  <div class="eval-option-group">
+                    <label class="eval-option-label">评估目的</label>
+                    <div class="eval-purpose-cards">
+                      <label class="eval-purpose-card">
+                        <input type="radio" name="eval-purpose" value="distributed" checked />
+                        <div class="eval-purpose-content">
+                          <span class="eval-purpose-icon">⚖️</span>
+                          <span class="eval-purpose-title">资源汇总与负载均衡</span>
+                        </div>
+                      </label>
+                      <label class="eval-purpose-card">
+                        <input type="radio" name="eval-purpose" value="compare" />
+                        <div class="eval-purpose-content">
+                          <span class="eval-purpose-icon">📊</span>
+                          <span class="eval-purpose-title">服务器间性能对比</span>
+                        </div>
+                      </label>
+                    </div>
+                    <select id="select-server-multi-mode" class="form-select hidden">
+                      <option value="distributed">资源汇总与负载均衡建议</option>
+                      <option value="compare">服务器间性能对比</option>
+                    </select>
+                  </div>
+
+                  <div class="eval-option-group">
+                    <label class="eval-option-label">
+                      <span>选择参与评估的节点</span>
+                      <span class="eval-node-count" id="eval-node-count">0 / 0 已选</span>
+                    </label>
+                    <div id="select-server-multi-list" class="eval-node-list"></div>
+                  </div>
+                </div>
               </div>
             </div>
-            <div style="display: flex; justify-content: space-between; margin-top: 24px;">
-              <button id="eval-prev-2" class="btn btn-secondary">上一步</button>
-              <button id="eval-next-2" class="btn btn-primary">下一步</button>
+
+            <div class="eval-step-actions">
+              <button id="eval-prev-2" class="btn btn-secondary">
+                <span>←</span> 上一步
+              </button>
+              <button id="eval-next-2" class="btn btn-primary">
+                下一步 <span>→</span>
+              </button>
             </div>
           </div>
 

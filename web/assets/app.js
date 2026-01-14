@@ -423,6 +423,9 @@ function updateServerMultiList() {
           `;
     })
     .join("");
+
+  // Update node count display
+  if (typeof updateNodeCount === 'function') updateNodeCount();
 }
 
 function updateLockScopeOptions() {
@@ -899,10 +902,31 @@ algoSelect.addEventListener("change", () => {
 runAlgo?.addEventListener("change", updateRunDatasetOptions);
 serverSelect?.addEventListener("change", updateEvalSummary);
 serverSelectMultiMode?.addEventListener("change", updateEvalSummary);
+
+// Sync purpose radio buttons with hidden select
+document.querySelectorAll('input[name="eval-purpose"]').forEach(radio => {
+  radio.addEventListener("change", () => {
+    if (serverSelectMultiMode) {
+      serverSelectMultiMode.value = radio.value;
+      updateEvalSummary();
+    }
+  });
+});
+
+// Update node count display
+function updateNodeCount() {
+  const countEl = document.getElementById("eval-node-count");
+  if (!countEl || !serverSelectMultiList) return;
+  const total = serverSelectMultiList.querySelectorAll(".server-multi-check").length;
+  const selected = serverSelectMultiList.querySelectorAll(".server-multi-check:checked").length;
+  countEl.textContent = `${selected} / ${total} 已选`;
+}
+
 serverSelectMultiList?.addEventListener("change", (event) => {
   const target = event.target;
   if (target && target.classList && target.classList.contains("server-multi-check")) {
     updateEvalSummary();
+    updateNodeCount();
   }
 });
 evalDataset?.addEventListener("change", updateEvalSummary);
@@ -1527,6 +1551,22 @@ document.getElementById("btn-analyze").addEventListener("click", async () => {
 const HISTORY_KEY = "gapa_history_v1";
 let historyCache = [];
 let historySelected = new Set();
+let historySortOrder = "DESC"; // Default Newest first
+
+// Add sort button listener
+document.addEventListener("DOMContentLoaded", () => {
+  const btnSort = document.getElementById("btn-history-sort");
+  if (btnSort) {
+    // Initialize label
+    btnSort.innerHTML = historySortOrder === "DESC" ? "最新优先 ▼" : "最早优先 ▲";
+
+    btnSort.addEventListener("click", () => {
+      historySortOrder = historySortOrder === "DESC" ? "ASC" : "DESC";
+      btnSort.innerHTML = historySortOrder === "DESC" ? "最新优先 ▼" : "最早优先 ▲";
+      historyLoad().then(historyRender);
+    });
+  }
+});
 
 async function historyImport(items) {
   if (!Array.isArray(items) || !items.length) return false;
@@ -1547,11 +1587,13 @@ async function historyImport(items) {
 
 async function historyLoad() {
   try {
-    const resp = await fetch("/api/v1/history?page=1&page_size=200", { cache: "no-store" });
+    const resp = await fetch(`/api/v1/history?page=1&page_size=200&order=${historySortOrder}`, { cache: "no-store" });
     if (!resp.ok) return [];
     const data = await resp.json();
     // V1 returns paginated response with items array
     historyCache = Array.isArray(data.items) ? data.items : (Array.isArray(data) ? data : []);
+
+    // Fallback: load from localStorage if empty
     if (!historyCache.length) {
       try {
         const legacy = JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]") || [];
@@ -1564,6 +1606,30 @@ async function historyLoad() {
         }
       } catch (e) { }
     }
+
+    // Client-side sort using timestamp string parsing for "Task Time" accuracy
+    historyCache.sort((a, b) => {
+      const parseTime = (item) => {
+        // Try parsing display timestamp first (reflects actual task time)
+        if (item.timestamp) {
+          const d = new Date(item.timestamp);
+          if (!isNaN(d.getTime())) return d.getTime();
+        }
+        // Fallback to created_at (seconds -> ms) or id
+        if (item.created_at) return item.created_at * 1000;
+        return item.id || 0;
+      };
+
+      const tA = parseTime(a);
+      const tB = parseTime(b);
+
+      // DESC (Newest First): tB - tA
+      // ASC (Oldest First): tA - tB
+      return historySortOrder === "DESC"
+        ? tB - tA
+        : tA - tB;
+    });
+
     return historyCache;
   } catch (e) {
     return [];
@@ -1871,6 +1937,7 @@ async function startRun(opts = {}) {
   const snap = snapshots.get(server_id) || {};
   const hasGpu = Array.isArray(snap.gpus) && snap.gpus.length > 0;
   let remote_servers = [];
+  let lockedDevices = null;  // Track devices from lock status
 
   if (mode === "AUTO" || mode === "MNM") {
     try {
@@ -1879,6 +1946,12 @@ async function startRun(opts = {}) {
       if (resp.ok) {
         const results = data.results || {};
         remote_servers = Object.keys(results).filter((k) => k !== "local" && results[k]?.active);
+
+        // Extract locked devices for local server
+        if (results.local && results.local.active && Array.isArray(results.local.devices)) {
+          lockedDevices = results.local.devices;
+        }
+
         if (selectedServer === "all") {
           mode = "MNM";
         }
@@ -1889,19 +1962,29 @@ async function startRun(opts = {}) {
   }
 
   if (mode === "AUTO") {
-    const saved = getSavedPlan(server_id);
-    if (saved && saved.plan && Array.isArray(saved.plan.devices)) {
-      devices = saved.plan.devices;
+    // First try locked devices, then saved plan
+    if (lockedDevices && lockedDevices.length > 0) {
+      devices = lockedDevices;
+    } else {
+      const saved = getSavedPlan(server_id);
+      if (saved && saved.plan && Array.isArray(saved.plan.devices)) {
+        devices = saved.plan.devices;
+      }
     }
   } else if (mode === "CPU") {
     devices = [];
   } else if ((mode === "S" || mode === "SM") && hasGpu) {
     devices = [Number(runGpuSingle.value)];
   } else if ((mode === "M" || mode === "MNM") && hasGpu) {
-    const checked = Array.from(runGpuMulti.querySelectorAll(".run-gpu-check"))
-      .filter((el) => el.checked)
-      .map((el) => Number(el.value));
-    devices = checked;
+    // For MNM: prioritize locked devices, then UI checkboxes
+    if (lockedDevices && lockedDevices.length > 0) {
+      devices = lockedDevices;
+    } else {
+      const checked = Array.from(runGpuMulti.querySelectorAll(".run-gpu-check"))
+        .filter((el) => el.checked)
+        .map((el) => Number(el.value));
+      devices = checked;
+    }
   }
   if (mode === "M" && (!hasGpu || !devices.length)) {
     appendRunLog([`[WARN] 未选中多卡，已切换为 S。`]);
@@ -2009,26 +2092,33 @@ async function pollRunStatus(server_id) {
       const avgMs = comm.avg_ms;
       runComm.textContent = avgMs ? `${Number(avgMs).toFixed(2)} ms` : "-";
       if (runCommDetail) {
-        const perRank = comm.per_rank_avg_ms || {};
-        const perOps = comm.per_rank_ops || {};
-        const perMeta = comm.per_rank_meta || {};
-        const items = Object.keys(perRank)
-          .filter((k) => k !== "0")
-          .map((k) => {
-            const avg = Number(perRank[k]).toFixed(2);
-            const meta = perMeta[k] || {};
-            const gpuNameRaw = meta.gpu_name_short || meta.gpu_name || "";
-            const gpuName = gpuNameRaw ? ` ${gpuNameRaw}` : "";
-            const label = meta.host ? `${meta.host}:gpu${meta.gpu ?? k}${gpuName}` : `rank${k}${gpuName}`;
-            const ops = perOps[k] || {};
-            const topOps = Object.keys(ops)
-              .sort((a, b) => (ops[b] || 0) - (ops[a] || 0))
-              .slice(0, 2)
-              .map((op) => `${op} ${Number(ops[op]).toFixed(1)}ms`);
-            const opText = topOps.length ? ` (${topOps.join(", ")})` : "";
-            return `${label} ${avg}ms${opText}`;
-          });
-        runCommDetail.textContent = items.length ? items.join(" / ") : "";
+        // Check for MNM detailed stats first
+        const commDetailed = st.result.comm_detailed;
+        if (commDetailed && commDetailed.total_comm_ms > 0) {
+          runCommDetail.innerHTML = renderDetailedCommStats(commDetailed);
+        } else {
+          // Fallback to simple M mode display
+          const perRank = comm.per_rank_avg_ms || {};
+          const perOps = comm.per_rank_ops || {};
+          const perMeta = comm.per_rank_meta || {};
+          const items = Object.keys(perRank)
+            .filter((k) => k !== "0")
+            .map((k) => {
+              const avg = Number(perRank[k]).toFixed(2);
+              const meta = perMeta[k] || {};
+              const gpuNameRaw = meta.gpu_name_short || meta.gpu_name || "";
+              const gpuName = gpuNameRaw ? ` ${gpuNameRaw}` : "";
+              const label = meta.host ? `${meta.host}:gpu${meta.gpu ?? k}${gpuName}` : `rank${k}${gpuName}`;
+              const ops = perOps[k] || {};
+              const topOps = Object.keys(ops)
+                .sort((a, b) => (ops[b] || 0) - (ops[a] || 0))
+                .slice(0, 2)
+                .map((op) => `${op} ${Number(ops[op]).toFixed(1)}ms`);
+              const opText = topOps.length ? ` (${topOps.join(", ")})` : "";
+              return `${label} ${avg}ms${opText}`;
+            });
+          runCommDetail.textContent = items.length ? items.join(" / ") : "";
+        }
       }
     }
     renderRunCharts(st.result);
@@ -2288,6 +2378,100 @@ btnLockReleaseNow?.addEventListener("click", () => {
   // Phase 3: Initialize animations and effects
   initPageAnimations();
 })();
+
+// ============================================================================
+// Phase 4: Detailed Communication Stats Rendering
+// ============================================================================
+
+/**
+ * Render detailed communication statistics with phase breakdown and per-worker stats.
+ * @param {Object} commDetailed - The comm_detailed object from result
+ * @returns {string} HTML string for the comm breakdown panel
+ */
+function renderDetailedCommStats(commDetailed) {
+  if (!commDetailed || commDetailed.total_comm_ms === 0) {
+    return '';
+  }
+
+  const totalMs = commDetailed.total_comm_ms || 0;
+  const serializeMs = commDetailed.total_serialize_ms || 0;
+  const networkMs = commDetailed.total_network_ms || 0;
+  const computeMs = commDetailed.total_compute_ms || 0;
+  const deserializeMs = commDetailed.total_deserialize_ms || 0;
+  const totalBytes = commDetailed.total_bytes || 0;
+  const calls = commDetailed.calls || 0;
+
+  // Calculate percentages
+  const serializePct = totalMs > 0 ? (serializeMs / totalMs * 100).toFixed(1) : 0;
+  const networkPct = totalMs > 0 ? (networkMs / totalMs * 100).toFixed(1) : 0;
+  const computePct = totalMs > 0 ? (computeMs / totalMs * 100).toFixed(1) : 0;
+  const deserializePct = totalMs > 0 ? (deserializeMs / totalMs * 100).toFixed(1) : 0;
+
+  // Format bytes
+  const formatBytes = (bytes) => {
+    if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return bytes + ' B';
+  };
+
+  // Per-worker breakdown
+  let workerHtml = '';
+  const perWorker = commDetailed.per_worker || {};
+  const workerIds = Object.keys(perWorker);
+  if (workerIds.length > 0) {
+    workerHtml = `
+      <div class="comm-workers">
+        <div class="comm-section-title">按 Worker 分解</div>
+        ${workerIds.map(wid => {
+      const w = perWorker[wid];
+      return `<div class="comm-worker-item">
+            <span class="worker-id">${wid}</span>
+            <span class="worker-stat">${w.calls} 次</span>
+            <span class="worker-stat">avg ${w.avg_ms?.toFixed(1) || 0}ms</span>
+            <span class="worker-stat">total ${w.total_ms?.toFixed(1) || 0}ms</span>
+            <span class="worker-stat">${formatBytes(w.total_bytes || 0)}</span>
+          </div>`;
+    }).join('')}
+      </div>
+    `;
+  }
+
+  return `
+    <div class="comm-detailed-panel">
+      <div class="comm-header">
+        <span class="comm-title">通信统计</span>
+        <span class="comm-total">${totalMs.toFixed(1)} ms (${calls} 次调用)</span>
+      </div>
+      <div class="comm-breakdown">
+        <div class="comm-phase">
+          <span class="phase-name">序列化</span>
+          <div class="phase-bar" style="--phase-pct: ${serializePct}%; --phase-color: var(--accent-cyan);"></div>
+          <span class="phase-value">${serializeMs.toFixed(1)} ms (${serializePct}%)</span>
+        </div>
+        <div class="comm-phase">
+          <span class="phase-name">网络传输</span>
+          <div class="phase-bar" style="--phase-pct: ${networkPct}%; --phase-color: var(--accent-purple);"></div>
+          <span class="phase-value">${networkMs.toFixed(1)} ms (${networkPct}%)</span>
+        </div>
+        <div class="comm-phase">
+          <span class="phase-name">远程计算</span>
+          <div class="phase-bar" style="--phase-pct: ${computePct}%; --phase-color: var(--accent-green, #10b981);"></div>
+          <span class="phase-value">${computeMs.toFixed(1)} ms (${computePct}%)</span>
+        </div>
+        <div class="comm-phase">
+          <span class="phase-name">反序列化</span>
+          <div class="phase-bar" style="--phase-pct: ${deserializePct}%; --phase-color: var(--accent-orange, #f59e0b);"></div>
+          <span class="phase-value">${deserializeMs.toFixed(1)} ms (${deserializePct}%)</span>
+        </div>
+      </div>
+      <div class="comm-summary">
+        <span>总数据量: ${formatBytes(totalBytes)}</span>
+        <span>平均延迟: ${calls > 0 ? (totalMs / calls).toFixed(1) : 0} ms/call</span>
+      </div>
+      ${workerHtml}
+    </div>
+  `;
+}
 
 // ============================================================================
 // Phase 3: Motion & Interactions Initialization
