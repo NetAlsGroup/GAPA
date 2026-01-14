@@ -353,7 +353,25 @@ async def api_fitness_batch(req: Request) -> Response:
                 device = "cuda:0" if torch.cuda.is_available() else "cpu"
         
         t0 = time.perf_counter()
-        fitness, meta = compute_fitness_batch(algorithm=algorithm, dataset=dataset, population_cpu=population, device=device)
+        
+        # Extract extra context (e.g. genes_index for SixDST)
+        extra_context = {}
+        if "genes_index" in msg:
+            extra_context["genes_index"] = msg["genes_index"]
+        
+        # Run blocking GPU computation in thread pool to allow concurrent requests
+        import asyncio
+        from functools import partial
+        loop = asyncio.get_event_loop()
+        compute_func = partial(
+            compute_fitness_batch,
+            algorithm=algorithm,
+            dataset=dataset,
+            population_cpu=population,
+            device=device,
+            extra_context=extra_context,
+        )
+        fitness, meta = await loop.run_in_executor(None, compute_func)
         compute_ms = (time.perf_counter() - t0) * 1000.0
         
         meta["device"] = device

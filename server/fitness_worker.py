@@ -156,7 +156,7 @@ class _FitnessContext:
         if algo == "SixDST":
             from gapa.algorithm.CND.SixDST import SixDSTController, SixDSTEvaluator  # type: ignore
 
-            loaded = _adjlist(sort_nodes=False)
+            loaded = _adjlist(sort_nodes=True)
             data_loader = SimpleNamespace(dataset=self.dataset, device=self.device)
             data_loader.G = loaded["G"]
             data_loader.A = loaded["A"]
@@ -179,6 +179,8 @@ class _FitnessContext:
 
             def _setup(pop_size: int):
                 evaluator = SixDSTEvaluator(pop_size=pop_size, adj=data_loader.A, device=self.device)
+                from gapa.utils.functions import set_seed
+                set_seed(1024)
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                     return controller.setup(data_loader=data_loader, evaluator=evaluator)
 
@@ -292,7 +294,7 @@ class _FitnessContext:
             self._evaluator_setup = _setup
             return
 
-    def eval(self, population_cpu: Any) -> Tuple[Any, Dict[str, Any]]:
+    def eval(self, population_cpu: Any, extra_context: Optional[Dict[str, Any]] = None) -> Tuple[Any, Dict[str, Any]]:
         torch = _require_torch()
         if not isinstance(population_cpu, torch.Tensor):
             raise TypeError("population must be a torch.Tensor")
@@ -302,6 +304,18 @@ class _FitnessContext:
             if evaluator is None:
                 evaluator = self._evaluator_setup(pop_size)
                 self._evaluator_cache[pop_size] = evaluator
+            
+            # Apply generic task-specific context synchronization
+            # Logic: If evaluator has attribute matching context key, override it.
+            if extra_context:
+                for key, val in extra_context.items():
+                     if hasattr(evaluator, key):
+                         # Handle tensor device texturing
+                         target_val = val
+                         if isinstance(target_val, torch.Tensor):
+                             target_val = target_val.to(self.device)
+                         setattr(evaluator, key, target_val)
+
             pop = population_cpu.to(self.device)
             out = evaluator(pop)
             return out.detach().to("cpu"), {"device": self.device, "pop_size": pop_size}
@@ -325,7 +339,7 @@ def clear_contexts() -> None:
         pass
 
 
-def compute_fitness_batch(algorithm: str, dataset: str, population_cpu: Any, *, device: Optional[str] = None) -> Tuple[Any, Dict[str, Any]]:
+def compute_fitness_batch(algorithm: str, dataset: str, population_cpu: Any, *, device: Optional[str] = None, extra_context: Optional[Dict[str, Any]] = None) -> Tuple[Any, Dict[str, Any]]:
     """Compute fitness for a population chunk (CPU tensor in, CPU tensor out)."""
     torch = _require_torch()
     if device is None:
@@ -338,6 +352,10 @@ def compute_fitness_batch(algorithm: str, dataset: str, population_cpu: Any, *, 
             _CTX[key] = ctx
     if not isinstance(population_cpu, torch.Tensor):
         raise TypeError("population must be torch.Tensor")
+    # Auto-cast from float16 to float32 if compressed
+    if population_cpu.dtype == torch.half:
+        population_cpu = population_cpu.float()
+    
     if population_cpu.device.type != "cpu":
         population_cpu = population_cpu.detach().to("cpu")
-    return ctx.eval(population_cpu)
+    return ctx.eval(population_cpu, extra_context=extra_context)

@@ -213,9 +213,17 @@ class AdaptiveWorkerPool:
         self._ok: Dict[str, bool] = {}
         self._backend: Dict[str, str] = {}
 
-        req = _require_requests()
-        self._session = req.Session()
-        self._session.trust_env = False
+        # Thread-local storage for Sessions (avoids cross-thread contention)
+        import threading
+        self._thread_local = threading.local()
+    
+    def _get_session(self):
+        """Get or create a thread-local Session."""
+        if not hasattr(self._thread_local, 'session'):
+            req = _require_requests()
+            self._thread_local.session = req.Session()
+            self._thread_local.session.trust_env = False
+        return self._thread_local.session
 
     def _score_from_snapshot(self, snap: Dict[str, Any]) -> float:
         cpu = snap.get("cpu") or {}
@@ -303,11 +311,28 @@ class AdaptiveWorkerPool:
                 break
         return picked
 
-    def remote_fitness(self, worker: Worker, *, algorithm: str, dataset: str, population_cpu: Any, device: Optional[str] = None) -> "DetailedCallResult":
+    def remote_fitness(self, worker: Worker, *, algorithm: str, dataset: str, population_cpu: Any, device: Optional[str] = None, extra_context: Optional[Dict[str, Any]] = None) -> "DetailedCallResult":
         """Execute remote fitness and return detailed timing breakdown."""
         # Phase 1: Serialize
         t_serialize_start = time.perf_counter()
-        payload_data = {"algorithm": algorithm, "dataset": dataset, "population": population_cpu}
+        
+        # Optimize: Cast float32 to float16 (half) for transport to reduce size by 50%
+        # The worker will cast it back to float32.
+        pop_payload = population_cpu
+        if hasattr(pop_payload, "dtype") and pop_payload.dtype == torch.float32:
+            pop_payload = pop_payload.half()
+            
+        payload_data = {"algorithm": algorithm, "dataset": dataset, "population": pop_payload}
+        
+        # Generalize Distributed Context Synchronization
+        if extra_context:
+            for k, v in extra_context.items():
+                if hasattr(v, "cpu"):
+                    # Ensure tensors are on CPU for serialization
+                    payload_data[k] = v.cpu()
+                else:
+                    payload_data[k] = v
+
         if device:
             payload_data["device"] = device
         payload = dumps(payload_data)
@@ -315,8 +340,10 @@ class AdaptiveWorkerPool:
         payload_bytes = len(payload)
         
         # Phase 2: Network + Remote Compute
+        # Use thread-local session for connection reuse
+        session = self._get_session()
         t_network_start = time.perf_counter()
-        resp = self._session.post(
+        resp = session.post(
             worker.base_url + "/api/fitness/batch",
             data=payload,
             headers={"Content-Type": "application/octet-stream"},
@@ -426,7 +453,8 @@ class DistributedEvaluator(nn.Module):
         self._is_cpu_algorithm = algorithm in self.CPU_ALGORITHMS
         
         # Legacy stats
-        self._comm_total_ms = 0.0
+        self._comm_total_ms = 0.0  # Cumulative (sum of all calls)
+        self._comm_wall_clock_ms = 0.0  # Wall clock (actual elapsed, parallel)
         self._comm_calls = 0
         
         # Detailed stats
@@ -450,6 +478,24 @@ class DistributedEvaluator(nn.Module):
     def set_iteration(self, iter_num: int) -> None:
         """Set current iteration number for tracking."""
         self._current_iter = iter_num
+    
+    def _update_worker_stats(self, dw: "DeviceWorker", result: "DetailedCallResult") -> None:
+        """Update per-worker stats for a completed result."""
+        wid = f"{dw.server_id}:{dw.device}"
+        if wid not in self._per_worker_stats:
+            self._per_worker_stats[wid] = {
+                "total_ms": 0.0, "calls": 0, "serialize_ms": 0.0,
+                "network_ms": 0.0, "compute_ms": 0.0, "deserialize_ms": 0.0,
+                "total_bytes": 0
+            }
+        ws = self._per_worker_stats[wid]
+        ws["total_ms"] += result.total_ms
+        ws["calls"] += 1
+        ws["serialize_ms"] += result.serialize_ms
+        ws["network_ms"] += result.network_ms
+        ws["compute_ms"] += result.compute_ms
+        ws["deserialize_ms"] += result.deserialize_ms
+        ws["total_bytes"] += result.payload_bytes
 
     # ---- attribute forwarding for controller.setup() mutations ----
     def __getattr__(self, name: str) -> Any:  # pragma: no cover (delegation)
@@ -470,6 +516,7 @@ class DistributedEvaluator(nn.Module):
         if base is not None and hasattr(base, name):
             setattr(base, name, value)
             return
+        
         super().__setattr__(name, value)
 
     def forward(self, population: Any) -> Any:
@@ -525,81 +572,114 @@ class DistributedEvaluator(nn.Module):
             sizes = [n] + [0] * (len(sizes) - 1)
 
         chunks = [c for c in torch.split(population, sizes, dim=0) if int(c.shape[0]) > 0]
-        fits: List[torch.Tensor] = []
+        fits: List[torch.Tensor] = [None] * len(chunks)  # Pre-allocate to preserve order
         iter_calls: List[DetailedCallResult] = []
         
-        for dw, pop_chunk in zip(device_workers[:len(chunks)], chunks):
+        # Pre-build context ONCE (not per-worker)
+        current_context = {}
+        base = self._base
+        if hasattr(base, "get_distributed_context"):
             try:
-                pop_cpu = pop_chunk.detach().to("cpu")
-                
-                if dw.is_local:
-                    # Local computation
-                    t0 = time.perf_counter()
-                    fit_local = self._base(pop_chunk)
-                    compute_ms = (time.perf_counter() - t0) * 1000.0
+                ctx = base.get_distributed_context()
+                if isinstance(ctx, dict):
+                    current_context.update(ctx)
+            except Exception:
+                pass
+        if hasattr(base, "genes_index") and "genes_index" not in current_context:
+            gi = getattr(base, "genes_index", None)
+            if gi is not None:
+                current_context["genes_index"] = gi
+        
+        # Parallel dispatch using ThreadPoolExecutor
+        # Now that server uses run_in_executor, we can dispatch ALL GPUs in parallel
+        from concurrent.futures import ThreadPoolExecutor, Future
+        
+        def _remote_call(idx: int, dw: "DeviceWorker", pop_cpu: torch.Tensor) -> Tuple[int, "DetailedCallResult"]:
+            temp_worker = Worker(server_id=dw.server_id, base_url=dw.base_url)
+            result = self._pool.remote_fitness(
+                temp_worker,
+                algorithm=self.algorithm,
+                dataset=self.dataset,
+                population_cpu=pop_cpu,
+                device=dw.device,
+                extra_context=current_context,
+            )
+            return idx, result
+        
+        futures: List[Tuple[Future, int, "DeviceWorker", torch.Tensor]] = []
+        # Track wall clock time for parallel dispatch
+        t_wall_start = time.perf_counter()
+        
+        with ThreadPoolExecutor(max_workers=len(device_workers)) as executor:
+            for idx, (dw, pop_chunk) in enumerate(zip(device_workers[:len(chunks)], chunks)):
+                try:
+                    pop_cpu = pop_chunk.detach().to("cpu")
                     
-                    result = DetailedCallResult(
-                        fitness=fit_local.detach().to("cpu") if isinstance(fit_local, torch.Tensor) else fit_local,
-                        worker_id=f"local:{dw.device}",
-                        serialize_ms=0,
-                        network_ms=0,
-                        compute_ms=compute_ms,
-                        deserialize_ms=0,
-                        total_ms=compute_ms,
-                        payload_bytes=0,
-                        chunk_size=int(pop_chunk.shape[0]),
-                    )
-                else:
-                    # Remote computation - create temporary Worker for pool.remote_fitness
-                    temp_worker = Worker(server_id=dw.server_id, base_url=dw.base_url)
-                    result = self._pool.remote_fitness(
-                        temp_worker,
-                        algorithm=self.algorithm,
-                        dataset=self.dataset,
-                        population_cpu=pop_cpu,
-                        device=dw.device,  # Pass specific device to remote
-                    )
-                
-                # Track detailed stats
-                self._detailed_calls.append(result)
-                iter_calls.append(result)
-                
-                # Update legacy stats
-                self._comm_total_ms += result.total_ms
-                self._comm_calls += 1
-                
-                # Update per-worker stats (use device-specific ID)
-                wid = f"{dw.server_id}:{dw.device}"
-                if wid not in self._per_worker_stats:
-                    self._per_worker_stats[wid] = {
-                        "total_ms": 0.0, "calls": 0, "serialize_ms": 0.0,
-                        "network_ms": 0.0, "compute_ms": 0.0, "deserialize_ms": 0.0,
-                        "total_bytes": 0
-                    }
-                ws = self._per_worker_stats[wid]
-                ws["total_ms"] += result.total_ms
-                ws["calls"] += 1
-                ws["serialize_ms"] += result.serialize_ms
-                ws["network_ms"] += result.network_ms
-                ws["compute_ms"] += result.compute_ms
-                ws["deserialize_ms"] += result.deserialize_ms
-                ws["total_bytes"] += result.payload_bytes
-                
-                fit_cpu = result.fitness
-                if not isinstance(fit_cpu, torch.Tensor):
-                    fit_cpu = torch.tensor(fit_cpu)
-                fits.append(fit_cpu.to(population.device))
-            except Exception as e:
-                # Fallback to local compute for that chunk
-                print(f"[WARN] Device {dw.server_id}:{dw.device} failed: {e}, falling back to local")
-                fits.append(self._base(pop_chunk))
+                    if dw.is_local:
+                        # Local computation (synchronous, fast)
+                        t0 = time.perf_counter()
+                        fit_local = self._base(pop_chunk)
+                        compute_ms = (time.perf_counter() - t0) * 1000.0
+                        
+                        result = DetailedCallResult(
+                            fitness=fit_local.detach().to("cpu") if isinstance(fit_local, torch.Tensor) else fit_local,
+                            worker_id=f"local:{dw.device}",
+                            serialize_ms=0,
+                            network_ms=0,
+                            compute_ms=compute_ms,
+                            deserialize_ms=0,
+                            total_ms=compute_ms,
+                            payload_bytes=0,
+                            chunk_size=int(pop_chunk.shape[0]),
+                        )
+                        # Process local result immediately
+                        self._detailed_calls.append(result)
+                        iter_calls.append(result)
+                        self._comm_total_ms += result.total_ms
+                        self._comm_calls += 1
+                        self._update_worker_stats(dw, result)
+                        
+                        fit_cpu = result.fitness
+                        if not isinstance(fit_cpu, torch.Tensor):
+                            fit_cpu = torch.tensor(fit_cpu)
+                        fits[idx] = fit_cpu.to(population.device)
+                    else:
+                        # Remote computation - dispatch in parallel
+                        future = executor.submit(_remote_call, idx, dw, pop_cpu)
+                        futures.append((future, idx, dw, pop_chunk))
+                except Exception as e:
+                    print(f"[WARN] Device {dw.server_id}:{dw.device} prep failed: {e}, falling back to local")
+                    fits[idx] = self._base(pop_chunk)
+            
+            # Wait for all remote futures
+            for future, stored_idx, dw, pop_chunk in futures:
+                try:
+                    idx, result = future.result()
+                    self._detailed_calls.append(result)
+                    iter_calls.append(result)
+                    self._comm_total_ms += result.total_ms
+                    self._comm_calls += 1
+                    self._update_worker_stats(dw, result)
+                    
+                    fit_cpu = result.fitness
+                    if not isinstance(fit_cpu, torch.Tensor):
+                        fit_cpu = torch.tensor(fit_cpu)
+                    fits[idx] = fit_cpu.to(population.device)
+                except Exception as e:
+                    print(f"[WARN] Device {dw.server_id}:{dw.device} failed: {e}, falling back to local")
+                    fits[stored_idx] = self._base(pop_chunk)
+        
+        # Update wall clock time
+        iter_wall_ms = (time.perf_counter() - t_wall_start) * 1000.0
+        self._comm_wall_clock_ms += iter_wall_ms
 
         # Record per-iteration stats
         if iter_calls:
-            iter_total = sum(c.total_ms for c in iter_calls)
+            iter_cumulative = sum(c.total_ms for c in iter_calls)
             self._per_iter_stats.append({
                 "iter": self._current_iter,
-                "total_ms": iter_total,
+                "total_ms": iter_cumulative,  # Cumulative
+                "wall_ms": iter_wall_ms,      # Wall clock
                 "workers": [c.worker_id for c in iter_calls],
                 "calls": len(iter_calls),
             })
@@ -609,10 +689,13 @@ class DistributedEvaluator(nn.Module):
     def comm_stats(self) -> Dict[str, Any]:
         """Return legacy-compatible stats."""
         avg_ms = (self._comm_total_ms / self._comm_calls) if self._comm_calls else 0.0
+        efficiency = (self._comm_total_ms / self._comm_wall_clock_ms) if self._comm_wall_clock_ms > 0 else 1.0
         return {
             "type": "http",
             "avg_ms": float(avg_ms),
-            "total_ms": float(self._comm_total_ms),
+            "total_ms": float(self._comm_total_ms),  # Cumulative
+            "wall_clock_ms": float(self._comm_wall_clock_ms),  # Actual elapsed
+            "parallel_efficiency": float(efficiency),  # Speedup from parallelism
             "calls": int(self._comm_calls),
         }
 
@@ -648,9 +731,15 @@ class DistributedEvaluator(nn.Module):
                 "total_bytes": ws["total_bytes"],
             }
         
+        # Wall clock and parallel efficiency
+        wall_clock_ms = self._comm_wall_clock_ms
+        efficiency = (total_comm / wall_clock_ms) if wall_clock_ms > 0 else 1.0
+        
         return {
             "type": "http_detailed",
-            "total_comm_ms": total_comm,
+            "total_comm_ms": total_comm,  # Cumulative
+            "wall_clock_ms": wall_clock_ms,  # Actual elapsed
+            "parallel_efficiency": efficiency,  # Speedup from parallelism
             "total_serialize_ms": total_serialize,
             "total_network_ms": total_network,
             "total_compute_ms": total_compute,

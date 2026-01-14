@@ -242,6 +242,13 @@ def ga_worker(
         elif ui_mode == "M":
             algo_mode = "m"
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            # Centralized Fix: Use file-based initialization for M mode to correct slow socket startup
+            import tempfile, uuid
+            init_file = os.path.join(tempfile.gettempdir(), f"gapa_dist_{uuid.uuid4().hex}")
+            if os.path.exists(init_file):
+                try: os.remove(init_file)
+                except: pass
+            os.environ["GAPA_DIST_INIT_METHOD"] = f"file://{init_file}"
         elif ui_mode == "MNM":
             # MNM: multi-machine fitness offload; keep GA loop single-process.
             algo_mode = "mnm"
@@ -463,6 +470,9 @@ def ga_worker(
                 use_plan = selected.get("use_strategy_plan")
                 if use_plan is None:
                     use_plan = False
+                
+                # Note: extra_context is dynamically extracted in DistributedEvaluator.forward()
+                # so we don't need to extract it here (it would be stale before controller.setup())
                 wrapped = DistributedEvaluator(
                     evaluator_obj,
                     algorithm=algo_norm,
@@ -501,8 +511,12 @@ def ga_worker(
             nonlocal comm_tracker
             if method == "SixDST":
                 from gapa.algorithm.CND.SixDST import SixDST, SixDSTController, SixDSTEvaluator  # type: ignore
+                from gapa.utils.functions import set_seed
+                
+                # SixDST setup (popGreedy_cutoff) is stochastic. We must seed consistent state for distributed setup.
+                set_seed(1024)
 
-                loaded = _load_adjlist(dataset, sort_nodes=False)
+                loaded = _load_adjlist(dataset, sort_nodes=True)
                 data_loader = Loader(dataset=dataset, device=device)
                 data_loader.G = loaded["G"]
                 data_loader.A = loaded["A"]
@@ -983,31 +997,76 @@ def ga_worker(
                     else:
                         bytes_str = f"{total_bytes} B"
                     
-                    emit({"type": "log", "line": "─" * 60})
-                    emit({"type": "log", "line": f"[INFO] ▼ 通信统计 ({calls}次调用, 总数据量: {bytes_str})"})
-                    emit({"type": "log", "line": f"[INFO]   总通信时间: {total_ms:.1f} ms"})
-                    emit({"type": "log", "line": f"[INFO]   ├─ 序列化:    {serialize_ms:.1f} ms ({pct(serialize_ms):.1f}%)"})
-                    emit({"type": "log", "line": f"[INFO]   ├─ 网络传输: {network_ms:.1f} ms ({pct(network_ms):.1f}%)"})
-                    emit({"type": "log", "line": f"[INFO]   ├─ 远程计算: {compute_ms:.1f} ms ({pct(compute_ms):.1f}%)"})
-                    emit({"type": "log", "line": f"[INFO]   └─ 反序列化: {deserialize_ms:.1f} ms ({pct(deserialize_ms):.1f}%)"})
+                    emit({"type": "log", "line": "═" * 70})
+                    emit({"type": "log", "line": f"[INFO] ▼ MNM 通信统计详情"})
+                    emit({"type": "log", "line": "═" * 70})
                     
-                    # Per-worker breakdown
+                    # === Section 1: Summary Metrics ===
+                    wall_clock_ms = detailed.get("wall_clock_ms", total_ms)
+                    parallel_eff = detailed.get("parallel_efficiency", 1.0)
+                    avg_per_call = total_ms / calls if calls > 0 else 0
+                    
+                    emit({"type": "log", "line": f"[INFO] ▶ 总览"})
+                    emit({"type": "log", "line": f"[INFO]   调用次数: {calls}"})
+                    emit({"type": "log", "line": f"[INFO]   总数据量: {bytes_str}"})
+                    emit({"type": "log", "line": f"[INFO]   实际挂钟时间: {wall_clock_ms:.1f} ms"})
+                    emit({"type": "log", "line": f"[INFO]   累计通信时间: {total_ms:.1f} ms"})
+                    emit({"type": "log", "line": f"[INFO]   平均每次调用: {avg_per_call:.2f} ms"})
+                    emit({"type": "log", "line": f"[INFO]   并行加速比: {parallel_eff:.2f}x"})
+                    
+                    # === Section 2: Derived Metrics ===
                     per_worker = detailed.get("per_worker", {})
                     if per_worker:
-                        emit({"type": "log", "line": f"[INFO]   ▼ 按 Worker 分解"})
+                        # Find bottleneck GPU
+                        bottleneck_wid = max(per_worker.keys(), key=lambda k: per_worker[k].get("total_ms", 0))
+                        bottleneck_ms = per_worker[bottleneck_wid].get("total_ms", 0)
+                        overhead_ms = wall_clock_ms - bottleneck_ms if wall_clock_ms > bottleneck_ms else 0
+                        
+                        emit({"type": "log", "line": f"[INFO] ▶ 分析指标"})
+                        emit({"type": "log", "line": f"[INFO]   瓶颈 Worker: {bottleneck_wid}"})
+                        emit({"type": "log", "line": f"[INFO]   瓶颈 Worker 累计时间: {bottleneck_ms:.1f} ms"})
+                        emit({"type": "log", "line": f"[INFO]   并行开销: {overhead_ms:.1f} ms (挂钟 - 瓶颈)"})
+                        emit({"type": "log", "line": f"[INFO]   理论串行时间: {total_ms:.1f} ms"})
+                        emit({"type": "log", "line": f"[INFO]   并行节省时间: {total_ms - wall_clock_ms:.1f} ms"})
+                    
+                    # === Section 3: Cumulative Phase Breakdown ===
+                    emit({"type": "log", "line": f"[INFO] ▶ 各阶段累计 (所有调用加总)"})
+                    emit({"type": "log", "line": f"[INFO]   序列化:    {serialize_ms:>8.1f} ms ({pct(serialize_ms):>5.1f}%)"})
+                    emit({"type": "log", "line": f"[INFO]   网络传输:  {network_ms:>8.1f} ms ({pct(network_ms):>5.1f}%)"})
+                    emit({"type": "log", "line": f"[INFO]   远程计算:  {compute_ms:>8.1f} ms ({pct(compute_ms):>5.1f}%)"})
+                    emit({"type": "log", "line": f"[INFO]   反序列化:  {deserialize_ms:>8.1f} ms ({pct(deserialize_ms):>5.1f}%)"})
+                    
+                    # === Section 4: Per-Worker Detailed Breakdown ===
+                    if per_worker:
+                        emit({"type": "log", "line": f"[INFO] ▶ 按 Worker 详细分解"})
                         for wid, ws in per_worker.items():
                             w_calls = ws.get("calls", 0)
                             w_total = ws.get("total_ms", 0)
                             w_avg = ws.get("avg_ms", 0)
+                            w_serialize = ws.get("serialize_ms", 0)
+                            w_network = ws.get("network_ms", 0)
+                            w_compute = ws.get("compute_ms", 0)
+                            w_deserialize = ws.get("deserialize_ms", 0)
                             w_bytes = ws.get("total_bytes", 0)
+                            
                             if w_bytes >= 1024 * 1024:
                                 w_bytes_str = f"{w_bytes / (1024 * 1024):.1f} MB"
                             elif w_bytes >= 1024:
                                 w_bytes_str = f"{w_bytes / 1024:.1f} KB"
                             else:
                                 w_bytes_str = f"{w_bytes} B"
-                            emit({"type": "log", "line": f"[INFO]     {wid}: {w_calls}次 avg={w_avg:.1f}ms total={w_total:.1f}ms data={w_bytes_str}"})
-                    emit({"type": "log", "line": "─" * 60})
+                            
+                            emit({"type": "log", "line": f"[INFO]   ┌─ {wid}"})
+                            emit({"type": "log", "line": f"[INFO]   │  调用次数: {w_calls}"})
+                            emit({"type": "log", "line": f"[INFO]   │  数据量: {w_bytes_str}"})
+                            emit({"type": "log", "line": f"[INFO]   │  累计时间: {w_total:.1f} ms"})
+                            emit({"type": "log", "line": f"[INFO]   │  平均时间: {w_avg:.1f} ms/call"})
+                            emit({"type": "log", "line": f"[INFO]   │  序列化: {w_serialize:.1f} ms"})
+                            emit({"type": "log", "line": f"[INFO]   │  网络: {w_network:.1f} ms"})
+                            emit({"type": "log", "line": f"[INFO]   │  计算: {w_compute:.1f} ms"})
+                            emit({"type": "log", "line": f"[INFO]   └─ 反序列化: {w_deserialize:.1f} ms"})
+                    
+                    emit({"type": "log", "line": "═" * 70})
             except Exception:
                 pass
         else:
@@ -1048,9 +1107,29 @@ def ga_worker(
         except Exception as e:
             emit({"type": "log", "line": f"[WARN] 状态保存失败: {e}"})
 
+        # Cleanup M mode init file
+        init_method = os.environ.pop("GAPA_DIST_INIT_METHOD", "")
+        if init_method.startswith("file://"):
+            try:
+                path = init_method[7:]
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+
         emit({"type": "result", "result": result})
         emit({"type": "state", "state": "completed"})
     except Exception as exc:
+        # Cleanup M mode init file on error
+        init_method = os.environ.pop("GAPA_DIST_INIT_METHOD", "")
+        if init_method.startswith("file://"):
+            try:
+                path = init_method[7:]
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+                
         try:
             q.put({"type": "log", "line": f"[ERROR] {exc}", "task_id": task_id})
             q.put({"type": "state", "state": "error", "error": str(exc), "task_id": task_id})
