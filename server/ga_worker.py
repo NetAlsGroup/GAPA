@@ -53,8 +53,10 @@ def ga_worker(
     mutate_rate: float,
     selected: Dict[str, Any],
     q: Any,
+    resume_state: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Run GA in a subprocess and emit events to parent via queue."""
+    from .db_manager import db_manager
     try:
         cvd = selected.get("cuda_visible_devices")
         if selected.get("mode") == "CPU":
@@ -189,7 +191,23 @@ def ga_worker(
                 "line": f"[INFO] 任务 {task_id} 启动，算法={algorithm} dataset={dataset} pc={crossover_rate:.3f} pm={mutate_rate:.3f} iters={iterations}",
             }
         )
-        emit({"type": "log", "line": f"[INFO] 运行模式: {selected.get('mode')} devices={selected.get('devices')}"})
+        mode = selected.get('mode')
+        devices = selected.get('devices') or []
+        remote_servers = selected.get('remote_servers') or selected.get('allowed_server_ids') or []
+        
+        # Build descriptive resource string
+        resources = []
+        if mode == "CPU" or (mode == "MNM" and not devices):
+            resources.append("Local CPU")
+        elif devices:
+            resources.append(f"Local GPU {','.join(str(d) for d in devices)}")
+        
+        for srv in remote_servers:
+            # Try to get GPU info from server name - for now just add server name
+            resources.append(srv)
+        
+        resource_str = " + ".join(resources) if resources else "未知"
+        emit({"type": "log", "line": f"[INFO] 运行模式: {mode} 资源: {resource_str}"})
         emit({"type": "progress", "value": 1})
 
         try:
@@ -224,6 +242,13 @@ def ga_worker(
         elif ui_mode == "M":
             algo_mode = "m"
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
+            # Centralized Fix: Use file-based initialization for M mode to correct slow socket startup
+            import tempfile, uuid
+            init_file = os.path.join(tempfile.gettempdir(), f"gapa_dist_{uuid.uuid4().hex}")
+            if os.path.exists(init_file):
+                try: os.remove(init_file)
+                except: pass
+            os.environ["GAPA_DIST_INIT_METHOD"] = f"file://{init_file}"
         elif ui_mode == "MNM":
             # MNM: multi-machine fitness offload; keep GA loop single-process.
             algo_mode = "mnm"
@@ -243,7 +268,9 @@ def ga_worker(
             world_size = 1
         if distributed_fitness:
             world_size = 1
-        emit({"type": "log", "line": f"[INFO] Exec resolved: ui_mode={ui_mode} -> algo_mode={algo_mode} world_size={world_size} device={device}"})
+            emit({"type": "log", "line": f"[INFO] Exec resolved: ui_mode={ui_mode} -> algo_mode={algo_mode} local_device={device} (远程服务器使用其锁定的 GPU)"})
+        else:
+            emit({"type": "log", "line": f"[INFO] Exec resolved: ui_mode={ui_mode} -> algo_mode={algo_mode} world_size={world_size} device={device}"})
 
         algo_raw = (algorithm or "").strip()
         algo_key = algo_raw.replace("_", "-")
@@ -409,7 +436,19 @@ def ga_worker(
         fitness_goal = None
         comm_path = results_dir / f"comm_{task_id}.json" if algo_mode == "m" else None
 
-        DISTRIBUTED_FITNESS_SUPPORTED = {"SixDST", "CutOff", "TDE"}
+        DISTRIBUTED_FITNESS_SUPPORTED = {
+            "SixDST",
+            "CutOff",
+            "TDE",
+            "CDA-EDA",
+            "CGN",
+            "QAttack",
+            "LPA-EDA",
+            "LPA-GA",
+            "NCA-GA",
+            "SGA",
+            "GANI",
+        }
 
         def maybe_wrap_distributed(evaluator_obj: Any) -> Any:
             if not distributed_fitness:
@@ -431,6 +470,9 @@ def ga_worker(
                 use_plan = selected.get("use_strategy_plan")
                 if use_plan is None:
                     use_plan = False
+                
+                # Note: extra_context is dynamically extracted in DistributedEvaluator.forward()
+                # so we don't need to extract it here (it would be stale before controller.setup())
                 wrapped = DistributedEvaluator(
                     evaluator_obj,
                     algorithm=algo_norm,
@@ -469,8 +511,12 @@ def ga_worker(
             nonlocal comm_tracker
             if method == "SixDST":
                 from gapa.algorithm.CND.SixDST import SixDST, SixDSTController, SixDSTEvaluator  # type: ignore
+                from gapa.utils.functions import set_seed
+                
+                # SixDST setup (popGreedy_cutoff) is stochastic. We must seed consistent state for distributed setup.
+                set_seed(1024)
 
-                loaded = _load_adjlist(dataset, sort_nodes=False)
+                loaded = _load_adjlist(dataset, sort_nodes=True)
                 data_loader = Loader(dataset=dataset, device=device)
                 data_loader.G = loaded["G"]
                 data_loader.A = loaded["A"]
@@ -584,6 +630,7 @@ def ga_worker(
 
         def run_cda(method: str) -> None:
             nonlocal fitness_goal
+            nonlocal comm_tracker
             attack_rate = float(os.getenv("GAPA_CDA_ATTACK_RATE", "0.1"))
             loaded = _load_gml(dataset, sort_nodes=True, rebuild_from_adj=False)
             data_loader = Loader(dataset=dataset, device=device)
@@ -600,6 +647,7 @@ def ga_worker(
                 from gapa.algorithm.CDA.EDA import EDA as CDA_EDA, EDAController as CDA_EDAController, EDAEvaluator as CDA_EDAEvaluator  # type: ignore
 
                 evaluator = CDA_EDAEvaluator(pop_size=int(result["hyperparams"]["pop_size"]), graph=data_loader.G.copy(), nodes_num=data_loader.nodes_num, adj=data_loader.A, device=device)
+                evaluator = maybe_wrap_distributed(evaluator)
                 controller = CDA_EDAController(
                     path=str(results_dir) + "/",
                     pattern="write",
@@ -612,6 +660,8 @@ def ga_worker(
                 )
                 if comm_path:
                     controller.comm_path = str(comm_path)
+                if hasattr(evaluator, "comm_stats"):
+                    comm_tracker = evaluator
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start CDA-EDA: mode={algo_mode} device={device} world_size={world_size}"})
@@ -623,6 +673,7 @@ def ga_worker(
                 from gapa.algorithm.CDA.CGN import CGN, CGNController, CGNEvaluator  # type: ignore
 
                 evaluator = CGNEvaluator(pop_size=int(result["hyperparams"]["pop_size"]), graph=data_loader.G.copy(), device=device)
+                evaluator = maybe_wrap_distributed(evaluator)
                 controller = CGNController(
                     path=str(results_dir) + "/",
                     pattern="write",
@@ -635,6 +686,8 @@ def ga_worker(
                 )
                 if comm_path:
                     controller.comm_path = str(comm_path)
+                if hasattr(evaluator, "comm_stats"):
+                    comm_tracker = evaluator
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start CGN: mode={algo_mode} device={device} world_size={world_size}"})
@@ -646,6 +699,7 @@ def ga_worker(
                 from gapa.algorithm.CDA.QAttack import QAttack, QAttackController, QAttackEvaluator  # type: ignore
 
                 evaluator = QAttackEvaluator(pop_size=int(result["hyperparams"]["pop_size"]), graph=data_loader.G.copy(), device=device)
+                evaluator = maybe_wrap_distributed(evaluator)
                 controller = QAttackController(
                     path=str(results_dir) + "/",
                     pattern="write",
@@ -658,6 +712,8 @@ def ga_worker(
                 )
                 if comm_path:
                     controller.comm_path = str(comm_path)
+                if hasattr(evaluator, "comm_stats"):
+                    comm_tracker = evaluator
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start QAttack: mode={algo_mode} device={device} world_size={world_size}"})
@@ -669,6 +725,7 @@ def ga_worker(
 
         def run_lpa(method: str) -> None:
             nonlocal fitness_goal
+            nonlocal comm_tracker
             attack_rate = float(os.getenv("GAPA_LPA_ATTACK_RATE", "0.1"))
             try:
                 loaded = _load_gml(dataset, sort_nodes=True, rebuild_from_adj=True)
@@ -691,6 +748,7 @@ def ga_worker(
                 from gapa.algorithm.LPA.EDA import EDA as LPA_EDA, EDAController as LPA_EDAController, EDAEvaluator as LPA_EDAEvaluator  # type: ignore
 
                 evaluator = LPA_EDAEvaluator(pop_size=int(result["hyperparams"]["pop_size"]), graph=data_loader.G, ratio=0, device=device)
+                evaluator = maybe_wrap_distributed(evaluator)
                 controller = LPA_EDAController(
                     path=str(results_dir) + "/",
                     pattern="write",
@@ -703,6 +761,8 @@ def ga_worker(
                 )
                 if comm_path:
                     controller.comm_path = str(comm_path)
+                if hasattr(evaluator, "comm_stats"):
+                    comm_tracker = evaluator
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start LPA-EDA: mode={algo_mode} device={device} world_size={world_size}"})
@@ -714,6 +774,7 @@ def ga_worker(
                 from gapa.algorithm.LPA.LPA_GA import LPA_GA, GAController, GAEvaluator  # type: ignore
 
                 evaluator = GAEvaluator(pop_size=int(result["hyperparams"]["pop_size"]), graph=data_loader.G, ratio=0, device=device)
+                evaluator = maybe_wrap_distributed(evaluator)
                 controller = GAController(
                     path=str(results_dir) + "/",
                     pattern="write",
@@ -726,6 +787,8 @@ def ga_worker(
                 )
                 if comm_path:
                     controller.comm_path = str(comm_path)
+                if hasattr(evaluator, "comm_stats"):
+                    comm_tracker = evaluator
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start LPA-GA: mode={algo_mode} device={device} world_size={world_size}"})
@@ -785,6 +848,7 @@ def ga_worker(
                 attack_rate = float(os.getenv("GAPA_NCA_EDGE_ATTACK_RATE", "0.025"))
                 data_loader.k = int(attack_rate * num_edge)
                 evaluator = NCA_GAEvaluator(classifier=gcn, feats=data_loader.feats, adj=data_loader.adj, test_index=data_loader.test_index, labels=data_loader.labels, pop_size=int(result["hyperparams"]["pop_size"]), device=device)
+                evaluator = maybe_wrap_distributed(evaluator)
                 controller = NCA_GAController(
                     path=str(results_dir) + "/",
                     pattern="write",
@@ -798,6 +862,8 @@ def ga_worker(
                 )
                 if comm_path:
                     controller.comm_path = str(comm_path)
+                if hasattr(evaluator, "comm_stats"):
+                    comm_tracker = evaluator
                 fitness_goal = getattr(controller, "fit_side", None)
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start NCA-GA: mode={algo_mode} device={device} world_size={world_size}"})
@@ -836,7 +902,8 @@ def ga_worker(
                 attach_observer(controller)
                 emit({"type": "log", "line": f"[INFO] Start {method}: mode={algo_mode} device={device} world_size={world_size}"})
                 result["metrics"].append({"stage": "init", **snapshot()})
-                SGA(mode=algo_mode, max_generation=int(iterations), data_loader=data_loader, controller=controller, surrogate=surrogate, classifier=gcn, homophily_ratio=0.7, world_size=world_size, verbose=False)
+                # SGA/GANI internally create evaluators; we pass maybe_wrap_distributed to wrap them
+                SGA(mode=algo_mode, max_generation=int(iterations), data_loader=data_loader, controller=controller, surrogate=surrogate, classifier=gcn, homophily_ratio=0.7, world_size=world_size, wrap_evaluator=maybe_wrap_distributed, verbose=False)
                 return
 
             raise RuntimeError(f"Unsupported NCA algorithm: {method}")
@@ -872,6 +939,9 @@ def ga_worker(
             emit({"type": "log", "line": f"[INFO] iteration loop finished; iter_seconds={result['timing']['iter_seconds']:.3f}s"})
         else:
             emit({"type": "log", "line": "[WARN] iteration timing not available (no per-iteration callbacks captured)"})
+        
+        # Ensure progress reaches 100% after completion
+        emit({"type": "progress", "value": 100})
 
         if fitness_goal:
             result["fitness_goal"] = fitness_goal
@@ -888,9 +958,121 @@ def ga_worker(
                 pass
         if comm_tracker is not None:
             try:
-                result["comm"] = comm_tracker.comm_stats()
+                comm_stats = comm_tracker.comm_stats()
+                result["comm"] = comm_stats
+                # Collect detailed stats if available
+                if hasattr(comm_tracker, "detailed_stats"):
+                    result["comm_detailed"] = comm_tracker.detailed_stats()
+                
+                # Emit detailed comm timing log for user visibility
+                if comm_stats.get("avg_ms") is not None:
+                    emit({"type": "log", "line": f"[INFO] Comm avg: {comm_stats['avg_ms']:.2f}ms total: {comm_stats.get('total_ms', 0):.2f}ms calls: {comm_stats.get('calls', 0)}"})
+                
+                # Log per-op breakdown for M mode (torch.distributed)
+                per_op_ms = comm_stats.get("per_rank_ops", {}).get("0", {}) or {}
+                if per_op_ms:
+                    op_items = [f"{op} {ms:.1f}ms" for op, ms in per_op_ms.items()]
+                    if op_items:
+                        emit({"type": "log", "line": f"[INFO] Comm breakdown: {', '.join(op_items)}"})
+                
+                # Log MNM mode detailed breakdown
+                detailed = result.get("comm_detailed") or {}
+                if detailed.get("total_comm_ms", 0) > 0:
+                    total_ms = detailed.get("total_comm_ms", 0)
+                    calls = detailed.get("calls", 0)
+                    serialize_ms = detailed.get("total_serialize_ms", 0)
+                    network_ms = detailed.get("total_network_ms", 0)
+                    compute_ms = detailed.get("total_compute_ms", 0)
+                    deserialize_ms = detailed.get("total_deserialize_ms", 0)
+                    total_bytes = detailed.get("total_bytes", 0)
+                    
+                    # Calculate percentages
+                    def pct(v): return (v / total_ms * 100) if total_ms > 0 else 0
+                    
+                    # Format bytes
+                    if total_bytes >= 1024 * 1024:
+                        bytes_str = f"{total_bytes / (1024 * 1024):.1f} MB"
+                    elif total_bytes >= 1024:
+                        bytes_str = f"{total_bytes / 1024:.1f} KB"
+                    else:
+                        bytes_str = f"{total_bytes} B"
+                    
+                    emit({"type": "log", "line": "═" * 70})
+                    emit({"type": "log", "line": f"[INFO] ▼ MNM 通信统计详情"})
+                    emit({"type": "log", "line": "═" * 70})
+                    
+                    # === Section 1: Summary Metrics ===
+                    wall_clock_ms = detailed.get("wall_clock_ms", total_ms)
+                    parallel_eff = detailed.get("parallel_efficiency", 1.0)
+                    avg_per_call = total_ms / calls if calls > 0 else 0
+                    
+                    emit({"type": "log", "line": f"[INFO] ▶ 总览"})
+                    emit({"type": "log", "line": f"[INFO]   调用次数: {calls}"})
+                    emit({"type": "log", "line": f"[INFO]   总数据量: {bytes_str}"})
+                    emit({"type": "log", "line": f"[INFO]   实际挂钟时间: {wall_clock_ms:.1f} ms"})
+                    emit({"type": "log", "line": f"[INFO]   累计通信时间: {total_ms:.1f} ms"})
+                    emit({"type": "log", "line": f"[INFO]   平均每次调用: {avg_per_call:.2f} ms"})
+                    emit({"type": "log", "line": f"[INFO]   并行加速比: {parallel_eff:.2f}x"})
+                    
+                    # === Section 2: Derived Metrics ===
+                    per_worker = detailed.get("per_worker", {})
+                    if per_worker:
+                        # Find bottleneck GPU
+                        bottleneck_wid = max(per_worker.keys(), key=lambda k: per_worker[k].get("total_ms", 0))
+                        bottleneck_ms = per_worker[bottleneck_wid].get("total_ms", 0)
+                        overhead_ms = wall_clock_ms - bottleneck_ms if wall_clock_ms > bottleneck_ms else 0
+                        
+                        emit({"type": "log", "line": f"[INFO] ▶ 分析指标"})
+                        emit({"type": "log", "line": f"[INFO]   瓶颈 Worker: {bottleneck_wid}"})
+                        emit({"type": "log", "line": f"[INFO]   瓶颈 Worker 累计时间: {bottleneck_ms:.1f} ms"})
+                        emit({"type": "log", "line": f"[INFO]   并行开销: {overhead_ms:.1f} ms (挂钟 - 瓶颈)"})
+                        emit({"type": "log", "line": f"[INFO]   理论串行时间: {total_ms:.1f} ms"})
+                        emit({"type": "log", "line": f"[INFO]   并行节省时间: {total_ms - wall_clock_ms:.1f} ms"})
+                    
+                    # === Section 3: Cumulative Phase Breakdown ===
+                    emit({"type": "log", "line": f"[INFO] ▶ 各阶段累计 (所有调用加总)"})
+                    emit({"type": "log", "line": f"[INFO]   序列化:    {serialize_ms:>8.1f} ms ({pct(serialize_ms):>5.1f}%)"})
+                    emit({"type": "log", "line": f"[INFO]   网络传输:  {network_ms:>8.1f} ms ({pct(network_ms):>5.1f}%)"})
+                    emit({"type": "log", "line": f"[INFO]   远程计算:  {compute_ms:>8.1f} ms ({pct(compute_ms):>5.1f}%)"})
+                    emit({"type": "log", "line": f"[INFO]   反序列化:  {deserialize_ms:>8.1f} ms ({pct(deserialize_ms):>5.1f}%)"})
+                    
+                    # === Section 4: Per-Worker Detailed Breakdown ===
+                    if per_worker:
+                        emit({"type": "log", "line": f"[INFO] ▶ 按 Worker 详细分解"})
+                        for wid, ws in per_worker.items():
+                            w_calls = ws.get("calls", 0)
+                            w_total = ws.get("total_ms", 0)
+                            w_avg = ws.get("avg_ms", 0)
+                            w_serialize = ws.get("serialize_ms", 0)
+                            w_network = ws.get("network_ms", 0)
+                            w_compute = ws.get("compute_ms", 0)
+                            w_deserialize = ws.get("deserialize_ms", 0)
+                            w_bytes = ws.get("total_bytes", 0)
+                            
+                            if w_bytes >= 1024 * 1024:
+                                w_bytes_str = f"{w_bytes / (1024 * 1024):.1f} MB"
+                            elif w_bytes >= 1024:
+                                w_bytes_str = f"{w_bytes / 1024:.1f} KB"
+                            else:
+                                w_bytes_str = f"{w_bytes} B"
+                            
+                            emit({"type": "log", "line": f"[INFO]   ┌─ {wid}"})
+                            emit({"type": "log", "line": f"[INFO]   │  调用次数: {w_calls}"})
+                            emit({"type": "log", "line": f"[INFO]   │  数据量: {w_bytes_str}"})
+                            emit({"type": "log", "line": f"[INFO]   │  累计时间: {w_total:.1f} ms"})
+                            emit({"type": "log", "line": f"[INFO]   │  平均时间: {w_avg:.1f} ms/call"})
+                            emit({"type": "log", "line": f"[INFO]   │  序列化: {w_serialize:.1f} ms"})
+                            emit({"type": "log", "line": f"[INFO]   │  网络: {w_network:.1f} ms"})
+                            emit({"type": "log", "line": f"[INFO]   │  计算: {w_compute:.1f} ms"})
+                            emit({"type": "log", "line": f"[INFO]   └─ 反序列化: {w_deserialize:.1f} ms"})
+                    
+                    emit({"type": "log", "line": "═" * 70})
             except Exception:
                 pass
+        else:
+            # No comm_tracker available
+            if distributed_fitness:
+                emit({"type": "log", "line": "[WARN] MNM 模式已启用但无法获取通信统计（evaluator 可能未被包装或不支持）"})
 
         tail_stop = True
         primary = objective.get("primary") or "fitness"
@@ -915,9 +1097,39 @@ def ga_worker(
             result["best_score"] = None
 
         emit({"type": "log", "line": "[INFO] 分析完成。"})
+        
+        # Save GA state for potential resume
+        try:
+            db_manager.save_ga_state(task_id, algorithm, dataset, {
+                "last_result": result,
+                "timestamp": time.time()
+            })
+        except Exception as e:
+            emit({"type": "log", "line": f"[WARN] 状态保存失败: {e}"})
+
+        # Cleanup M mode init file
+        init_method = os.environ.pop("GAPA_DIST_INIT_METHOD", "")
+        if init_method.startswith("file://"):
+            try:
+                path = init_method[7:]
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+
         emit({"type": "result", "result": result})
         emit({"type": "state", "state": "completed"})
     except Exception as exc:
+        # Cleanup M mode init file on error
+        init_method = os.environ.pop("GAPA_DIST_INIT_METHOD", "")
+        if init_method.startswith("file://"):
+            try:
+                path = init_method[7:]
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+                
         try:
             q.put({"type": "log", "line": f"[ERROR] {exc}", "task_id": task_id})
             q.put({"type": "state", "state": "error", "error": str(exc), "task_id": task_id})

@@ -135,6 +135,12 @@ def _synthetic_executor(plan: Plan, iters: int) -> float:
         # or use sync points properly. In GAPA, multi-GPU is typically process-parallel,
         # but here we use threads for a quick check. GIL is a bottleneck for tiny tasks.
         # We'll increase the iterations per thread slightly to ensure CUDA kernels overlap.
+        # GIL is a major bottleneck for multi-threading small tasks.
+        # We increase matrix size and iterations to ensure GPU computation outweighs Python overhead.
+        def _prepare(d):
+            # Use 1024x1024 to ensure measurable GPU time
+            return torch.randn(1024, 1024, device=d), torch.randn(1024, 1024, device=d)
+
         mats = []
         for dev_id in devices:
             dev = f"cuda:{dev_id}"
@@ -146,8 +152,9 @@ def _synthetic_executor(plan: Plan, iters: int) -> float:
             _sync(dev)
         
         start = time.perf_counter()
-        # We run the loop inside threads to allow some CUDA overlap even with GIL,
-        # although Python bytecode still serializes.
+        # Larger iters to dilute thread startup costs
+        iters_heavy = iters * 2 
+        
         def _thread_worker(dev, a, b, i_count):
             for _ in range(i_count):
                 _run_once(a, b)
@@ -155,18 +162,25 @@ def _synthetic_executor(plan: Plan, iters: int) -> float:
 
         threads = []
         for dev, a, b in mats:
-            t = threading.Thread(target=_thread_worker, args=(dev, a, b, iters), daemon=True)
+            t = threading.Thread(target=_thread_worker, args=(dev, a, b, iters_heavy), daemon=True)
             threads.append(t)
             t.start()
         for t in threads:
             t.join()
             
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        # Multi-GPU in GAPA is usually distributed, so the "latency" is the max of all workers.
-        # However, for throughput it's different. Since TPE evaluates "time per fitness",
-        # and GAPA parallelizes population evaluations, the expected time should be
-        # roughly (single_card_time / card_count) * (1 / efficiency).
-        return elapsed_ms
+        # Normalize back to requested iters
+        return elapsed_ms * (iters / iters_heavy)
+    
+    # CPU case
+    if plan.backend == "cpu":
+        # CPU benchmark also uses a larger matrix for stability
+        a = torch.randn(512, 512, device="cpu")
+        b = torch.randn(512, 512, device="cpu")
+        start = time.perf_counter()
+        for _ in range(iters):
+            torch.mm(a, b)
+        return (time.perf_counter() - start) * 1000.0
 
     return float("inf")
 
@@ -278,16 +292,29 @@ def _tpe_select(
             except Exception:
                 pass
 
-    # Final "Voting" Logic: 
-    # If the TPE best is significantly worse than static best expectation, 
-    # and the static best wasn't tested or had noisy results, check if we should trust static.
-    # However, here we always test static best. 
-    # Let's ensure we don't pick a "fluke" result.
+    # Final "Static Anchor" Logic:
+    # We want to catch cases where TPE measurements are noisy or skewed (like GIL issues),
+    # leading it to pick a plan that human intuition and static profiling know is worse.
+    static_best_plan = plans[static_best_idx]
     
-    # If the difference between TPE best and static best is small (< 15%), 
-    # and static best has more devices (potential for more scaling), we might prefer static.
-    # But for now, we trust measurements as the user specifically wants TPE for "real" evaluation.
-    
+    # If the TPE winner's static estimate is > 50% worse than the global static best,
+    # and the measured time for the winner isn't MUCH better than the static best's measured time.
+    if best_plan != static_best_plan:
+        static_best_id = ids[static_best_idx]
+        static_best_meas = min(observed.get(static_best_id, [float('inf')]))
+        
+        # Heuristic: If TPE winner is statically predicted to be much slower than the best,
+        # but "measured" faster by a thin margin or due to noisy static-best measurements.
+        # We only override static best if the measurement is "convincing".
+        ratio_stat = best_plan.estimated_time_ms / max(1e-6, static_best_plan.estimated_time_ms)
+        
+        # If static best is predicted to be 1.3x faster (e.g. 5.6ms vs 7.3ms),
+        # but measured slightly slower, we fallback to static.
+        if ratio_stat > 1.25 and best_ms >= static_best_plan.estimated_time_ms * 0.9:
+            best_plan = static_best_plan
+            best_ms = static_best_meas if static_best_meas != float('inf') else static_best_plan.estimated_time_ms
+            best_plan.reason += " | fallback_to_static(TPE_noise_guard)"
+
     best_plan.estimated_time_ms = max(1e-3, min(best_plan.estimated_time_ms, best_ms))
     best_plan.reason += f" | tpe_trials={trials} warmup={warmup_iters}"
     if progress_cb:
@@ -383,18 +410,39 @@ def StrategyPlan(
             return _synthetic_executor(p, iters)
 
     candidates = router.candidate_plans(wl, objective=objective, multi_gpu=multi_gpu)
+
+    if os.getenv("GAPA_TPE_DISABLE", "0") == "1":
+        # Skip TPE and use static best
+        static_best = min(candidates, key=lambda p: p.estimated_time_ms)
+        static_best.reason += " | TPE=disabled"
+        return static_best
+
     plan = _tpe_select(candidates, executor, tpe_warmup, tpe_trials, gamma=tpe_gamma, progress_cb=progress_cb)
+    
+    # Compare TPE result with static best to avoid TPE noise/overhead
+    static_best = router.route(wl, objective=objective, multi_gpu=multi_gpu, power_cap_w=None)
+    
+    # Use TPE if it's meaningfully faster (15% threshold), otherwise use static
+    # This prevents TPE from picking slightly-better-measured plans that have worse static profiles
+    tpe_faster_ratio = static_best.estimated_time_ms / max(1e-6, plan.estimated_time_ms)
+    
+    if tpe_faster_ratio >= 1.15:  # TPE is at least 15% faster
+        final_plan = plan
+        final_plan.reason += " | tpe_winner"
+    else:
+        final_plan = static_best
+        final_plan.reason += f" | static_winner(tpe_ratio={tpe_faster_ratio:.2f})"
 
     if avail_gpus is not None:
         try:
-            plan.notes = (
-                (plan.notes + " " if plan.notes else "")
+            final_plan.notes = (
+                (final_plan.notes + " " if final_plan.notes else "")
                 + f"gpu_filter=allowed:{avail_gpus} excluded:{excluded_gpus or []}"
             )
-            plan.reason = (plan.reason + f" | 过滤繁忙GPU:{excluded_gpus or []}").strip()
+            final_plan.reason = (final_plan.reason + f" | 过滤繁忙GPU:{excluded_gpus or []}").strip()
         except Exception:
             pass
-    return plan
+    return final_plan
 
 
 def StrategyCompare(

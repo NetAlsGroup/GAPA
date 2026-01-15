@@ -1,516 +1,609 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
+
 <head>
   <meta charset="UTF-8" />
   <title>GAPA Console · 资源监控与算法控制台</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <script src="/static/assets/vue.global.prod.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/static/assets/app.css" />
 </head>
+
 <body>
   <div id="app" v-cloak>
-  <header class="header">
-    <div class="container header-inner">
-      <div class="brand">
-        <img src="/static/assets/LOGO.png" alt="GAPA Logo" />
-        <div>
-          <div class="title">GAPA Console</div>
-          <div class="subtitle">资源实时监控 · 算法运行与监控</div>
+    <!-- Header -->
+    <header class="header">
+      <div class="container header-inner">
+        <div class="brand">
+          <img src="/static/assets/LOGO.png" alt="GAPA Logo" />
+          <div>
+            <div class="title">GAPA Console</div>
+            <div class="subtitle">Parallel Accelerated Framework</div>
+          </div>
+        </div>
+        <div style="display: flex; gap: 16px; align-items: center;">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span
+              style="width: 8px; height: 8px; border-radius: 50%; background: #10b981; display: inline-block;"></span>
+            <span style="font-size: 13px; font-weight: 500; color: var(--text-dim);">集群状态良好</span>
+          </div>
         </div>
       </div>
-    </div>
-  </header>
+    </header>
 
-  <div class="container layout">
-    <aside class="sidebar">
-      <div class="nav-title">导航</div>
-      <button class="nav-item" :class="{'nav-item--active': view === 'monitor'}" @click="setView('monitor')"><span>资源池监控</span><span class="nav-badge">1</span></button>
-      <button class="nav-item" :class="{'nav-item--active': view === 'algo'}" @click="setView('algo')"><span>算法运行与监控</span><span class="nav-badge">3</span></button>
-      <button class="nav-item" :class="{'nav-item--active': view === 'config'}" @click="setView('config')"><span>配置修改</span><span class="nav-badge">4</span></button>
-      <button class="nav-item" :class="{'nav-item--active': view === 'history'}" @click="setView('history')"><span>历史记录</span><span class="nav-badge">H</span></button>
-      <div class="nav-title">提示</div>
-      <div style="font-size:12px;color:var(--muted);padding:0 10px 10px;">
-        资源卡片点击展开详情；详情区域支持滚动。
-      </div>
-    </aside>
+    <div class="container layout">
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="nav-title">系统导航</div>
+        <button class="nav-item" :class="{'nav-item--active': view === 'monitor'}" @click="setView('monitor')">
+          <span>资源池监控</span>
+          <span class="nav-badge">1</span>
+        </button>
+        <button class="nav-item" :class="{'nav-item--active': view === 'algo'}" @click="setView('algo')">
+          <span>算法训练与执行</span>
+          <span class="nav-badge">2</span>
+        </button>
+        <button class="nav-item" :class="{'nav-item--active': view === 'config'}" @click="setView('config')">
+          <span>节点配置</span>
+          <span class="nav-badge">3</span>
+        </button>
+        <button class="nav-item" :class="{'nav-item--active': view === 'history'}" @click="setView('history')">
+          <span>任务日志历史</span>
+          <span class="nav-badge">4</span>
+        </button>
 
-    <main class="content">
-      <!-- View 1: Monitor -->
-      <div class="view" id="view-monitor" v-show="view === 'monitor'">
-        <section class="section">
-          <div class="section-header">
-            <div class="section-title">资源池</div>
-            <div>
-              <button id="btn-lock" class="btn btn-primary">锁定空闲资源</button>
-              <button id="btn-open-eval" class="btn btn-secondary">服务器测试评估</button>
-              <button id="btn-refresh" class="btn btn-secondary">全部刷新</button>
-            </div>
+        <div style="margin-top: auto; padding: 20px 14px;">
+          <div style="font-size: 12px; color: var(--muted); line-height: 1.5;">
+            v2.4.0-stable<br>
+            © 2024 GAPA Team
           </div>
-          <div class="cards" id="cards">
-            <div style="text-align:center;color:var(--muted);padding:28px 0;">正在加载本地资源…</div>
-          </div>
-          <div style="margin-top:16px;display:grid;gap:16px;">
-            <div class="section panel">
-              <div class="section-header">
-                <div class="section-title">资源锁定状态</div>
-                <div style="display:flex;gap:8px;">
-                  <select id="lock-status-scope"></select>
-                  <button id="btn-lock-status" class="btn btn-secondary">刷新状态</button>
-                  <button id="btn-lock-release-now" class="btn" style="background:#fee2e2;color:#991b1b;border-color:#fecaca;">释放锁定</button>
-                </div>
+        </div>
+      </aside>
+
+      <!-- Main Content -->
+      <main class="content">
+        <!-- View 1: Monitor -->
+        <div id="view-monitor" class="view" v-show="view === 'monitor'">
+          <section class="section">
+            <div class="section-header">
+              <div class="section-title">资源实时概览</div>
+              <div style="display: flex; gap: 12px;">
+                <button id="btn-lock" class="btn btn-primary">锁定空闲资源</button>
+                <button id="btn-open-eval" class="btn btn-secondary">性能评估向导</button>
+                <button id="btn-refresh" class="btn btn-secondary">刷新</button>
               </div>
-              <div id="lock-status" style="margin-top:12px;display:grid;gap:10px;"></div>
+            </div>
+
+            <div class="cards" id="cards">
+              <div style="text-align:center;color:var(--muted);padding:40px 0;">正在扫描集群资源...</div>
+            </div>
+
+            <div style="margin-top: 32px;">
+              <div class="section-title" style="margin-bottom: 16px;">资源锁定管理器</div>
+              <div style="display: flex; gap: 12px; margin-bottom: 20px;">
+                <select id="lock-status-scope" style="max-width: 200px;"></select>
+                <button id="btn-lock-status" class="btn btn-secondary">刷新</button>
+                <button id="btn-lock-release-now" class="btn"
+                  style="background:#fee2e2;color:#ef4444;border-color:#fecaca;">释放所有</button>
+              </div>
+              <div id="lock-status" style="display:grid;gap:12px;margin-bottom: 24px;"></div>
+
               <div class="log-wrap">
                 <div class="log-head">
-                  <div class="log-title">锁定日志</div>
+                  <div class="log-title">锁定历史日志</div>
                   <button id="btn-lock-log-clear" class="log-clear">清空</button>
                 </div>
-                <div id="lock-log" class="log-box">暂无锁定操作。</div>
+                <div id="lock-log" class="log-box">暂无操作日志。</div>
               </div>
             </div>
-          </div>
-        </section>
-      </div>
-
-      <!-- View 3: Algorithm run & monitor -->
-      <div class="view" id="view-algo" v-show="view === 'algo'">
-        <section class="section">
-          <div class="section-header">
-            <div class="section-title">算法运行与监控</div>
-            <div style="font-size:12px;color:var(--muted);">提交任务 · 轮询状态 · 日志/结果可视化</div>
-          </div>
-          <div class="split">
-            <div>
-              <div class="form">
-                <div>
-                  <label>选择算法</label>
-                  <select id="run-algo"></select>
-                </div>
-                <div>
-                  <label>选择数据集</label>
-                  <select id="run-dataset"></select>
-                </div>
-                <div>
-                  <label>运行服务器</label>
-                  <select id="run-server"></select>
-                </div>
-                <div>
-                  <label>运行模式</label>
-                  <select id="run-mode">
-                    <option value="AUTO">默认（使用资源评估结果）</option>
-                    <option value="CPU">CPU</option>
-                    <option value="S">S（单卡）</option>
-                    <option value="SM">SM（单卡加速）</option>
-                    <option value="M">M（多卡）</option>
-                    <option value="MNM">MNM（多机适应度加速）</option>
-                  </select>
-                </div>
-                <div class="kv">
-                  <div class="kv-item">
-                    <div class="kv-label">资源锁定状态</div>
-                    <div id="run-lock-status" class="kv-value">未知</div>
-                    <div id="run-lock-detail" style="font-size:11px;color:var(--muted);margin-top:4px;"></div>
-                  </div>
-                  <div class="kv-item" style="display:grid;gap:8px;">
-                    <button id="btn-run-lock-refresh" class="btn btn-secondary" style="width:100%;">刷新锁定</button>
-                    <button id="btn-run-lock-release" class="btn" style="width:100%;background:#fee2e2;color:#991b1b;border-color:#fecaca;">释放锁定</button>
-                  </div>
-                </div>
-                <div id="run-gpu-single-wrap" class="hidden">
-                  <label>选择显卡（单选）</label>
-                  <select id="run-gpu-single"></select>
-                </div>
-                <div id="run-gpu-multi-wrap" class="hidden">
-                  <label>选择显卡（多选）</label>
-                  <div id="run-gpu-multi" style="display:grid;gap:8px;"></div>
-                </div>
-                <div>
-                  <label>迭代次数</label>
-                  <input id="run-iters" type="number" min="1" value="20" />
-                </div>
-                <div class="row-2">
-                  <div>
-                    <label>交叉率 (pc)</label>
-                    <input id="run-pc" type="number" min="0" max="1" step="0.01" value="0.80" />
-                  </div>
-                  <div>
-                    <label>变异率 (pm)</label>
-                    <input id="run-pm" type="number" min="0" max="1" step="0.01" value="0.20" />
-                  </div>
-                </div>
-                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-                  <button id="btn-run" class="btn btn-primary" style="width:100%;">提交运行</button>
-                  <button id="btn-run-stop" class="btn" style="width:100%;background:#fee2e2;color:#991b1b;border-color:#fecaca;" disabled>停止</button>
-                </div>
-              </div>
-
-              <div class="kv">
-                <div class="kv-item">
-                  <div class="kv-label">状态</div>
-                  <div id="run-state" class="kv-value">idle</div>
-                </div>
-                <div class="kv-item">
-                  <div class="kv-label">任务ID</div>
-                  <div id="run-taskid" class="kv-value">-</div>
-                </div>
-              </div>
-              <div class="kv">
-                <div class="kv-item">
-                  <div class="kv-label">进度</div>
-                  <div id="run-progress-text" class="kv-value">0%</div>
-                  <div class="progress"><div id="run-progress" class="progress-bar"></div></div>
-                </div>
-                <div class="kv-item">
-                  <div class="kv-label">最优值</div>
-                  <div id="run-best" class="kv-value">-</div>
-                </div>
-              </div>
-              <div class="kv">
-                <div class="kv-item">
-                  <div class="kv-label">通讯时间</div>
-                  <div id="run-comm" class="kv-value">-</div>
-                  <div id="run-comm-detail" style="font-size:11px;color:var(--muted);margin-top:4px;"></div>
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <div class="log-head" style="margin-top:0;">
-                <div class="log-title">实时日志</div>
-                <button id="btn-run-clear" class="log-clear">清空</button>
-              </div>
-              <div id="run-log" class="log-box" style="max-height:260px;">等待任务…</div>
-              <div style="margin-top:12px;">
-                <div class="log-title">结果可视化</div>
-                <div id="run-chart" class="ga-panel" style="min-height:260px;">等待数据...</div>
-              </div>
-            </div>
-          </div>
-        </section>
-      </div>
-
-      <!-- View 4: Config -->
-      <div class="view" id="view-config" v-show="view === 'config'">
-        <section class="section">
-          <div class="section-header">
-            <div class="section-title">配置修改</div>
-            <div>
-              <button id="btn-open-modal" class="btn btn-primary">+ 添加卡片节点</button>
-            </div>
-          </div>
-          <div style="margin-top:12px;color:var(--muted);font-size:13px;line-height:1.6;">
-            这里用于维护服务器节点配置（新增/编辑/移除）。当前版本：前端临时添加卡片节点（刷新页面后不持久化）。
-          </div>
-        </section>
-      </div>
-
-      <!-- View 5: History -->
-      <div class="view" id="view-history" v-show="view === 'history'">
-        <section class="section">
-          <div class="section-header">
-            <div class="section-title">历史记录</div>
-            <div class="history-actions">
-              <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted);">
-                <input id="history-select-all" type="checkbox" />
-                全选
-              </label>
-              <button id="btn-history-delete" class="btn btn-secondary" disabled>删除选中</button>
-              <button id="btn-history-clear" class="btn btn-secondary">清空历史</button>
-            </div>
-          </div>
-          <div class="history-grid">
-            <div>
-              <div class="log-title">记录列表</div>
-              <div class="history-scroll">
-                <div id="history-list" class="history-list"></div>
-              </div>
-            </div>
-            <div>
-              <div class="log-title">记录详情</div>
-              <div id="history-detail" class="log-box" style="max-height:520px;">选择一条记录查看日志与指标。</div>
-            </div>
-          </div>
-        </section>
-      </div>
-    </main>
-  </div>
-
-  <!-- Add Server Modal -->
-  <div id="modal" class="modal-backdrop hidden">
-    <div class="modal">
-      <div class="modal-head">
-        <div class="modal-title">添加服务器节点</div>
-        <button id="btn-close-modal" class="modal-close">&times;</button>
-      </div>
-      <div class="modal-body">
-        <div>
-          <label>IP 地址</label>
-          <input id="modal-ip" placeholder="如 192.168.1.100" />
+          </section>
         </div>
-        <div>
-          <label>端口</label>
-          <input id="modal-port" type="number" value="7777" />
+
+        <!-- View 2: Algorithm -->
+        <div id="view-algo" class="view" v-show="view === 'algo'">
+          <section class="section">
+            <div class="section-header">
+              <div class="section-title">算法运行控制台</div>
+              <div style="font-size: 13px; color: var(--muted);">配置参数并启动并行加速任务</div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 32px;">
+              <div>
+                <div class="form">
+                  <div class="form-group">
+                    <label>模型算法</label>
+                    <select id="run-algo"></select>
+                  </div>
+                  <div class="form-group">
+                    <label>数据集</label>
+                    <select id="run-dataset"></select>
+                  </div>
+                  <div class="form-group">
+                    <label>目标服务器</label>
+                    <select id="run-server"></select>
+                  </div>
+                  <div class="form-group">
+                    <label>加速模式 (Acceleration)</label>
+                    <select id="run-mode">
+                      <option value="AUTO">AUTO (智能选择)</option>
+                      <option value="CPU">CPU Only</option>
+                      <option value="S">Single GPU</option>
+                      <option value="SM">Single GPU Mixed</option>
+                      <option value="M">Multi-GPU (Parallel)</option>
+                      <option value="MNM">MNM (Distributed)</option>
+                    </select>
+                  </div>
+
+                  <div id="run-gpu-single-wrap" class="hidden">
+                    <label>显卡选择</label>
+                    <select id="run-gpu-single"></select>
+                  </div>
+                  <div id="run-gpu-multi-wrap" class="hidden">
+                    <label>显卡选择 (多选)</label>
+                    <div id="run-gpu-multi"
+                      style="display:grid;gap:8px;padding: 12px; background: #f8fafc; border-radius: 8px;"></div>
+                  </div>
+
+                  <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;">
+                    <div>
+                      <label>迭代次数</label>
+                      <input id="run-iters" type="number" min="1" value="20" />
+                    </div>
+                    <div>
+                      <label>交叉率 (pc)</label>
+                      <input id="run-pc" type="number" min="0" max="1" step="0.01" value="0.80" />
+                    </div>
+                    <div>
+                      <label>变异率 (pm)</label>
+                      <input id="run-pm" type="number" min="0" max="1" step="0.01" value="0.20" />
+                    </div>
+                  </div>
+
+                  <div style="display: flex; gap: 12px; margin-top: 12px;">
+                    <button id="btn-run" class="btn btn-primary"
+                      style="flex: 2; height: 44px; justify-content: center;">提交运行任务</button>
+                    <button id="btn-run-stop" class="btn"
+                      style="flex: 1; background:#fee2e2;color:#ef4444;border-color:#fecaca; justify-content: center;"
+                      disabled>停止</button>
+                  </div>
+                </div>
+
+                <div style="margin-top: 32px; display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                  <div class="stat">
+                    <div class="stat-label">运行状态</div>
+                    <div id="run-state" class="stat-value">Idle</div>
+                  </div>
+                  <div class="stat">
+                    <div class="stat-label">任务 ID</div>
+                    <div id="run-taskid" class="stat-value">-</div>
+                  </div>
+                  <div class="stat">
+                    <div class="stat-label">最佳适应度</div>
+                    <div id="run-best" class="stat-value">-</div>
+                  </div>
+                  <div class="stat" style="grid-column: span 2;">
+                    <div class="stat-label">实时进度</div>
+                    <div style="display: flex; align-items: center; gap: 12px; margin-top: 8px;">
+                      <div style="flex: 1; height: 8px; background: #f1f5f9; border-radius: 4px; overflow: hidden;">
+                        <div id="run-progress"
+                          style="width: 0%; height: 100%; background: var(--blue-600); transition: width 0.3s;"></div>
+                      </div>
+                      <span id="run-progress-text" style="font-size: 14px; font-weight: 700;">0%</span>
+                    </div>
+                  </div>
+                  <div class="stat" style="grid-column: span 2;">
+                    <div class="stat-label">网络延迟/通信</div>
+                    <div style="display: flex; flex-direction: column; gap: 4px;">
+                      <div id="run-comm" class="stat-value">-</div>
+                      <div id="run-comm-detail" style="font-size: 11px; color: var(--muted); word-break: break-all;">
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div
+                  style="margin-top: 24px; padding: 16px; border: 1px solid var(--panel-border); border-radius: 12px; background: #f8fafc;">
+                  <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+                    <div style="font-size: 13px; font-weight: 700; color: var(--text);">资源绑定状态</div>
+                    <div style="display: flex; gap: 8px;">
+                      <button id="btn-run-lock-refresh" class="btn btn-secondary"
+                        style="padding: 4px 8px; font-size: 11px;">刷新</button>
+                      <button id="btn-run-lock-release" class="btn"
+                        style="padding: 4px 8px; font-size: 11px; background:#fee2e2; color:#ef4444; border-color:#fecaca;">释放</button>
+                    </div>
+                  </div>
+                  <div id="run-lock-status"
+                    style="font-size: 13px; font-weight: 600; color: var(--blue-600); margin-bottom: 4px;">未锁定</div>
+                  <div id="run-lock-detail" style="font-size: 11px; color: var(--muted); line-height: 1.4;">未锁定时将默认使用
+                    CPU 运行</div>
+                </div>
+              </div>
+
+              <div>
+                <div class="log-head">
+                  <div class="log-title">实时执行日志</div>
+                  <button id="btn-run-clear" class="log-clear">清空</button>
+                </div>
+                <div id="run-log" class="log-box" style="height: 320px; overflow-y: auto;">等待提交任务...</div>
+
+                <div style="margin-top: 32px;">
+                  <div class="section-title" style="margin-bottom: 12px;">适应度收敛曲线</div>
+                  <div id="run-chart" class="ga-panel"
+                    style="height: 300px; background: #ffffff; border: 1px solid var(--panel-border); border-radius: 8px;">
+                    等待数据分析...</div>
+                </div>
+              </div>
+            </div>
+          </section>
         </div>
-        <div class="row-2">
-          <div>
-            <label>用户名</label>
-            <input id="modal-user" placeholder="可选" />
+
+        <!-- View 3: Config -->
+        <div id="view-config" class="view" v-show="view === 'config'">
+          <section class="section">
+            <div class="section-header">
+              <div class="section-title">集群节点管理</div>
+              <button id="btn-open-modal" class="btn btn-primary">+ 添加计算节点</button>
+            </div>
+            <p style="color: var(--muted); font-size: 14px; margin-bottom: 24px;">管理本地及远程服务器资源，配置节点连接参数。</p>
+
+            <div id="server-list-container" class="panel-border"
+              style="overflow-x: auto; border-radius: 12px; background: #fff;">
+              <table class="grid-table" style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                <thead>
+                  <tr style="background: #f8fafc; border-bottom: 1px solid var(--panel-border);">
+                    <th
+                      style="padding: 12px 16px; text-align: left; font-weight: 600; color: var(--muted); width: 40px;">
+                      #</th>
+                    <th style="padding: 12px 16px; text-align: left; font-weight: 600; color: var(--muted);">服务器名称 / ID
+                    </th>
+                    <th style="padding: 12px 16px; text-align: left; font-weight: 600; color: var(--muted);">IP 地址</th>
+                    <th style="padding: 12px 16px; text-align: left; font-weight: 600; color: var(--muted);">类型</th>
+                    <th style="padding: 12px 16px; text-align: right; font-weight: 600; color: var(--muted);">操作</th>
+                  </tr>
+                </thead>
+                <tbody id="config-server-list">
+                  <!-- Dynamically populated -->
+                  <tr>
+                    <td colspan="5" style="padding: 40px; text-align: center; color: var(--muted);">正在加载节点列表...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+
+        <!-- View 4: History -->
+        <div id="view-history" class="view" v-show="view === 'history'">
+          <section class="section">
+            <div class="section-header">
+              <div class="section-title">任务历史归档</div>
+              <div style="display: flex; gap: 12px; align-items: center;">
+                <label
+                  style="display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); cursor: pointer;">
+                  <input type="checkbox" id="history-select-all" />
+                  <span>全选</span>
+                </label>
+                <div style="width: 1px; height: 16px; background: var(--panel-border);"></div>
+                <button id="btn-history-delete" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px;"
+                  disabled>删除选中</button>
+                <button id="btn-history-sort" class="btn btn-secondary" style="padding: 4px 12px; font-size: 13px;">时间倒序
+                  ▼</button>
+                <button id="btn-history-clear" class="btn btn-secondary"
+                  style="padding: 4px 12px; font-size: 13px;">全部清空</button>
+              </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 32px;">
+              <div>
+                <div id="history-list" class="history-list"
+                  style="display: grid; gap: 12px; height: 600px; overflow-y: auto; padding-right: 8px;"></div>
+              </div>
+              <div>
+                <div class="log-title" style="margin-bottom: 12px;">历史执行记录及日志详情</div>
+                <div id="history-detail" class="log-box" style="height: 600px; overflow-y: auto;">请从左侧选择一条执行记录。</div>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <!-- Modals (Simplified Styles applied via app.css) -->
+    <!-- Add Server Modal -->
+    <div id="modal" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-head">
+          <div class="modal-title">添加服务器节点</div>
+          <button id="btn-close-modal" class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label>IP 地址</label>
+            <input id="modal-ip" placeholder="e.g. 192.168.1.100" />
           </div>
-          <div>
-            <label>密码</label>
-            <input id="modal-pass" type="password" placeholder="可选" />
+          <div class="form-group">
+            <label>端口 (Port)</label>
+            <input id="modal-port" type="number" value="7777" />
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div class="form-group">
+              <label>用户名</label>
+              <input id="modal-user" />
+            </div>
+            <div class="form-group">
+              <label>密码</label>
+              <input id="modal-pass" type="password" />
+            </div>
           </div>
         </div>
-      </div>
-      <div class="modal-foot">
-        <button id="btn-cancel" class="btn btn-secondary">取消</button>
-        <button id="btn-add" class="btn btn-primary">添加</button>
+        <div class="modal-foot">
+          <button id="btn-cancel" class="btn btn-secondary">取消</button>
+          <button id="btn-add" class="btn btn-primary">确认添加</button>
+        </div>
       </div>
     </div>
-  </div>
 
-  <!-- Eval Modal -->
-  <div id="eval-modal" class="modal-backdrop hidden">
-    <div class="modal gapa-modal">
-      <div class="modal-head">
-        <div class="modal-header-top">
-          <div class="modal-title">服务器测试评估</div>
-          <button id="btn-eval-close" class="modal-close" aria-label="Close">
-            <svg width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <div class="stepper">
-          <div class="step-item active" data-target="1">
-            <div class="step-circle">1</div>
-            <div class="step-label">模式</div>
+    <!-- Eval Modal (Professional Wizard style) -->
+    <div id="eval-modal" class="modal-backdrop hidden">
+      <div class="modal gapa-modal">
+        <div class="modal-head" style="flex-direction: column; align-items: stretch;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
+            <div class="modal-title">服务器性能测试评估</div>
+            <button id="btn-eval-close" class="modal-close">&times;</button>
           </div>
-          <div class="step-line"></div>
-          <div class="step-item" data-target="2">
-            <div class="step-circle">2</div>
-            <div class="step-label">节点</div>
-          </div>
-          <div class="step-line"></div>
-          <div class="step-item" data-target="3">
-            <div class="step-circle">3</div>
-            <div class="step-label">分析</div>
+          <div class="stepper">
+            <div class="step-item active" data-target="1">
+              <div class="step-circle">1</div>
+              <div class="step-label">评估模式</div>
+            </div>
+            <div class="step-line"></div>
+            <div class="step-item" data-target="2">
+              <div class="step-circle">2</div>
+              <div class="step-label">节点配置</div>
+            </div>
+            <div class="step-line"></div>
+            <div class="step-item" data-target="3">
+              <div class="step-circle">3</div>
+              <div class="step-label">分析执行</div>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div class="modal-body">
-        <div class="eval-step" data-step="1">
-          <div class="section-title">请选择评估模式</div>
-          <div class="eval-mode-grid">
-            <label class="eval-card-label">
-              <input type="radio" name="eval-mode" value="single" checked class="hidden-radio" />
-              <div class="eval-mode-card">
-                <div class="card-icon">🖥️</div>
-                <div class="card-content">
-                  <div class="card-title">单服务器模式</div>
-                  <div class="card-desc">针对单台服务器进行深度性能评估与资源监控。</div>
+        <div class="modal-body">
+          <!-- Step 1 -->
+          <div class="eval-step" data-step="1">
+            <p style="margin-bottom: 20px;">请选择适合场景的评估方案：</p>
+            <div class="eval-mode-grid">
+              <label>
+                <input type="radio" name="eval-mode" value="single" checked class="hidden-radio" />
+                <div class="eval-mode-card">
+                  <div style="font-size: 24px;">🎯</div>
+                  <div>
+                    <div class="card-title">单服务器性能评估</div>
+                    <div class="card-desc">针对单台机器进行 Dry-Run 预热及资源静态分析。</div>
+                  </div>
                 </div>
-                <div class="card-check"></div>
-              </div>
-            </label>
-            <label class="eval-card-label">
-              <input type="radio" name="eval-mode" value="multi" class="hidden-radio" />
-              <div class="eval-mode-card">
-                <div class="card-icon">☁️</div>
-                <div class="card-content">
-                  <div class="card-title">分布式/集群模式</div>
-                  <div class="card-desc">多台服务器横向对比，或分布式任务加速评估。</div>
+              </label>
+              <label>
+                <input type="radio" name="eval-mode" value="multi" class="hidden-radio" />
+                <div class="eval-mode-card">
+                  <div style="font-size: 24px;">🌐</div>
+                  <div>
+                    <div class="card-title">集群分布式策略评估</div>
+                    <div class="card-desc">对比多台服务器的延迟与吞吐，自动推荐最优加速方案。</div>
+                  </div>
                 </div>
-                <div class="card-check"></div>
-              </div>
-            </label>
-          </div>
-          <div class="eval-step-actions right-align">
-            <button id="eval-next-1" class="btn btn-primary btn-arrow">下一步 →</button>
-          </div>
-        </div>
-
-        <div class="eval-step hidden" data-step="2">
-          <div class="section-title">配置目标服务器</div>
-          <div id="eval-single-wrap" class="form-group">
-            <label class="form-label">目标节点</label>
-            <select id="select-server" class="form-select">
-              <option value="local">本机 (Localhost)</option>
-            </select>
-          </div>
-
-          <div id="eval-multi-wrap" class="hidden form-group">
-            <div class="toggle-card">
-              <div class="toggle-info">
-                <div class="toggle-title">启用多机分布式加速</div>
-                <div class="toggle-desc">勾选后可选择多台服务器进行联合计算</div>
-              </div>
-              <label class="switch">
-                <input type="checkbox" id="select-server-multi" />
-                <span class="slider round"></span>
               </label>
             </div>
-
-            <div id="multi-options-container" class="hidden fade-in-up">
-              <label class="form-label" style="margin-top:15px;">分布式模式</label>
-              <select id="select-server-multi-mode" class="form-select">
-                <option value="distributed">多机分布式加速（资源汇总）</option>
-                <option value="compare">多台服务器对比</option>
-              </select>
-
-              <label class="form-label" style="margin-top:15px;">服务器列表</label>
-              <div id="select-server-multi-list" class="server-list-grid"></div>
+            <div style="text-align: right; margin-top: 24px;">
+              <button id="eval-next-1" class="btn btn-primary">下一步</button>
             </div>
           </div>
 
-          <div class="eval-step-actions">
-            <button id="eval-prev-2" class="btn btn-secondary">返回</button>
-            <button id="eval-next-2" class="btn btn-primary btn-arrow">下一步 →</button>
-          </div>
-        </div>
+          <!-- Step 2 -->
+          <div class="eval-step hidden" data-step="2">
+            <!-- Single Server Mode -->
+            <div id="eval-single-wrap">
+              <div class="eval-section">
+                <div class="eval-section-header">
+                  <div class="eval-section-icon">🎯</div>
+                  <div>
+                    <div class="eval-section-title">选择目标服务器</div>
+                    <div class="eval-section-desc">选择要进行性能评估的服务器</div>
+                  </div>
+                </div>
+                <select id="select-server" class="form-select eval-server-select"></select>
+              </div>
+            </div>
 
-        <div class="eval-step hidden" data-step="3">
-          <div class="split-layout">
-            <div class="left-panel">
-              <div class="section-title">参数配置</div>
+            <!-- Multi Server Mode -->
+            <div id="eval-multi-wrap" class="hidden">
+              <div class="eval-section eval-section-cluster">
+                <div class="eval-section-header">
+                  <div class="eval-section-icon">🌐</div>
+                  <div>
+                    <div class="eval-section-title">集群分布式评估配置</div>
+                    <div class="eval-section-desc">配置多服务器性能评估参数</div>
+                  </div>
+                </div>
+
+                <!-- Toggle for distributed analysis -->
+                <div class="eval-toggle-row">
+                  <div class="eval-toggle-info">
+                    <span class="eval-toggle-label">启用分布式汇总分析</span>
+                    <span class="eval-toggle-hint">聚合多节点资源进行综合评估</span>
+                  </div>
+                  <label class="eval-toggle">
+                    <input type="checkbox" id="select-server-multi" />
+                    <span class="eval-toggle-slider"></span>
+                  </label>
+                </div>
+
+                <!-- Multi options container -->
+                <div id="multi-options-container" class="hidden eval-multi-options">
+                  <div class="eval-option-group">
+                    <label class="eval-option-label">评估目的</label>
+                    <div class="eval-purpose-cards">
+                      <label class="eval-purpose-card">
+                        <input type="radio" name="eval-purpose" value="distributed" checked />
+                        <div class="eval-purpose-content">
+                          <span class="eval-purpose-icon">⚖️</span>
+                          <span class="eval-purpose-title">资源汇总与负载均衡</span>
+                        </div>
+                      </label>
+                      <label class="eval-purpose-card">
+                        <input type="radio" name="eval-purpose" value="compare" />
+                        <div class="eval-purpose-content">
+                          <span class="eval-purpose-icon">📊</span>
+                          <span class="eval-purpose-title">服务器间性能对比</span>
+                        </div>
+                      </label>
+                    </div>
+                    <select id="select-server-multi-mode" class="form-select hidden">
+                      <option value="distributed">资源汇总与负载均衡建议</option>
+                      <option value="compare">服务器间性能对比</option>
+                    </select>
+                  </div>
+
+                  <div class="eval-option-group">
+                    <label class="eval-option-label">
+                      <span>选择参与评估的节点</span>
+                      <span class="eval-node-count" id="eval-node-count">0 / 0 已选</span>
+                    </label>
+                    <div id="select-server-multi-list" class="eval-node-list"></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="eval-step-actions">
+              <button id="eval-prev-2" class="btn btn-secondary">
+                <span>←</span> 上一步
+              </button>
+              <button id="eval-next-2" class="btn btn-primary">
+                下一步 <span>→</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Step 3 -->
+          <div class="eval-step hidden" data-step="3" style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+            <div>
               <div class="form-group">
-                <label class="form-label">算法模型</label>
+                <label>算法配置</label>
                 <select id="select-algo" class="form-select">
-                  <option value="monitor" data-kind="monitor">仅监控资源</option>
+                  <option value="monitor" data-kind="monitor">实时监控 (无负载测试)</option>
                 </select>
               </div>
               <div class="form-group">
-                <label class="form-label">测试数据集</label>
+                <label>数据集</label>
                 <select id="select-dataset" class="form-select"></select>
               </div>
               <div id="warmup-wrap" class="hidden form-group">
-                <label class="form-label">Warm up (预热轮次)</label>
-                <input id="input-warmup" class="form-input" type="number" min="0" value="2" />
+                <label>预热轮次 (Warmup)</label>
+                <input id="input-warmup" type="number" min="0" value="2" />
               </div>
-              <div class="form-group">
-                <label class="form-label">评估参数</label>
-                <div style="display:grid;gap:8px;">
-                  <div class="row-2">
-                    <div>
-                      <input id="input-tpe-trials" class="form-input" type="number" min="1" value="6" placeholder="TPE Trials" />
-                      <div class="form-hint">6 = TPE 采样次数（越大越稳，越慢）</div>
-                    </div>
-                    <div>
-                      <input id="input-tpe-warmup" class="form-input" type="number" min="1" value="1" placeholder="TPE Warmup" />
-                      <div class="form-hint">1 = 每次评估的预热迭代次数</div>
-                    </div>
-                  </div>
-                  <div class="row-2">
-                    <div>
-                      <input id="input-gpu-busy" class="form-input" type="number" min="0" max="100" value="60" placeholder="GPU 忙碌阈值(%)" />
-                      <div class="form-hint">60 = GPU 利用率高于 60% 将被过滤</div>
-                    </div>
-                    <div>
-                      <input id="input-gpu-free" class="form-input" type="number" min="0" value="1024" placeholder="最小空闲显存(MB)" />
-                      <div class="form-hint">1024 = 低于 1024MB 空闲显存将被过滤</div>
-                    </div>
-                  </div>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                <div class="form-group">
+                  <label>TPE 采样数</label>
+                  <input id="input-tpe-trials" type="number" min="1" value="6" />
+                </div>
+                <div class="form-group">
+                  <label>TPE 预热轮次</label>
+                  <input id="input-tpe-warmup" type="number" min="1" value="1" />
                 </div>
               </div>
-
-              <div class="action-buttons">
-                <button id="btn-analyze" class="btn btn-primary btn-block btn-lg">
-                  <span class="icon">🚀</span> 开始分析
-                </button>
-                <button id="btn-analyze-lock" class="btn btn-outline btn-block" disabled>
-                  设置为资源锁定策略
-                </button>
+              <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                <div class="form-group">
+                  <label>GPU 负载阈值 (%)</label>
+                  <input id="input-gpu-busy" type="number" min="0" max="100" value="60" />
+                </div>
+                <div class="form-group">
+                  <label>最小可用显存 (MB)</label>
+                  <input id="input-gpu-free" type="number" min="0" value="1024" />
+                </div>
               </div>
-              <div id="eval-summary" class="eval-summary">
-                <div class="summary-title">当前配置</div>
-                <div class="summary-item">模式：<span id="summary-mode">-</span></div>
-                <div class="summary-item">服务器：<span id="summary-server">-</span></div>
-                <div class="summary-item">算法：<span id="summary-algo">-</span></div>
-                <div class="summary-item">数据集：<span id="summary-dataset">-</span></div>
-                <div class="summary-item">Warmup：<span id="summary-warmup">-</span></div>
+              <button id="btn-analyze" class="btn btn-primary"
+                style="width: 100%; height: 44px; margin-top: 16px;">开始评估分析</button>
+              <button id="btn-analyze-lock" class="btn btn-secondary" style="width: 100%; margin-top: 8px;"
+                disabled>采纳评估策略</button>
+
+              <div id="eval-summary"
+                style="margin-top: 24px; padding: 16px; background: #f8fafc; border-radius: 8px; font-size: 13px;">
+                <div style="font-weight: 700; margin-bottom: 8px;">当前任务摘要</div>
+                <div id="summary-mode">模式：-</div>
+                <div id="summary-server">节点：-</div>
+                <div id="summary-algo">算法：-</div>
+                <div id="summary-dataset">数据集：-</div>
+                <div id="summary-warmup">预热轮次：-</div>
               </div>
             </div>
-
-            <div class="right-panel">
-              <div class="terminal-window">
-                <div class="terminal-header">
-                  <div class="dots">
-                    <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
-                  </div>
-                  <div class="terminal-title">System Output</div>
-                  <button id="btn-clear-log" class="btn-text">Clear</button>
-                </div>
-                <div id="log-box" class="terminal-body">
-                  <div class="terminal-line muted">&gt; 等待操作指令...</div>
-                </div>
+            <div>
+              <div class="log-head">
+                <div class="log-title">评估日志输出</div>
+                <button id="btn-clear-log" class="log-clear">清空</button>
               </div>
-
-              <div class="ga-status-wrap">
-                <div id="ga-panel" class="ga-panel">
-                  <span class="text-muted">等待数据流...</span>
-                </div>
+              <div id="log-box" class="log-box" style="height: 300px; font-size: 12px; margin-bottom: 24px;">等待开始...
               </div>
+              <div id="ga-panel" class="ga-panel"
+                style="height: 180px; border: 1px solid var(--panel-border); border-radius: 8px;"></div>
             </div>
-          </div>
-
-          <div class="eval-step-actions">
-            <button id="eval-prev-3" class="btn btn-secondary">返回</button>
           </div>
         </div>
       </div>
     </div>
-  </div>
 
-  <!-- Resource Lock Modal -->
-  <div id="lock-modal" class="modal-backdrop hidden">
-    <div class="modal">
-      <div class="modal-head">
-        <div class="modal-title">资源锁定</div>
-        <button id="lock-close" class="modal-close">&times;</button>
-      </div>
-      <div class="modal-body">
-        <div>
-          <label>锁定模式</label>
-          <select id="lock-mode">
-            <option value="auto">自动锁定（推荐）</option>
-            <option value="manual">手动锁定</option>
-          </select>
+    <!-- Resource Lock Detail Modal -->
+    <div id="lock-modal" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-head">
+          <div class="modal-title">资源锁定配置</div>
+          <button id="lock-close" class="modal-close">&times;</button>
         </div>
-        <div>
-          <label>锁定范围</label>
-          <select id="lock-scope"></select>
-        </div>
-        <div class="row-2">
-          <div>
-            <label>锁定时长（秒）</label>
-            <input id="lock-duration" type="number" min="10" value="600" />
+        <div class="modal-body">
+          <div class="form-group">
+            <label>锁定策略</label>
+            <select id="lock-mode">
+              <option value="auto">自动选择 (推荐)</option>
+              <option value="manual">手动指定</option>
+            </select>
           </div>
-          <div id="lock-warmup-wrap">
-            <label>Warm up 次数</label>
-            <input id="lock-warmup" type="number" min="0" value="2" />
+          <div class="form-group">
+            <label>锁定服务器范围</label>
+            <select id="lock-scope"></select>
+          </div>
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+            <div class="form-group">
+              <label>锁定时长 (s)</label>
+              <input id="lock-duration" type="number" min="10" value="600" />
+            </div>
+            <div id="lock-warmup-wrap" class="form-group hidden">
+              <label>手动预热轮次</label>
+              <input id="lock-warmup" type="number" min="0" value="2" />
+            </div>
+          </div>
+          <div id="lock-manual-wrap" class="hidden"
+            style="padding: 12px; background: #f8fafc; border-radius: 8px; margin-top: 12px;">
+            <label>手动设备绑定</label>
+            <div id="lock-server-list" style="display:grid;gap:8px;"></div>
+          </div>
+          <div class="form-group" style="margin-top: 16px;">
+            <label>显存预留 (MB)</label>
+            <input id="lock-mem" type="number" min="0" value="1024" />
           </div>
         </div>
-        <div id="lock-manual-wrap" class="hidden">
-          <label>选择显卡（手动）</label>
-          <div id="lock-server-list" style="display:grid;gap:12px;"></div>
-          <div style="font-size:11px;color:var(--muted);margin-top:4px;">
-            手动锁定支持选择多个服务器，并分别选择显卡。
-          </div>
+        <div class="modal-foot">
+          <button id="lock-release" class="btn btn-secondary">强制释放</button>
+          <button id="lock-apply" class="btn btn-primary">应用锁定</button>
         </div>
-        <div>
-          <label>显存占用（MB）</label>
-          <input id="lock-mem" type="number" min="0" value="1024" />
-        </div>
-      </div>
-      <div class="modal-foot">
-        <button id="lock-release" class="btn btn-secondary">释放锁定</button>
-        <button id="lock-apply" class="btn btn-primary">开始锁定</button>
       </div>
     </div>
-  </div>
 
   </div>
   <script src="/static/assets/app.js"></script>
 </body>
+
 </html>

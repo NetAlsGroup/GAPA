@@ -7,6 +7,7 @@ import os
 import signal
 from pathlib import Path
 import uuid
+from datetime import datetime
 
 from flask import Flask, jsonify, request, send_from_directory
 
@@ -19,10 +20,18 @@ from server import (
     get_all_resources,
     load_server_config,
     load_server_list,
+    db_manager,
+    state_manager,
 )
 from server.resource_lock import LOCK_MANAGER
 from server.agent_state import TaskState, start_consumer
 from server.ga_worker import ga_worker, select_run_mode
+from server.api_schemas import (
+    ErrorResponse,
+    HTTPStatus,
+    make_error_response,
+    make_paginated_response,
+)
 
 import threading
 import time
@@ -34,20 +43,14 @@ STRATEGY_PROGRESS_LOCK = threading.Lock()
 
 
 def _load_history() -> list[dict]:
-    try:
-        if not HISTORY_FILE.exists():
-            return []
-        return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return []
+    return db_manager.get_history()
 
 
 def _save_history(items: list[dict]) -> None:
-    try:
-        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        HISTORY_FILE.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    # This is now handled by db_manager internally or via add_history
+    # Providing a compatibility stub for any leftover calls
+    for item in items:
+        db_manager.add_history(item)
 
 
 def _set_strategy_progress(progress_id: str, *, current: int, total: int, status: str, server_id: str | None = None) -> None:
@@ -123,17 +126,31 @@ def _ga_entry(
     algorithm: str,
     dataset: str,
     iterations: int,
-    crossover_rate: float,
-    mutate_rate: float,
+    pc: float,
+    pm: float,
     selected: dict,
-    q: any,
-) -> None:
-    if os.name == "posix":
-        try:
-            os.setsid()
-        except Exception:
-            pass
-    ga_worker(task_id, algorithm, dataset, iterations, crossover_rate, mutate_rate, selected, q)
+    q: mp.Queue,
+    resume_id: str | None = None,
+):
+    """Function to run ga_worker in a subprocess; handles result persistence."""
+    try:
+        resume_state = None
+        if resume_id:
+            resume_state = db_manager.get_ga_state(resume_id)
+
+        ga_worker(
+            task_id,
+            algorithm,
+            dataset,
+            iterations,
+            pc,
+            pm,
+            selected,
+            q,
+            resume_state=resume_state,
+        )
+    except Exception as exc:
+        q.put({"type": "state", "state": "error", "error": str(exc)})
 
 
 def _run_ga_warmup_local(payload: dict) -> dict:
@@ -228,7 +245,7 @@ DATASETS_MANIFEST_PATH = Path(__file__).resolve().parent / "datasets.json"
 def cors(resp):
     resp.headers["Access-Control-Allow-Origin"] = "*"
     resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+    resp.headers["Access-Control-Allow-Methods"] = "GET,POST,DELETE,OPTIONS"
     return resp
 
 
@@ -237,45 +254,135 @@ def index():
     return send_from_directory(app.static_folder, "dashboard.html")
 
 
-@app.route("/api/all_resources")
-def api_all_resources():
-    """前端每2秒调用此接口获取所有机器最新状态"""
-    data = get_all_resources(request.remote_addr)
-    return jsonify(data)
+# ============================================================================
+# Global Error Handler
+# ============================================================================
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    """Global exception handler for standardized error responses."""
+    from werkzeug.exceptions import HTTPException
+    
+    if isinstance(e, HTTPException):
+        return jsonify(make_error_response(
+            e.name.replace(" ", ""),
+            e.description or str(e),
+            request.path
+        )), e.code
+    
+    # Log unexpected errors
+    import traceback
+    traceback.print_exc()
+    
+    return jsonify(make_error_response(
+        "InternalServerError",
+        str(e),
+        request.path
+    )), HTTPStatus.INTERNAL_SERVER_ERROR
 
 
-@app.route("/api/resources")
-def api_resources():
-    return jsonify(current_resource_snapshot())
+@app.errorhandler(404)
+def handle_not_found(e):
+    return jsonify(make_error_response(
+        "NotFound",
+        f"Resource not found: {request.path}",
+        request.path
+    )), HTTPStatus.NOT_FOUND
 
 
-@app.route("/api/servers", methods=["GET"])
-def api_servers():
+# ============================================================================
+# V1 API - Core Resource Endpoints
+# ============================================================================
+
+@app.route("/api/v1/resources", methods=["GET"])
+def api_v1_resources():
+    """Get current resource snapshot for local server."""
+    try:
+        return jsonify(current_resource_snapshot())
+    except Exception as exc:
+        return jsonify(make_error_response(
+            "ResourceError",
+            f"Failed to fetch resources: {exc}",
+            request.path
+        )), HTTPStatus.INTERNAL_SERVER_ERROR
+
+
+@app.route("/api/v1/resources/all", methods=["GET"])
+def api_v1_all_resources():
+    """Get resource snapshots from all registered servers."""
+    return jsonify(state_manager.get_snapshots())
+
+
+@app.route("/api/v1/servers", methods=["GET"])
+def api_v1_servers():
+    """List all registered compute servers."""
     return jsonify(load_server_config(mask_password=True))
 
 
-@app.route("/api/algorithms", methods=["GET"])
-def api_algorithms():
-    """Return GA algorithm manifest for the UI."""
+@app.route("/api/v1/algorithms", methods=["GET"])
+def api_v1_algorithms():
+    """List available GA algorithms."""
     if not ALGO_MANIFEST_PATH.exists():
         return jsonify([])
     try:
         raw = json.loads(ALGO_MANIFEST_PATH.read_text(encoding="utf-8"))
         return jsonify(raw if isinstance(raw, list) else [])
-    except Exception:
-        return jsonify([])
+    except Exception as exc:
+        return jsonify(make_error_response(
+            "ManifestError",
+            f"Failed to load algorithms: {exc}",
+            request.path
+        )), HTTPStatus.INTERNAL_SERVER_ERROR
 
 
-@app.route("/api/datasets", methods=["GET"])
-def api_datasets():
-    """Return datasets manifest for the UI."""
+@app.route("/api/v1/datasets", methods=["GET"])
+def api_v1_datasets():
+    """List available datasets."""
     if not DATASETS_MANIFEST_PATH.exists():
         return jsonify({})
     try:
         raw = json.loads(DATASETS_MANIFEST_PATH.read_text(encoding="utf-8"))
         return jsonify(raw if isinstance(raw, dict) else {})
-    except Exception:
-        return jsonify({})
+    except Exception as exc:
+        return jsonify(make_error_response(
+            "ManifestError",
+            f"Failed to load datasets: {exc}",
+            request.path
+        )), HTTPStatus.INTERNAL_SERVER_ERROR
+
+
+# ============================================================================
+# Legacy API Routes (for backward compatibility)
+# ============================================================================
+
+@app.route("/api/all_resources")
+def api_all_resources():
+    """Legacy: Returns snapshots from the background state_manager."""
+    return api_v1_all_resources()
+
+
+@app.route("/api/resources")
+def api_resources():
+    """Legacy: Get local resource snapshot."""
+    return api_v1_resources()
+
+
+@app.route("/api/servers", methods=["GET"])
+def api_servers():
+    """Legacy: List servers."""
+    return api_v1_servers()
+
+
+@app.route("/api/algorithms", methods=["GET"])
+def api_algorithms():
+    """Legacy: List algorithms."""
+    return api_v1_algorithms()
+
+
+@app.route("/api/datasets", methods=["GET"])
+def api_datasets():
+    """Legacy: List datasets."""
+    return api_v1_datasets()
 
 
 @app.route("/api/strategy_plan", methods=["POST"])
@@ -626,47 +733,119 @@ def api_logs():
 
 @app.route("/api/history", methods=["GET", "POST", "DELETE"])
 def api_history():
-    if request.method == "GET":
-        with HISTORY_LOCK:
-            return jsonify(_load_history())
+    """Legacy history endpoint - redirects to V1 behavior."""
+    return api_v1_history()
 
-    if request.method == "POST":
-        payload = request.get_json(silent=True) or {}
-        if not isinstance(payload, dict):
-            return jsonify({"error": "invalid payload"}), 400
-        with HISTORY_LOCK:
-            items = _load_history()
-            batch = payload.get("items")
-            if isinstance(batch, list) and batch:
-                normalized = []
-                for item in batch:
-                    if not isinstance(item, dict):
-                        continue
-                    item.setdefault("id", str(uuid.uuid4()))
-                    normalized.append(item)
-                if normalized:
-                    items = normalized + items
-            else:
-                payload.setdefault("id", str(uuid.uuid4()))
-                items.insert(0, payload)
-            items = items[:200]
-            _save_history(items)
-        return jsonify({"items": items, "id": payload.get("id")})
 
+# ============================================================================
+# V1 API - Standardized RESTful Endpoints
+# ============================================================================
+
+@app.route("/api/v1/history", methods=["GET"])
+def api_v1_history_list():
+    """List history entries with pagination.
+    
+    Query params:
+        page: Page number (1-indexed, default: 1)
+        page_size: Items per page (default: 20, max: 100)
+    
+    Returns:
+        Paginated response with items, total, page, page_size, pages
+    """
+    try:
+        page = max(1, int(request.args.get("page", 1)))
+        page_size = min(100, max(1, int(request.args.get("page_size", 20))))
+    except ValueError:
+        return jsonify(make_error_response(
+            "ValidationError",
+            "Invalid pagination parameters",
+            request.path
+        )), HTTPStatus.BAD_REQUEST
+
+    total = db_manager.count_history()
+    offset = (page - 1) * page_size
+    order = request.args.get("order", "DESC")
+    items = db_manager.get_history(limit=page_size, offset=offset, order=order)
+    
+    return jsonify(make_paginated_response(items, total, page, page_size))
+
+
+@app.route("/api/v1/history", methods=["POST"])
+def api_v1_history_create():
+    """Create new history entry.
+    
+    Request body:
+        Single history item dict, or {"items": [...]} for batch create
+    
+    Returns:
+        201 Created with created item(s)
+    """
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify(make_error_response(
+            "ValidationError",
+            "Request body must be a JSON object",
+            request.path
+        )), HTTPStatus.BAD_REQUEST
+    
+    batch = payload.get("items")
+    if isinstance(batch, list) and batch:
+        for item in batch:
+            if isinstance(item, dict):
+                db_manager.add_history(item)
+        return jsonify({"status": "created", "count": len(batch)}), HTTPStatus.CREATED
+    else:
+        db_manager.add_history(payload)
+        return jsonify({"status": "created", "item": payload}), HTTPStatus.CREATED
+
+
+@app.route("/api/v1/history/<history_id>", methods=["DELETE"])
+def api_v1_history_delete(history_id: str):
+    """Delete a specific history entry.
+    
+    Returns:
+        204 No Content on success
+    """
+    db_manager.delete_history([history_id])
+    return "", HTTPStatus.NO_CONTENT
+
+
+@app.route("/api/v1/history", methods=["DELETE"])
+def api_v1_history_batch_delete():
+    """Batch delete history entries.
+    
+    Request body:
+        {"ids": ["id1", "id2", ...]} - list of IDs to delete
+    
+    Returns:
+        200 OK with count of deleted items
+    """
     payload = request.get_json(silent=True) or {}
     ids = payload.get("ids") or []
-    if payload.get("all"):
-        with HISTORY_LOCK:
-            _save_history([])
-        return jsonify({"items": []})
+    
     if isinstance(ids, str):
         ids = [ids]
-    if not isinstance(ids, list) or not ids:
-        return jsonify({"error": "ids required"}), 400
-    with HISTORY_LOCK:
-        items = [it for it in _load_history() if it.get("id") not in set(ids)]
-        _save_history(items)
-    return jsonify({"items": items})
+    if not isinstance(ids, list):
+        return jsonify(make_error_response(
+            "ValidationError",
+            "ids must be a list of strings",
+            request.path
+        )), HTTPStatus.BAD_REQUEST
+    
+    if ids:
+        db_manager.delete_history(ids)
+    
+    return jsonify({"status": "deleted", "count": len(ids)})
+
+
+def api_v1_history():
+    """Internal handler for legacy /api/history compatibility."""
+    if request.method == "GET":
+        return api_v1_history_list()
+    if request.method == "POST":
+        return api_v1_history_create()
+    # DELETE
+    return api_v1_history_batch_delete()
 
 
 @app.route("/api/state")
@@ -702,6 +881,7 @@ def api_analysis_start():
             resp = session.post(
                 base_url.rstrip("/") + "/api/analysis/start",
                 json={
+                    "server_id": "local",  # Force local on remote agent to prevent proxy loop
                     "algorithm": payload.get("algorithm"),
                     "dataset": payload.get("dataset"),
                     "iterations": payload.get("iterations"),
@@ -709,7 +889,9 @@ def api_analysis_start():
                     "mutate_rate": payload.get("mutate_rate"),
                     "mode": payload.get("mode"),
                     "devices": payload.get("devices"),
+                    "remote_servers": payload.get("remote_servers") or payload.get("allowed_server_ids"),
                     "release_lock_on_finish": payload.get("release_lock_on_finish", True),
+                    "resume_id": payload.get("resume_id"),
                 },
                 timeout=(3.0, timeout_s),
             )
@@ -740,15 +922,19 @@ def api_analysis_start():
                 if LOCAL_TASK.state == "running":
                     return jsonify({"error": "A task is already running"}), 409
                 task_id = str(uuid.uuid4())
+                resume_id = payload.get("resume_id")
+                
                 LOCAL_TASK.reset_for_new_task(task_id)
                 LOCAL_TASK.release_lock_on_finish = release_lock_on_finish
                 LOCAL_TASK.append_log(f"[INFO] 运行模式: {selected.get('mode')} devices={selected.get('devices')}")
+                if resume_id:
+                    LOCAL_TASK.append_log(f"[INFO] 正在尝试从状态 {resume_id} 继续迭代...")
 
                 ctx = mp.get_context("spawn")
                 q = ctx.Queue()
                 proc = ctx.Process(
                     target=_ga_entry,
-                    args=(task_id, algorithm, dataset, iterations, pc, pm, selected, q),
+                    args=(task_id, algorithm, dataset, iterations, pc, pm, selected, q, resume_id),
                 )
                 LOCAL_TASK.queue = q
                 LOCAL_TASK.process = proc
@@ -783,7 +969,9 @@ def api_analysis_status():
         session.trust_env = False
         timeout_s = float(request.args.get("timeout_s") or 10)
         if base_url:
-            resp = session.get(base_url.rstrip("/") + "/api/analysis/status", timeout=(3.0, timeout_s))
+            # Append server_id=local to prevent proxy loop on the remote side
+            proxy_url = base_url.rstrip("/") + "/api/analysis/status?server_id=local"
+            resp = session.get(proxy_url, timeout=(3.0, timeout_s))
         else:
             with LOCAL_TASK.lock:
                 return jsonify(
@@ -824,7 +1012,11 @@ def api_analysis_stop():
         session.trust_env = False
         timeout_s = float(payload.get("timeout_s", 10) or 10)
         if base_url:
-            resp = session.post(base_url.rstrip("/") + "/api/analysis/stop", timeout=(3.0, timeout_s))
+            resp = session.post(
+                base_url.rstrip("/") + "/api/analysis/stop",
+                json={"server_id": "local"},  # Prevent proxy loop
+                timeout=(3.0, timeout_s)
+            )
             if resp.ok:
                 return jsonify(resp.json())
             try:
@@ -844,62 +1036,41 @@ def api_analysis_stop():
 
         # terminate outside lock
         try:
-            def kill_children(sig: int) -> None:
+            def kill_process_tree(pid: int, sig: int = signal.SIGTERM):
                 try:
-                    import psutil  # type: ignore
-                except Exception:
-                    return
-                try:
-                    parent = psutil.Process(pid) if pid else None
-                    if not parent:
-                        return
-                    for ch in parent.children(recursive=True):
+                    import psutil
+                    parent = psutil.Process(pid)
+                    children = parent.children(recursive=True)
+                    for child in children:
                         try:
-                            ch.send_signal(sig)
+                            child.send_signal(sig)
+                        except psutil.NoSuchProcess:
+                            pass
+                    parent.send_signal(sig)
+                except Exception:
+                    # Fallback if psutil fails or pid is gone
+                    if os.name == "posix":
+                        try:
+                            os.killpg(pid, sig)
+                        except Exception:
+                            try:
+                                os.kill(pid, sig)
+                            except Exception:
+                                pass
+                    else:
+                        try:
+                            proc.terminate() if sig == signal.SIGTERM else proc.kill()
                         except Exception:
                             pass
-                except Exception:
-                    pass
 
-            if pid and os.name == "posix":
-                try:
-                    os.killpg(pid, signal.SIGTERM)
-                except Exception:
-                    try:
-                        os.kill(pid, signal.SIGTERM)
-                    except Exception:
-                        pass
-                kill_children(signal.SIGTERM)
-            else:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
-                try:
-                    kill_children(signal.SIGTERM)
-                except Exception:
-                    pass
-
-            proc.join(timeout=3.0)
+            if pid:
+                kill_process_tree(pid, signal.SIGTERM)
+            
+            proc.join(timeout=2.0)
             if proc.is_alive():
-                if pid and os.name == "posix":
-                    try:
-                        os.killpg(pid, signal.SIGKILL)
-                    except Exception:
-                        try:
-                            os.kill(pid, signal.SIGKILL)
-                        except Exception:
-                            pass
-                    kill_children(signal.SIGKILL)
-                else:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    try:
-                        kill_children(signal.SIGKILL)
-                    except Exception:
-                        pass
+                print(f"[WARN] Process {pid} still alive after SIGTERM, sending SIGKILL...")
+                if pid:
+                    kill_process_tree(pid, signal.SIGKILL)
                 proc.join(timeout=1.0)
         finally:
             with LOCAL_TASK.lock:
@@ -936,6 +1107,8 @@ def api_resource_lock():
     devices = payload.get("devices")
     devices_by_server = payload.get("devices_by_server") or {}
 
+    print(f"[LOCK] Request: scope={scope}, duration={duration_s}s, warmup={warmup_iters}, mem={mem_mb}MB, devices={devices}, devices_by_server={devices_by_server}")
+
     servers = load_server_list()
     if scope in ("all", "*"):
         if isinstance(devices_by_server, dict) and devices_by_server:
@@ -945,23 +1118,31 @@ def api_resource_lock():
     else:
         targets = [s for s in servers if s.get("id") == scope]
     if not targets:
+        print(f"[LOCK] Error: Unknown server scope={scope}")
         return jsonify({"error": "unknown server", "scope": scope}), 404
 
     results = {}
     for s in targets:
         sid = s.get("id")
+        print(f"[LOCK] Processing server: {sid}")
         if sid == "local":
             try:
                 devs = devices_by_server.get(sid) if isinstance(devices_by_server, dict) else None
-                results[sid] = LOCK_MANAGER.lock(
-                    duration_s=duration_s,
-                    warmup_iters=warmup_iters,
-                    mem_mb=mem_mb,
-                    devices=devs if devs is not None else devices,
-                    strict_idle=strict_idle,
-                )
+                lock_params = {
+                    "duration_s": duration_s,
+                    "warmup_iters": warmup_iters,
+                    "mem_mb": mem_mb,
+                    "devices": devs if devs is not None else devices,
+                    "strict_idle": strict_idle,
+                }
+                print(f"[LOCK] Calling LOCK_MANAGER.lock with params: {lock_params}")
+                results[sid] = LOCK_MANAGER.lock(**lock_params)
+                print(f"[LOCK] Success: {results[sid]}")
             except Exception as exc:
-                results[sid] = {"error": str(exc)}
+                print(f"[LOCK] Error on local: {exc}")
+                import traceback
+                traceback.print_exc()
+                results[sid] = {"error": str(exc), "traceback": traceback.format_exc()}
             continue
         base_url = _resolve_server_base_url(sid)
         if not base_url:
@@ -979,9 +1160,11 @@ def api_resource_lock():
                     "strict_idle": strict_idle,
                 },
             )
-            results[sid] = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}"}
+            results[sid] = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}", "body": resp.text[:500]}
         except Exception as exc:
+            print(f"[LOCK] Error on remote {sid}: {exc}")
             results[sid] = {"error": str(exc)}
+    print(f"[LOCK] Final results: {results}")
     return jsonify({"scope": scope, "results": results})
 
 
@@ -989,6 +1172,7 @@ def api_resource_lock():
 def api_resource_lock_release():
     payload = request.get_json(silent=True) or {}
     scope = payload.get("scope") or payload.get("server_id") or payload.get("server") or "local"
+    print(f"[LOCK_RELEASE] Request: scope={scope}")
     servers = load_server_list()
     targets = servers if scope in ("all", "*") else [s for s in servers if s.get("id") == scope]
     if not targets:
@@ -999,7 +1183,9 @@ def api_resource_lock_release():
         sid = s.get("id")
         if sid == "local":
             try:
+                print(f"[LOCK_RELEASE] Calling LOCK_MANAGER.release()")
                 results[sid] = LOCK_MANAGER.release(reason="manual")
+                print(f"[LOCK_RELEASE] Success: {results[sid]}")
                 try:
                     from server.fitness_worker import clear_contexts
 
@@ -1007,7 +1193,10 @@ def api_resource_lock_release():
                 except Exception:
                     pass
             except Exception as exc:
-                results[sid] = {"error": str(exc)}
+                print(f"[LOCK_RELEASE] Error on local: {exc}")
+                import traceback
+                traceback.print_exc()
+                results[sid] = {"error": str(exc), "traceback": traceback.format_exc()}
             continue
         base_url = _resolve_server_base_url(sid)
         if not base_url:
@@ -1015,47 +1204,100 @@ def api_resource_lock_release():
             continue
         try:
             resp = _proxy_resource_lock(base_url, "/api/resource_lock/release", None)
-            results[sid] = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}"}
+            results[sid] = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}", "body": resp.text[:500]}
         except Exception as exc:
+            print(f"[LOCK_RELEASE] Error on remote {sid}: {exc}")
             results[sid] = {"error": str(exc)}
+    print(f"[LOCK_RELEASE] Final results: {results}")
     return jsonify({"scope": scope, "results": results})
 
 
 @app.route("/api/resource_lock/status", methods=["GET"])
 def api_resource_lock_status():
     scope = request.args.get("scope") or request.args.get("server_id") or request.args.get("server") or "local"
-    servers = load_server_list()
-    targets = servers if scope in ("all", "*") else [s for s in servers if s.get("id") == scope]
-    if not targets:
+    realtime = request.args.get("realtime", "false").lower() == "true"
+    
+    if realtime:
+        # Force refresh for valid scope
+        if scope == "all":
+            # For "all", we refresh everything in parallel (which is what refresh_all does)
+            state_manager.refresh_all()
+        else:
+            state_manager.refresh_one(scope)
+
+    snapshots = state_manager.get_snapshots()
+    
+    if scope == "all":
+        # Merge all "lock" info from snapshots
+        all_results = {}
+        for sid, snap in snapshots.items():
+            if not snap.get("online"):
+                all_results[sid] = {"error": snap.get("error") or "Server Offline", "active": False}
+                continue
+            lock_payload = snap.get("lock") or {}
+            if isinstance(lock_payload, dict) and isinstance(lock_payload.get("results"), dict):
+                all_results.update(lock_payload.get("results") or {})
+            else:
+                if isinstance(lock_payload, dict) and any(k in lock_payload for k in ("active", "backend", "devices")):
+                    all_results[sid] = lock_payload
+                elif isinstance(lock_payload, dict) and "error_lock" in lock_payload:
+                    all_results[sid] = {"error": f"HTTP {lock_payload.get('error_lock')}", "active": False}
+                elif isinstance(lock_payload, dict) and "error" in lock_payload:
+                    all_results[sid] = {"error": lock_payload.get("error"), "active": False}
+        return jsonify({"scope": "all", "results": all_results})
+    
+    # Single server scope
+    snap = snapshots.get(scope)
+    if not snap:
         return jsonify({"error": "unknown server", "scope": scope}), 404
+    
+    if not snap.get("online"):
+        return jsonify({"scope": scope, "results": {scope: {"error": snap.get("error") or "Server Offline", "active": False}}})
+    
+    lock_payload = snap.get("lock") or {}
+    if isinstance(lock_payload, dict) and isinstance(lock_payload.get("results"), dict):
+        return jsonify(lock_payload)
+    if isinstance(lock_payload, dict) and any(k in lock_payload for k in ("active", "backend", "devices", "note")):
+        return jsonify({"scope": scope, "results": {scope: lock_payload}})
+    if isinstance(lock_payload, dict) and "error_lock" in lock_payload:
+        return jsonify({"scope": scope, "results": {scope: {"error": f"HTTP {lock_payload.get('error_lock')}", "active": False}}})
+    if isinstance(lock_payload, dict) and "error" in lock_payload:
+        return jsonify({"scope": scope, "results": {scope: {"error": lock_payload.get("error"), "active": False}}})
+    return jsonify({"scope": scope, "results": {}})
 
-    results = {}
-    for s in targets:
-        sid = s.get("id")
-        if sid == "local":
-            try:
-                results[sid] = LOCK_MANAGER.status()
-            except Exception as exc:
-                results[sid] = {"error": str(exc)}
-            continue
-        base_url = _resolve_server_base_url(sid)
-        if not base_url:
-            results[sid] = {"error": "missing base_url"}
-            continue
-        try:
-            import requests
+def check_dependencies():
+    """Check for essential packages and print warnings if missing."""
+    missing = []
+    try:
+        import psutil
+    except ImportError:
+        missing.append("psutil (REQUIRED for CPU/Memory monitoring)")
+    
+    try:
+        import pynvml
+    except ImportError:
+        missing.append("pynvml (REQUIRED for GPU monitoring)")
 
-            session = requests.Session()
-            session.trust_env = False
-            resp = session.get(base_url.rstrip("/") + "/api/resource_lock/status", timeout=(3.0, 10.0))
-            results[sid] = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}"}
-        except Exception as exc:
-            results[sid] = {"error": str(exc)}
-    return jsonify({"scope": scope, "results": results})
+    try:
+        import torch
+    except ImportError:
+        missing.append("torch (REQUIRED for GA execution)")
+
+    if missing:
+        print("\n" + "!" * 60)
+        print("  WARNING: Missing Dependencies Detected!")
+        for item in missing:
+            print(f"  - {item}")
+        print("\n  Please install missing packages via:")
+        print("  pip install " + " ".join([m.split()[0] for m in missing]))
+        print("!" * 60 + "\n")
+    else:
+        print("\n[INFO] All critical dependencies (psutil, pynvml, torch) are installed.\n")
 
 if __name__ == "__main__":
     print("=" * 50)
     print("GAPA Console 启动成功！")
+    check_dependencies()
     print("本地访问 → http://localhost:4467")
     print("局域网访问 → http://本机IP:4467")
     print("=" * 50)

@@ -28,11 +28,19 @@ def Parsers():
 
 
 def init_dist(rank, world_size, async_op=False):
+    # Force use of loopback interface to prevent DNS resolution delays/errors (M mode is single-node)
+    os.environ["GLOO_SOCKET_IFNAME"] = "lo"
+    os.environ["NCCL_SOCKET_IFNAME"] = "lo"
+    
     device = torch.device(f'cuda:{rank}')
     torch.cuda.set_device(device)
+    
+    # Use generic init_method from env if available (e.g. file:// for faster local startup)
+    init_method = os.getenv("GAPA_DIST_INIT_METHOD", "tcp://127.0.0.1:12355")
+    
     dist.init_process_group(
         backend='nccl',
-        init_method=f"tcp://127.0.0.1:12355",
+        init_method=init_method,
         rank=rank,
         world_size=world_size
     )
