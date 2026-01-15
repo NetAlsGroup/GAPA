@@ -186,6 +186,57 @@ function setAnalyzeLockReady(ready) {
   btnAnalyzeLock.disabled = !ready;
   btnAnalyzeLock.classList.toggle("btn-ready", !!ready);
 }
+
+// Button loading state management
+function setButtonLoading(btn, loading = true, loadingText = "处理中...") {
+  if (!btn) return;
+  if (loading) {
+    btn._originalText = btn.textContent;
+    btn._originalDisabled = btn.disabled;
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner"></span> ${loadingText}`;
+    btn.classList.add("btn-loading");
+  } else {
+    btn.disabled = btn._originalDisabled || false;
+    btn.textContent = btn._originalText || btn.textContent.replace(/处理中\.\.\./, "");
+    btn.classList.remove("btn-loading");
+    delete btn._originalText;
+    delete btn._originalDisabled;
+  }
+}
+
+// Poll until lock status matches expectation
+async function waitUntilLockStatus(scope, expectActive, timeoutMs = 15000) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      // Use realtime=true to force backend to refresh state from remote nodes
+      const resp = await fetch(`/api/resource_lock/status?scope=${scope}&realtime=true`, { cache: "no-store" });
+      const data = await resp.json();
+      const results = data.results || {};
+
+      const states = Object.values(results);
+      if (states.length === 0) {
+        await new Promise(r => setTimeout(r, 1000));
+        continue;
+      }
+
+      if (!expectActive) {
+        // Waiting for release: All must be inactive
+        const allInactive = states.every(s => !s.active);
+        if (allInactive) return true;
+      } else {
+        // Waiting for lock: At least one active
+        const hasActive = states.some(s => s.active);
+        if (hasActive) return true;
+      }
+    } catch (e) {
+      // ignore network errors
+    }
+    await new Promise(r => setTimeout(r, 800));
+  }
+  return false; // Timeout
+}
 function makeProgressId() {
   try {
     if (crypto && crypto.randomUUID) return crypto.randomUUID();
@@ -538,10 +589,11 @@ function renderLockStatus(data) {
     .join("");
 }
 
-async function fetchLockStatus(scope) {
+async function fetchLockStatus(scope, realtime = false) {
   const target = scope || (lockStatusScope?.value || "all");
   try {
-    const resp = await fetch(`/api/resource_lock/status?scope=${encodeURIComponent(target)}`, { cache: "no-store" });
+    const url = `/api/resource_lock/status?scope=${encodeURIComponent(target)}${realtime ? "&realtime=true" : ""}`;
+    const resp = await fetch(url, { cache: "no-store" });
     const data = await resp.json();
     if (!resp.ok) {
       lockLog(`锁定状态获取失败: ${JSON.stringify(data)}`);
@@ -2154,9 +2206,10 @@ async function pollRunStatus(server_id) {
 btnRun?.addEventListener("click", startRun);
 btnRunStop?.addEventListener("click", stopRun);
 
-async function refreshRunLockStatus() {
+async function refreshRunLockStatus(realtime = false) {
   try {
-    const resp = await fetch(`/api/resource_lock/status?scope=all`, { cache: "no-store" });
+    const url = `/api/resource_lock/status?scope=all${realtime ? "&realtime=true" : ""}`;
+    const resp = await fetch(url, { cache: "no-store" });
     const data = await resp.json();
     if (!resp.ok) {
       if (runLockStatus) runLockStatus.textContent = "锁定状态获取失败";
@@ -2209,10 +2262,14 @@ async function refreshRunLockStatus() {
 }
 
 btnRunLockRefresh?.addEventListener("click", refreshRunLockStatus);
-btnRunLockRelease?.addEventListener("click", () => releaseLock(RUN_SERVER_ID));
+btnRunLockRelease?.addEventListener("click", () => releaseLock(RUN_SERVER_ID, btnRunLockRelease));
 
 async function applyEvalPlanToLock() {
   if (!lastEvalPlan || !lastEvalMode) return;
+
+  // Show loading state
+  setButtonLoading(btnAnalyzeLock, true, "锁定中...");
+
   try {
     const stResp = await fetch(`/api/resource_lock/status?scope=all`, { cache: "no-store" });
     const stData = await stResp.json();
@@ -2220,57 +2277,74 @@ async function applyEvalPlanToLock() {
     const hasActive = Object.values(results).some((v) => v && v.active);
     if (hasActive) {
       alert("已有资源锁定在运行，请先释放锁定。");
+      setButtonLoading(btnAnalyzeLock, false);
       return;
     }
   } catch (e) {
     // ignore status errors, continue to attempt lock
   }
 
-  if (lastEvalMode === "distributed") {
-    const devicesByServer = lastEvalPlan.devices_by_server || {};
-    if (!Object.keys(devicesByServer).length) {
-      alert("分布式评估未返回可锁定的设备。");
+  try {
+    if (lastEvalMode === "distributed") {
+      const devicesByServer = lastEvalPlan.devices_by_server || {};
+      if (!Object.keys(devicesByServer).length) {
+        alert("分布式评估未返回可锁定的设备。");
+        setButtonLoading(btnAnalyzeLock, false);
+        return;
+      }
+      const resp = await fetch("/api/resource_lock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ scope: "all", devices_by_server: devicesByServer, strict_idle: true }),
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        alert(`资源锁定失败: ${JSON.stringify(data)}`);
+        setButtonLoading(btnAnalyzeLock, false);
+        return;
+      }
+      lockLog(`已应用分布式锁定策略: ${JSON.stringify(data.results || data)}`);
+
+      // Poll until confirmed active
+      await waitUntilLockStatus("all", true);
+
+      await fetchLockStatus("all", true);
+      await refreshRunLockStatus(true);
+      refreshAll();
+      closeEvalModal();
       return;
     }
+
+    const devices = Array.isArray(lastEvalPlan.devices) ? lastEvalPlan.devices : [];
+    if (!devices.length) {
+      alert("评估结果未包含可用设备，无法锁定。");
+      setButtonLoading(btnAnalyzeLock, false);
+      return;
+    }
+    const scope = lastEvalTarget || "local";
     const resp = await fetch("/api/resource_lock", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ scope: "all", devices_by_server: devicesByServer, strict_idle: true }),
+      body: JSON.stringify({ scope, devices }),
     });
     const data = await resp.json();
     if (!resp.ok) {
       alert(`资源锁定失败: ${JSON.stringify(data)}`);
+      setButtonLoading(btnAnalyzeLock, false);
       return;
     }
-    lockLog(`已应用分布式锁定策略: ${JSON.stringify(data.results || data)}`);
-    fetchLockStatus("all");
-    refreshRunLockStatus();
+    lockLog(`已应用锁定策略: ${JSON.stringify(data.results || data)}`);
+
+    // Poll until confirmed active
+    await waitUntilLockStatus(scope, true);
+
+    await fetchLockStatus("local", true);
+    await refreshRunLockStatus(true);
     refreshAll();
     closeEvalModal();
-    return;
+  } finally {
+    setButtonLoading(btnAnalyzeLock, false);
   }
-
-  const devices = Array.isArray(lastEvalPlan.devices) ? lastEvalPlan.devices : [];
-  if (!devices.length) {
-    alert("评估结果未包含可用设备，无法锁定。");
-    return;
-  }
-  const scope = lastEvalTarget || "local";
-  const resp = await fetch("/api/resource_lock", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ scope, devices }),
-  });
-  const data = await resp.json();
-  if (!resp.ok) {
-    alert(`资源锁定失败: ${JSON.stringify(data)}`);
-    return;
-  }
-  lockLog(`已应用锁定策略: ${JSON.stringify(data.results || data)}`);
-  fetchLockStatus("local");
-  refreshRunLockStatus();
-  refreshAll();
-  closeEvalModal();
 }
 
 btnAnalyzeLock?.addEventListener("click", applyEvalPlanToLock);
@@ -2300,6 +2374,10 @@ async function applyLock() {
       devices = devices_by_server[scope];
     }
   }
+
+  // Show loading state
+  setButtonLoading(lockApply, true, "锁定中...");
+
   try {
     lockLog(`开始锁定资源: scope=${scope}, mode=${mode}, mem=${mem_mb}MB`);
     const resp = await fetch("/api/resource_lock", {
@@ -2314,18 +2392,29 @@ async function applyLock() {
       return;
     }
     lockLog(`锁定完成: ${JSON.stringify(data.results || data)}`);
-    fetchLockStatus(scope);
-    refreshRunLockStatus();
+
+    // Poll until confirmed active
+    await waitUntilLockStatus(scope, true);
+
+    await fetchLockStatus(scope, true);
+    await refreshRunLockStatus(true);
     refreshAll();
     closeLockModal();
   } catch (e) {
     lockLog(`锁定失败: ${e}`);
     alert(`资源锁定失败: ${e}`);
+  } finally {
+    setButtonLoading(lockApply, false);
   }
 }
 
-async function releaseLock(scopeOverride) {
+async function releaseLock(scopeOverride, triggerBtn = null) {
   const scope = scopeOverride || lockScope?.value || "all";
+
+  // Show loading state on the triggering button
+  const btnToAnimate = triggerBtn || lockRelease;
+  setButtonLoading(btnToAnimate, true, "释放中...");
+
   try {
     const resp = await fetch("/api/resource_lock/release", {
       method: "POST",
@@ -2339,23 +2428,28 @@ async function releaseLock(scopeOverride) {
       return;
     }
     lockLog(`已释放资源锁定: ${JSON.stringify(data.results || data)}`);
-    fetchLockStatus(scope);
-    refreshRunLockStatus();
+
+    // Poll until confirmed inactive
+    await waitUntilLockStatus(scope, false);
+
+    await fetchLockStatus(scope, true);
+    await refreshRunLockStatus(true);
     refreshAll();
     closeLockModal();
   } catch (e) {
     lockLog(`释放失败: ${e}`);
     alert(`释放失败: ${e}`);
+  } finally {
+    setButtonLoading(btnToAnimate, false);
   }
 }
 
 lockApply?.addEventListener("click", applyLock);
-lockRelease?.addEventListener("click", releaseLock);
+lockRelease?.addEventListener("click", () => releaseLock(null, lockRelease));
 btnLockStatus?.addEventListener("click", () => fetchLockStatus(lockStatusScope?.value || "all"));
-btnLockReleaseNow?.addEventListener("click", () => {
+btnLockReleaseNow?.addEventListener("click", async () => {
   const scope = lockStatusScope?.value || "all";
-  releaseLock(scope);
-  fetchLockStatus(scope);
+  await releaseLock(scope, btnLockReleaseNow);
 });
 
 // Boot

@@ -1215,6 +1215,16 @@ def api_resource_lock_release():
 @app.route("/api/resource_lock/status", methods=["GET"])
 def api_resource_lock_status():
     scope = request.args.get("scope") or request.args.get("server_id") or request.args.get("server") or "local"
+    realtime = request.args.get("realtime", "false").lower() == "true"
+    
+    if realtime:
+        # Force refresh for valid scope
+        if scope == "all":
+            # For "all", we refresh everything in parallel (which is what refresh_all does)
+            state_manager.refresh_all()
+        else:
+            state_manager.refresh_one(scope)
+
     snapshots = state_manager.get_snapshots()
     
     if scope == "all":

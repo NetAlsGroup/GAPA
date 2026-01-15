@@ -191,16 +191,10 @@ class TDEController(BasicController):
         for loop in range(self.loops):
             start = time()
             ONE, population = body.init_population()
-            fitness_list = torch.empty(size=(self.pop_size,), device=self.device)
-            for i, pop in enumerate(population):
-                copy_graph = self.graph.copy()
-                for node in pop:
-                    copy_graph.remove_node(node.item())
-                graph_i = ig.from_networkx(copy_graph)
-                fitness_list[i] = evaluator.R0 - torch.tensor(evaluator.calculate_r(graph_i), device=self.device)
+            population_embed = phenotype2genotype(self.embeds, population)
             if self.mode == "sm":
                 evaluator = torch.nn.DataParallel(evaluator)
-            population_embed = phenotype2genotype(self.embeds, population)
+            fitness_list = evaluator(population_embed)
             with tqdm(total=max_generation) as pbar:
                 pbar.set_description(f'Training....{self.dataset} in Loop: {loop}...')
                 for generation in range(max_generation):
