@@ -28,26 +28,92 @@ def Parsers():
 
 
 def init_dist(rank, world_size, async_op=False):
-    # Force use of loopback interface to prevent DNS resolution delays/errors (M mode is single-node)
-    os.environ["GLOO_SOCKET_IFNAME"] = "lo"
-    os.environ["NCCL_SOCKET_IFNAME"] = "lo"
+    """
+    Initialize distributed process group for M mode.
     
-    device = torch.device(f'cuda:{rank}')
-    torch.cuda.set_device(device)
+    Cross-platform support:
+        - Linux: Uses NCCL (optimal for CUDA)
+        - Windows: Uses Gloo (NCCL not available)
+        - MacOS: Not supported (falls back to S mode in Workflow)
+    """
+    import platform
+    import tempfile
+    import warnings
     
-    # Use generic init_method from env if available (e.g. file:// for faster local startup)
-    init_method = os.getenv("GAPA_DIST_INIT_METHOD", "tcp://127.0.0.1:12355")
+    # Suppress known deprecation warnings
+    warnings.filterwarnings("ignore", message=".*pynvml.*deprecated.*", category=FutureWarning)
+    warnings.filterwarnings("ignore", message=".*nvidia-ml-py.*", category=FutureWarning)
     
+    system = platform.system()
+    
+    # Determine backend based on platform
+    backend = os.getenv("GAPA_DIST_BACKEND")
+    if backend is None:
+        if system == "Windows":
+            backend = "gloo"  # Windows doesn't support NCCL
+        else:
+            backend = "nccl"  # Linux: use NCCL for best performance
+    
+    # Determine loopback interface name by platform
+    if system == "Darwin":
+        loopback = "lo0"  # MacOS
+    elif system == "Linux":
+        loopback = "lo"   # Linux
+    else:
+        loopback = ""     # Windows: don't set
+    
+    # Configure network interfaces based on backend
+    if backend == "nccl":
+        # NCCL-specific settings (Linux only)
+        if loopback:
+            os.environ["GLOO_SOCKET_IFNAME"] = loopback
+            os.environ["NCCL_SOCKET_IFNAME"] = loopback
+        os.environ["NCCL_IB_DISABLE"] = "1"
+        os.environ["NCCL_P2P_DISABLE"] = "0"
+        # Use TORCH_ prefix (newer PyTorch versions)
+        os.environ.setdefault("TORCH_NCCL_BLOCKING_WAIT", "1")
+        os.environ.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
+    else:
+        # Gloo-specific settings
+        if loopback:
+            os.environ["GLOO_SOCKET_IFNAME"] = loopback
+    
+    # Set device based on CUDA availability
+    if torch.cuda.is_available() and backend == "nccl":
+        device = torch.device(f'cuda:{rank}')
+        torch.cuda.set_device(device)
+    elif torch.cuda.is_available() and backend == "gloo":
+        # GPU with gloo (e.g., Windows or single-GPU Linux)
+        device = torch.device(f'cuda:{rank % torch.cuda.device_count()}')
+        torch.cuda.set_device(device)
+    else:
+        # CPU-only mode
+        device = torch.device('cpu')
+    
+    # Determine init method
+    init_method = os.getenv("GAPA_DIST_INIT_METHOD")
+    if init_method is None:
+        # Use file-based init for faster local startup
+        tmp_file = os.path.join(tempfile.gettempdir(), f"gapa_dist_init_{os.getpid() // 100}")
+        init_method = f"file://{tmp_file}"
+    
+    # Initialize process group
     dist.init_process_group(
-        backend='nccl',
+        backend=backend,
         init_method=init_method,
         rank=rank,
-        world_size=world_size
+        world_size=world_size,
     )
+    
+    # Barrier synchronization
     try:
-        dist.barrier(async_op=async_op, device_ids=[rank])
+        if backend == "nccl":
+            dist.barrier(async_op=async_op, device_ids=[rank])
+        else:
+            dist.barrier(async_op=async_op)
     except TypeError:
         dist.barrier(async_op=async_op)
+    
     return device
 
 

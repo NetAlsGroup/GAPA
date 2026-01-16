@@ -106,6 +106,167 @@ class CustomController(BasicController):
     def _best_metric(self, fitness_list: Tensor) -> Tensor:
         return torch.max(fitness_list) if self.side == "max" else torch.min(fitness_list)
 
+    # =========================================================================
+    # Step-by-Step Iteration Support
+    # =========================================================================
+    
+    def init_state(self, evaluator, body) -> Dict:
+        """
+        Initialize algorithm state for step-by-step iteration.
+        
+        Creates initial population and evaluates fitness.
+        Returns state dict that should be passed to single_step().
+        
+        Args:
+            evaluator: Fitness evaluator
+            body: Body instance with GA operators
+            
+        Returns:
+            State dict containing:
+                - population: Current population tensor
+                - fitness_list: Current fitness tensor
+                - ONE: Helper tensor for operations
+                - generation: Current generation (0)
+                - best_genes: List of best genes per generation
+                - best_fitness_list: List of best fitness per generation
+                - time_list: List of elapsed times
+                - start_time: Start timestamp
+        
+        Example:
+            >>> state = controller.init_state(evaluator, body)
+            >>> state = controller.single_step(state, evaluator, body)
+        """
+        if self.mode == "sm":
+            evaluator = torch.nn.DataParallel(evaluator)
+        
+        ONE, population = self.init(body)
+        fitness_list = evaluator(population)
+        
+        return {
+            "population": population,
+            "fitness_list": fitness_list,
+            "ONE": ONE,
+            "generation": 0,
+            "best_genes": [],
+            "best_fitness_list": [],
+            "time_list": [],
+            "start_time": time(),
+            "evaluator": evaluator,  # Store potentially wrapped evaluator
+        }
+    
+    def single_step(self, state: Dict, evaluator, body, observer=None) -> Dict:
+        """
+        Execute a single generation and return updated state.
+        
+        This method is designed for step-by-step iteration control,
+        allowing pause, resume, and fine-grained progress tracking.
+        
+        Args:
+            state: Current state dict from init_state() or previous single_step()
+            evaluator: Fitness evaluator (can be ignored if stored in state)
+            body: Body instance with GA operators
+            observer: Optional observer for recording
+            
+        Returns:
+            Updated state dict
+        
+        Example:
+            >>> state = controller.init_state(evaluator, body)
+            >>> for i in range(100):
+            >>>     state = controller.single_step(state, evaluator, body)
+            >>>     print(f"Gen {state['generation']}: {state['best_fitness']}")
+        """
+        # Extract state
+        population = state["population"]
+        fitness_list = state["fitness_list"]
+        ONE = state["ONE"]
+        generation = state["generation"]
+        best_genes = state["best_genes"]
+        best_fitness_list = state["best_fitness_list"]
+        time_list = state["time_list"]
+        start_time = state["start_time"]
+        
+        # Use stored evaluator if available (for SM mode DataParallel wrapping)
+        if "evaluator" in state:
+            evaluator = state["evaluator"]
+        
+        # Execute one generation
+        t_gen_start = time_mod.perf_counter()
+        
+        crossover_population = self.SelectionAndCrossover(body, population, fitness_list, ONE)
+        mutation_population = self.Mutation(body, crossover_population, ONE)
+        new_fitness_list = evaluator(mutation_population)
+        population, fitness_list = body.elitism(population, mutation_population, fitness_list, new_fitness_list)
+        
+        # Track best
+        best_metric = self._best_metric(fitness_list)
+        best_fitness_list.append(best_metric)
+        best_gene_idx = self._best_index(fitness_list)
+        best_genes.append(population[best_gene_idx])
+        elapsed = time() - start_time
+        time_list.append(elapsed)
+        
+        # Compute metrics
+        results: Dict[str, float] = {}
+        if generation % self.num_to_eval == 0:
+            results = self.Eval(generation, population, fitness_list, population[best_gene_idx])
+        results["fitness"] = best_metric.item()
+        
+        # Observer callback
+        if observer:
+            observer.record(
+                generation=generation,
+                fitness_list=fitness_list.detach(),
+                best_gene=population[best_gene_idx].detach(),
+                extra=results,
+                side=self.side,
+            )
+        
+        # Return updated state
+        return {
+            "population": population,
+            "fitness_list": fitness_list,
+            "ONE": ONE,
+            "generation": generation + 1,
+            "best_genes": best_genes,
+            "best_fitness_list": best_fitness_list,
+            "time_list": time_list,
+            "start_time": start_time,
+            "evaluator": evaluator,
+            "best_fitness": best_metric.item(),
+            "best_gene": population[best_gene_idx],
+            "metrics": results,
+        }
+    
+    def get_final_result(self, state: Dict) -> Dict:
+        """
+        Get final results from completed iteration.
+        
+        Args:
+            state: Final state dict
+            
+        Returns:
+            Result dict with best gene, fitness, and statistics
+        """
+        best_fitness_list = state["best_fitness_list"]
+        best_genes = state["best_genes"]
+        
+        if not best_fitness_list:
+            return {"error": "No iterations completed"}
+        
+        top_index = (
+            torch.argmax(torch.stack(best_fitness_list)) 
+            if self.side == "max" 
+            else torch.argmin(torch.stack(best_fitness_list))
+        )
+        
+        return {
+            "best_gene": best_genes[top_index],
+            "best_fitness": best_fitness_list[top_index].item(),
+            "total_generations": state["generation"],
+            "total_time": state["time_list"][-1] if state["time_list"] else 0,
+        }
+
     def calculate(self, max_generation, body, evaluator, observer=None, **kwargs):
         best_genes: List[Tensor] = []
         time_list: List[float] = []
@@ -163,7 +324,7 @@ class CustomController(BasicController):
         else:
             pass
 
-    def mp_calculate(self, rank, max_generation, evaluator, body, world_size, component_size_list, observer=None):
+    def mp_calculate(self, rank, max_generation, evaluator, body, world_size, component_size_list, result_dict=None):
         device = init_dist(rank, world_size)
         best_genes: List[Tensor] = []
         time_list: List[float] = []
@@ -267,14 +428,6 @@ class CustomController(BasicController):
                     results = self.Eval(generation, component_population, component_fitness_list, best_gene)
                 results["fitness"] = self._best_metric(component_fitness_list).item()
 
-                if rank == 0 and observer:
-                    observer.record(
-                        generation=generation,
-                        fitness_list=fitness_list.detach(),
-                        best_gene=best_gene.detach(),
-                        extra=results,
-                        side=self.side,
-                    )
                 if rank == 0 and log_every > 0 and (generation % log_every == 0 or generation + 1 == max_generation):
                     t_total = time_mod.perf_counter() - t_gen_start
                     print(
@@ -287,31 +440,103 @@ class CustomController(BasicController):
                 pbar.update(1)
         if rank == 0:
             top_index = torch.argmax(torch.stack(best_fitness_list)) if self.side == "max" else torch.argmin(torch.stack(best_fitness_list))
+            best_fitness = best_fitness_list[top_index].item()
+            best_gene = best_genes[top_index]
+            
+            # Write final result to temp file for main process
+            if result_dict is not None:
+                import pickle
+                with open(result_dict, 'wb') as f:
+                    pickle.dump({
+                        'best_fitness': best_fitness,
+                        'best_gene': best_gene.cpu()
+                    }, f)
+            
             if self.save_flag:
-                self.save(self.dataset, best_genes[top_index], [time_list[-1]], time_list, "Custom")
+                self.save(self.dataset, best_gene, [time_list[-1]], time_list, "Custom")
                 print(f"Data saved in {self.path}...")
-        torch.cuda.empty_cache()
+        
+        # Proper cleanup to avoid CUDA shared tensor warnings
+        # Step 1: Clear tensor references BEFORE synchronization
+        del population, fitness_list, component_population, component_fitness_list
+        if rank == 0:
+            del best_genes, best_fitness_list, best_gene
+        
+        # Step 2: Synchronize CUDA operations (only if CUDA available)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+        
+        # Step 3: Barrier to ensure all processes complete cleanup before exit
+        dist.barrier()
+        
+        # Step 4: Destroy process group last
         dist.destroy_process_group()
-        torch.cuda.synchronize()
 
 
 def Start(max_generation, data_loader, controller, evaluator, body, world_size, verbose=True, observer=None):
+    """
+    Main execution entry point.
+    
+    Returns:
+        Dict with final results (for M mode, returns after spawn completes)
+    """
     evaluator = controller.setup(data_loader=data_loader, evaluator=evaluator)
+    
     if controller.mode in ("s", "sm", "mnm"):
         controller.calculate(max_generation=max_generation, evaluator=evaluator, body=body, observer=observer)
+        return {"status": "completed"}
+    
     elif controller.mode == "m":
         if observer is not None and verbose:
             print("Observer recording is currently supported in single-process mode. Distributed runs will skip observer writes.")
         if world_size < 1:
             raise ValueError(f"Error in world_size -> {world_size} <- Since your device may not support for m mode, please re-choose s mode.")
+        
         component_size_list = Num2Chunks(controller.pop_size, world_size)
         if verbose:
             print(f"Component Size List: {component_size_list}")
+        
+        # Use temp file for result passing (faster than Manager)
+        import tempfile
+        import pickle
+        result_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pkl")
+        result_file.close()
+        
         mp.spawn(
             controller.mp_calculate,
-            args=(max_generation, deepcopy(evaluator), deepcopy(body), world_size, component_size_list, None),
+            args=(max_generation, deepcopy(evaluator), deepcopy(body), world_size, component_size_list, result_file.name),
             nprocs=world_size,
             join=True,
         )
+        
+        # Read result from temp file
+        best_fitness = float('inf') if controller.side == "min" else float('-inf')
+        best_gene = None
+        try:
+            with open(result_file.name, 'rb') as f:
+                result_data = pickle.load(f)
+                best_fitness = result_data.get('best_fitness', best_fitness)
+                best_gene = result_data.get('best_gene')
+            import os
+            os.unlink(result_file.name)
+        except:
+            pass
+        
+        # Update observer with final result from M mode
+        if observer is not None and best_fitness != float('inf') and best_fitness != float('-inf'):
+            fitness_tensor = torch.tensor([best_fitness])
+            if best_gene is None:
+                best_gene = torch.zeros(body.budget)
+            observer.record(
+                generation=max_generation - 1,
+                fitness_list=fitness_tensor,
+                best_gene=best_gene,
+                extra={"mode": "m", "final": True},
+                side=controller.side,
+            )
+        
+        return {"status": "completed", "best_fitness": best_fitness}
+    
     else:
         raise ValueError("No such mode. Please choose s, sm, m or mnm.")
