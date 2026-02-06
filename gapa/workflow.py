@@ -42,6 +42,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Union
 import multiprocessing as mp
+import json
 
 # Suppress known deprecation warnings (before torch imports)
 import warnings
@@ -51,6 +52,10 @@ warnings.filterwarnings("ignore", message=".*nvidia-ml-py.*", category=FutureWar
 import torch
 import torch.nn as nn
 import networkx as nx
+try:
+    import requests  # type: ignore
+except Exception:  # pragma: no cover - optional dependency for monitor HTTP
+    requests = None
 
 # =============================================================================
 # Feature Flags (for PyPI vs Source deployment)
@@ -403,22 +408,154 @@ class Monitor:
         >>> print(monitor.get_best_fitness())
     """
     
-    def __init__(self, opt_direction: str = "min", topk: int = 1):
+    def __init__(self, opt_direction: str = "min", topk: int = 1, api_base: Optional[str] = None, timeout_s: float = 5.0):
         """
         Initialize the monitor.
         
         Args:
             opt_direction: Optimization direction - "min" or "max". Default: "min"
             topk: Number of top solutions to track. Default: 1
+            api_base: Base URL for GAPA backend API. Default: local server.
+            timeout_s: HTTP timeout in seconds for monitor requests.
         """
         self.opt_direction = opt_direction
         self.topk = topk
+        self.api_base = api_base
+        self.timeout_s = float(timeout_s)
         
         self._best_fitness: Optional[float] = None
         self._best_solution: Optional[torch.Tensor] = None
         self._fitness_history: List[float] = []
         self._extra_history: List[Dict[str, Any]] = []
         self._generation: int = 0
+        self._remote_result: Optional[Dict[str, Any]] = None
+        self._local_timing: Optional[Dict[str, Any]] = None
+
+    def _resolve_api_base(self) -> str:
+        if self.api_base:
+            return self.api_base.rstrip("/")
+        env_base = os.getenv("GAPA_API_BASE")
+        if env_base:
+            return str(env_base).rstrip("/")
+        guessed = self._guess_api_base_from_servers_file()
+        if guessed:
+            return guessed
+        return "http://127.0.0.1:5000"
+
+    def _guess_api_base_from_servers_file(self) -> Optional[str]:
+        cfg = os.getenv("GAPA_SERVERS_FILE")
+        if cfg:
+            path = Path(cfg)
+        else:
+            path = Path(__file__).resolve().parents[1] / "servers.json"
+        if not path.exists():
+            return None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        servers = raw.get("servers", []) if isinstance(raw, dict) else []
+        for entry in servers:
+            if not isinstance(entry, dict):
+                continue
+            port = entry.get("port")
+            protocol = entry.get("protocol") or "http"
+            if port:
+                return f"{protocol}://127.0.0.1:{port}"
+        return None
+
+    def _http_get_json(self, url: str) -> Dict[str, Any]:
+        if requests is None:
+            return {"error": "requests not available"}
+        try:
+            resp = requests.get(url, timeout=self.timeout_s)
+        except Exception as exc:
+            return {"error": str(exc)}
+        if not getattr(resp, "ok", False):
+            try:
+                body = resp.json()
+            except Exception:
+                body = {"raw": getattr(resp, "text", "")}
+            return {"error": f"HTTP {resp.status_code}", "body": body}
+        try:
+            return resp.json()
+        except Exception as exc:
+            return {"error": f"invalid json: {exc}"}
+
+    def _fetch_snapshots(self) -> Dict[str, Any]:
+        base = self._resolve_api_base()
+        data = self._http_get_json(f"{base}/api/v1/resources/all")
+        if isinstance(data, dict) and "error" not in data:
+            return data
+        legacy = self._http_get_json(f"{base}/api/all_resources")
+        if isinstance(legacy, dict) and "error" not in legacy:
+            return legacy
+        return data if isinstance(data, dict) else {"error": "invalid snapshots"}
+
+    def server(self) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+        """Return configured servers with activation status."""
+        base = self._resolve_api_base()
+        servers = self._http_get_json(f"{base}/api/servers")
+        if not isinstance(servers, list):
+            return {"error": "invalid servers response", "body": servers}
+        snapshots = self._fetch_snapshots()
+        if isinstance(snapshots, dict) and "error" in snapshots:
+            snapshots = {}
+        results: List[Dict[str, Any]] = []
+        for item in servers:
+            if not isinstance(item, dict):
+                continue
+            sid = item.get("id") or item.get("name") or item.get("host")
+            name = item.get("name") or item.get("id") or sid
+            base_url = item.get("base_url")
+            if not base_url:
+                host = item.get("ip") or item.get("host")
+                port = item.get("port")
+                protocol = item.get("protocol") or "http"
+                if host:
+                    base_url = f"{protocol}://{host}{f':{port}' if port else ''}"
+            snap = snapshots.get(sid) if isinstance(snapshots, dict) else None
+            online = bool(snap and snap.get("online"))
+            status = "Activate" if online else "Deactivate"
+            results.append(
+                {
+                    "id": sid,
+                    "name": name,
+                    "base_url": base_url,
+                    "status": status,
+                    "online": online,
+                }
+            )
+        return results
+
+    def server_resource(self, server_id_or_name: str) -> Dict[str, Any]:
+        """Return current resource snapshot for a server by id or name."""
+        servers = self.server()
+        if isinstance(servers, dict) and "error" in servers:
+            return servers
+        target_id = None
+        lookup = str(server_id_or_name or "")
+        for item in servers:
+            sid = item.get("id")
+            name = item.get("name")
+            if lookup == sid or lookup == name:
+                target_id = sid
+                break
+        if target_id is None:
+            for item in servers:
+                sid = item.get("id")
+                name = item.get("name")
+                if name and name.lower() == lookup.lower():
+                    target_id = sid
+                    break
+        if not target_id:
+            return {"error": "server not found", "input": server_id_or_name}
+        snapshots = self._fetch_snapshots()
+        if isinstance(snapshots, dict) and "error" in snapshots:
+            return snapshots
+        if isinstance(snapshots, dict) and target_id in snapshots:
+            return snapshots[target_id]
+        return {"error": "server not found in snapshots", "server_id": target_id}
     
     def record(
         self,
@@ -497,6 +634,70 @@ class Monitor:
     @property
     def generation(self) -> int:
         return self._generation
+
+    def export_all(self, pretty: bool = False) -> Union[Dict[str, Any], str]:
+        result = self._remote_result or {}
+        objectives = result.get("objectives") or {}
+        best_metrics = result.get("best_metrics") or {}
+        timing = result.get("timing") or {}
+        comm = result.get("comm") or {}
+        data = {
+            "best_fitness": self.get_best_fitness(),
+            "metrics": {
+                "objectives": objectives,
+                "best_metrics": best_metrics,
+            },
+            "timing": {
+                "iter_seconds": timing.get("iter_seconds"),
+                "iter_avg_ms": timing.get("iter_avg_ms"),
+                "throughput_ips": timing.get("throughput_ips"),
+            },
+            "comm": {
+                "avg_ms": comm.get("avg_ms"),
+                "per_rank_avg_ms": comm.get("per_rank_avg_ms") or comm.get("per_rank_ms"),
+            },
+            "raw_result": result,
+        }
+        if not pretty:
+            return data
+        return self._format_export_groups(data)
+
+    def _format_export_groups(self, data: Dict[str, Any]) -> str:
+        if self._remote_result is None and self._local_timing:
+            timing = self._local_timing
+            lines = []
+            lines.append("=== Local Summary ===")
+            lines.append(f"Best Fitness: {data.get('best_fitness')}")
+            lines.append(f"Total Iter Time (s): {timing.get('iter_seconds')}")
+            lines.append(f"Avg Iter (ms): {timing.get('iter_avg_ms')}")
+            lines.append(f"Throughput (iters/s): {timing.get('throughput_ips')}")
+            return "\n".join(lines)
+        metrics = data.get("metrics") or {}
+        objectives = metrics.get("objectives") or {}
+        best_metrics = metrics.get("best_metrics") or {}
+        timing = data.get("timing") or {}
+        comm = data.get("comm") or {}
+        lines = []
+        lines.append("=== Metrics ===")
+        lines.append(f"Best Fitness: {data.get('best_fitness')}")
+        lines.append(f"Primary: {objectives.get('primary')}")
+        lines.append(f"Secondary: {objectives.get('secondary')}")
+        if isinstance(best_metrics, dict) and best_metrics:
+            for k, v in best_metrics.items():
+                lines.append(f"{k}: {v}")
+        lines.append("")
+        lines.append("=== Timing ===")
+        lines.append(f"Total Iter Time (s): {timing.get('iter_seconds')}")
+        lines.append(f"Avg Iter (ms): {timing.get('iter_avg_ms')}")
+        lines.append(f"Throughput (ips): {timing.get('throughput_ips')}")
+        lines.append("")
+        lines.append("=== Comm ===")
+        lines.append(f"Avg Comm (ms): {comm.get('avg_ms')}")
+        per_rank = comm.get("per_rank_avg_ms")
+        if isinstance(per_rank, dict) and per_rank:
+            for k, v in per_rank.items():
+                lines.append(f"rank {k}: {v} ms")
+        return "\n".join(lines)
 
 
 # =============================================================================
@@ -630,6 +831,7 @@ class Workflow:
         workers: Optional[int] = None,
         auto_select: bool = False,
         servers: Optional[List[str]] = None,
+        remote_server: Optional[str] = None,
         server_url: str = "http://localhost:5000",
         verbose: bool = True,
     ):
@@ -644,6 +846,7 @@ class Workflow:
             workers: Number of workers for resource discovery (MNM mode)
             auto_select: Auto-select remote servers (for MNM mode)
             servers: List of remote server IDs (for MNM mode)
+            remote_server: Single remote server id/name for s/sm/m remote execution
             server_url: Local GAPA API URL (for MNM mode resource discovery)
             verbose: Whether to print progress information
         """
@@ -662,6 +865,7 @@ class Workflow:
         self.workers = workers
         self.auto_select = auto_select
         self.servers = servers or []
+        self.remote_server = remote_server
         self.server_url = server_url
         
         # Validate mode
@@ -676,12 +880,16 @@ class Workflow:
                     "  2. Deploy with server/ and web/ directories"
                 )
             raise ValueError(f"Invalid mode '{mode}'. Available modes: {valid_modes}")
+
+        if self.remote_server and mode not in ("s", "sm", "m"):
+            raise ValueError("remote_server only supports s/sm/m modes")
         
         # =====================================================================
         # Cross-Platform Mode Adaptation
         # =====================================================================
         import platform
         system = platform.system()  # 'Darwin' (Mac), 'Windows', 'Linux'
+        skip_platform_adapt = bool(self.remote_server and self.mode in ("s", "sm", "m"))
         
         # Select device and world_size
         if torch.cuda.is_available():
@@ -692,7 +900,9 @@ class Workflow:
             self.world_size = 1
         
         # Platform-specific mode handling
-        if system == "Darwin":  # MacOS
+        if skip_platform_adapt:
+            pass
+        elif system == "Darwin":  # MacOS
             if mode == "sm":
                 if verbose:
                     print("[GAPA] MacOS: SM mode not supported (no CUDA). Falling back to 'S' mode.")
@@ -750,11 +960,11 @@ class Workflow:
                 self.mode = "s"
         
         # Final mode confirmation
-        if verbose and self.mode != mode:
+        if verbose and self.mode != mode and not skip_platform_adapt:
             print(f"[GAPA] Mode adjusted: '{mode}' → '{self.mode}'")
         
         # Confirm actual execution mode
-        if verbose:
+        if verbose and not skip_platform_adapt:
             mode_desc = {
                 "s": "Single-process (CPU/GPU)",
                 "sm": "DataParallel (multi-GPU)",
@@ -842,16 +1052,36 @@ class Workflow:
         Args:
             generations: Number of generations to run
         """
+        if self.remote_server:
+            from gapa.remote_runner import run_remote_task, resolve_algorithm_id
+            dataset_name = getattr(self.data_loader, "name", None) or getattr(self.data_loader, "dataset", None) or ""
+            algo_id = resolve_algorithm_id(self.algorithm)
+            result = run_remote_task(
+                self.monitor,
+                self.remote_server,
+                algorithm=algo_id,
+                dataset=dataset_name,
+                iterations=generations,
+                mode=self.mode,
+                crossover_rate=0.8,
+                mutate_rate=0.2,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                raise RuntimeError(f"remote run failed: {result}")
+            return
         # Import the core execution function
         from gapa.framework.controller import Start
         
         # Setup components
         self._setup_components()
-        
+
         if self.verbose:
             print(f"[GAPA] Starting {self.algorithm.__class__.__name__} in '{self.mode}' mode")
             print(f"[GAPA] Generations: {generations}, Device: {self.device}")
-        
+
+        import time
+        start_ts = time.perf_counter()
+
         # Call the unified core engine
         Start(
             max_generation=generations,
@@ -863,6 +1093,17 @@ class Workflow:
             verbose=self.verbose,
             observer=self.monitor,  # Pass monitor as observer
         )
+        end_ts = time.perf_counter()
+        try:
+            total = max(0.0, end_ts - start_ts)
+            if generations > 0:
+                self.monitor._local_timing = {
+                    "iter_seconds": total,
+                    "iter_avg_ms": (total / generations) * 1000.0,
+                    "throughput_ips": generations / total if total > 0 else None,
+                }
+        except Exception:
+            pass
         
         if self.verbose:
             print(f"\n[GAPA] Evolution complete. Best fitness: {self.monitor.best_fitness}")
@@ -1021,4 +1262,3 @@ class Workflow:
         if self._state is None:
             return {"error": "No iterations completed"}
         return self._controller.get_final_result(self._state)
-
