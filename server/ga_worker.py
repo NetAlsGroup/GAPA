@@ -273,6 +273,11 @@ def ga_worker(
             emit({"type": "log", "line": f"[INFO] Exec resolved: ui_mode={ui_mode} -> algo_mode={algo_mode} world_size={world_size} device={device}"})
 
         algo_raw = (algorithm or "").strip()
+        try:
+            from .algorithm_registry import resolve_algorithm_id
+            algo_raw = resolve_algorithm_id(algo_raw)
+        except Exception:
+            pass
         algo_key = algo_raw.replace("_", "-")
         algo_map = {
             "cutoff": "CutOff",

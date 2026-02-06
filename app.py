@@ -322,17 +322,39 @@ def api_v1_servers():
 @app.route("/api/v1/algorithms", methods=["GET"])
 def api_v1_algorithms():
     """List available GA algorithms."""
-    if not ALGO_MANIFEST_PATH.exists():
-        return jsonify([])
+    entries = []
     try:
-        raw = json.loads(ALGO_MANIFEST_PATH.read_text(encoding="utf-8"))
-        return jsonify(raw if isinstance(raw, list) else [])
-    except Exception as exc:
-        return jsonify(make_error_response(
-            "ManifestError",
-            f"Failed to load algorithms: {exc}",
-            request.path
-        )), HTTPStatus.INTERNAL_SERVER_ERROR
+        from server.algorithm_registry import load_algorithm_entries
+
+        entries = load_algorithm_entries() or []
+    except Exception:
+        entries = []
+    manifest = []
+    if ALGO_MANIFEST_PATH.exists():
+        try:
+            raw = json.loads(ALGO_MANIFEST_PATH.read_text(encoding="utf-8"))
+            manifest = raw if isinstance(raw, list) else []
+        except Exception as exc:
+            return jsonify(make_error_response(
+                "ManifestError",
+                f"Failed to load algorithms: {exc}",
+                request.path
+            )), HTTPStatus.INTERNAL_SERVER_ERROR
+    if not manifest:
+        return jsonify(entries)
+    if not entries:
+        return jsonify(manifest)
+    merged = []
+    seen = set()
+    for item in manifest + entries:
+        if not isinstance(item, dict):
+            continue
+        algo_id = item.get("id") or item.get("name")
+        if algo_id in seen:
+            continue
+        seen.add(algo_id)
+        merged.append(item)
+    return jsonify(merged)
 
 
 @app.route("/api/v1/datasets", methods=["GET"])

@@ -35,7 +35,10 @@ def main():
     parser.add_argument("--pop_size", type=int, default=80, help="Population size")
     parser.add_argument("--auto-select", action="store_true", help="Auto-select servers (MNM)")
     parser.add_argument("--servers", nargs="+", help="Server IDs (MNM)")
+    parser.add_argument("--server", default="", help="Remote server ID or name (e.g., 163 or Server 163)")
     args = parser.parse_args()
+
+    monitor = Monitor()
 
     # 1. Load data
     data = load_dataset(args.dataset)
@@ -44,7 +47,9 @@ def main():
     algo = SixDSTAlgorithm(pop_size=args.pop_size)
     
     # 3. Create workflow with monitor
-    monitor = Monitor()
+    # print(monitor.server())
+    # print(monitor.server_resource("163"))
+
     workflow = Workflow(
         algo, data,
         monitor=monitor,
@@ -52,11 +57,14 @@ def main():
         # auto_select=args.auto_select,
         auto_select=False,
         servers=args.servers,
+        remote_server=args.server,
     )
     
     # 4. Run
     workflow.run(args.generations)
+
     print(f"\n[Result] Best fitness: {monitor.best_fitness:.4f}")
+    print(monitor.export_all(pretty=True))
 
     # workflow.init_step()
     # for i in range(10):
