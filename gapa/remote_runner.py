@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List
+import json
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 try:
     import requests as _requests  # type: ignore
@@ -16,6 +18,16 @@ if _requests is None:  # pragma: no cover - test environments without requests
 else:
     requests = _requests
     _HAS_REQUESTS = True
+
+
+def _err(code: str, message: str, **extra: Any) -> Dict[str, Any]:
+    out: Dict[str, Any] = {
+        "error": message,
+        "error_code": code,
+        "error_at": datetime.utcnow().isoformat() + "Z",
+    }
+    out.update(extra)
+    return out
 
 
 def resolve_algorithm_id(algorithm: Any) -> str:
@@ -62,15 +74,15 @@ def _match_server(server: Dict[str, Any], query: str) -> bool:
 def select_online_server(monitor: Any, server_query: str) -> Dict[str, Any]:
     servers = monitor.server()
     if isinstance(servers, dict) and servers.get("error"):
-        return {"error": "server list error", "detail": servers}
+        return _err("SERVER_LIST_ERROR", "server list error", detail=servers)
     if not isinstance(servers, list):
-        return {"error": "invalid server list", "detail": servers}
+        return _err("INVALID_SERVER_LIST", "invalid server list", detail=servers)
     for s in servers:
         if isinstance(s, dict) and _match_server(s, server_query):
             if s.get("status") != "Activate":
-                return {"error": "server offline", **s}
+                return _err("SERVER_OFFLINE", "server offline", **s)
             return s
-    return {"error": "server not found", "input": server_query, "servers": servers}
+    return _err("SERVER_NOT_FOUND", "server not found", input=server_query, servers=servers)
 
 
 def start_remote_run(
@@ -82,11 +94,12 @@ def start_remote_run(
     mode: str,
     crossover_rate: float,
     mutate_rate: float,
+    use_strategy_plan: Optional[bool] = None,
     timeout_s: float = 20.0,
 ) -> Dict[str, Any]:
     base_url = (server.get("base_url") or "").rstrip("/")
     if not base_url:
-        return {"error": "missing base_url", "server": server}
+        return _err("MISSING_BASE_URL", "missing base_url", server=server)
     url = base_url + "/api/analysis/start"
     payload = {
         "algorithm": algorithm,
@@ -96,22 +109,24 @@ def start_remote_run(
         "mutate_rate": float(mutate_rate),
         "mode": str(mode or "").upper(),
     }
+    if use_strategy_plan is not None:
+        payload["use_strategy_plan"] = bool(use_strategy_plan)
     if getattr(requests, "post", None) is None:
-        return {"error": "requests not available", "url": url}
+        return _err("REQUESTS_UNAVAILABLE", "requests not available", url=url)
     try:
         resp = requests.post(url, json=payload, timeout=timeout_s)
     except Exception as exc:
-        return {"error": str(exc), "url": url}
+        return _err("HTTP_REQUEST_FAILED", str(exc), url=url)
     if not resp.ok:
         try:
             body = resp.json()
         except Exception:
             body = {"raw": getattr(resp, "text", "")}
-        return {"error": f"HTTP {resp.status_code}", "body": body, "url": url}
+        return _err("HTTP_STATUS_ERROR", f"HTTP {resp.status_code}", body=body, url=url)
     try:
         return resp.json()
     except Exception as exc:
-        return {"error": f"invalid json: {exc}", "url": url}
+        return _err("INVALID_JSON", f"invalid json: {exc}", url=url)
 
 
 def poll_remote_status(
@@ -123,26 +138,26 @@ def poll_remote_status(
 ) -> Dict[str, Any]:
     base_url = (server.get("base_url") or "").rstrip("/")
     if not base_url:
-        return {"error": "missing base_url", "server": server}
+        return _err("MISSING_BASE_URL", "missing base_url", server=server)
     if getattr(requests, "get", None) is None:
-        return {"error": "requests not available", "url": base_url}
+        return _err("REQUESTS_UNAVAILABLE", "requests not available", url=base_url)
     url = base_url + "/api/analysis/status"
     last = {"state": "unknown"}
     for _ in range(max_polls):
         try:
             resp = requests.get(url, timeout=10)
         except Exception as exc:
-            return {"error": str(exc), "url": url}
+            return _err("HTTP_REQUEST_FAILED", str(exc), url=url)
         if not resp.ok:
             try:
                 body = resp.json()
             except Exception:
                 body = {"raw": getattr(resp, "text", "")}
-            return {"error": f"HTTP {resp.status_code}", "body": body, "url": url}
+            return _err("HTTP_STATUS_ERROR", f"HTTP {resp.status_code}", body=body, url=url)
         try:
             data = resp.json()
         except Exception as exc:
-            return {"error": f"invalid json: {exc}", "url": url}
+            return _err("INVALID_JSON", f"invalid json: {exc}", url=url)
         last = data if isinstance(data, dict) else {"state": "unknown", "raw": data}
         if progress_cb:
             try:
@@ -168,6 +183,7 @@ def run_remote_task(
     mode: str,
     crossover_rate: float,
     mutate_rate: float,
+    use_strategy_plan: Optional[bool] = None,
     max_polls: int = 600,
     interval_s: float = 1.0,
 ) -> Dict[str, Any]:
@@ -182,6 +198,7 @@ def run_remote_task(
         mode=mode,
         crossover_rate=crossover_rate,
         mutate_rate=mutate_rate,
+        use_strategy_plan=use_strategy_plan,
     )
     if started.get("error"):
         return started
@@ -224,4 +241,25 @@ def run_remote_task(
             monitor._remote_result = final["result"]
         except Exception:
             pass
+    if isinstance(final, dict) and not final.get("error"):
+        final.setdefault(
+            "run_meta",
+            {
+                "algorithm": algorithm,
+                "dataset": dataset,
+                "iterations": int(iterations),
+                "mode": str(mode or "").upper(),
+                "use_strategy_plan": use_strategy_plan,
+                "server_id": server.get("id"),
+                "server_name": server.get("name"),
+            },
+        )
     return final
+
+
+def save_remote_result(result: Dict[str, Any], path: str) -> str:
+    out = dict(result or {})
+    out.setdefault("saved_at", datetime.utcnow().isoformat() + "Z")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, indent=2)
+    return path

@@ -261,7 +261,15 @@ def ga_worker(
                 algo_mode = "s"
             device = "cuda:0" if torch.cuda.is_available() else "cpu"
 
-        world_size = int(torch.cuda.device_count()) if device.startswith("cuda") else 1
+        if device.startswith("cuda"):
+            visible_count = int(torch.cuda.device_count())
+            if algo_mode == "m" and selected_devices:
+                # Prefer explicitly selected devices (often from resource lock)
+                world_size = min(max(1, len(selected_devices)), max(1, visible_count))
+            else:
+                world_size = visible_count
+        else:
+            world_size = 1
         if algo_mode == "m" and world_size < 2:
             emit({"type": "log", "line": f"[WARN] mode={algo_mode} requires >=2 GPUs; fallback to S"})
             algo_mode = "s"
@@ -271,6 +279,8 @@ def ga_worker(
             emit({"type": "log", "line": f"[INFO] Exec resolved: ui_mode={ui_mode} -> algo_mode={algo_mode} local_device={device} (远程服务器使用其锁定的 GPU)"})
         else:
             emit({"type": "log", "line": f"[INFO] Exec resolved: ui_mode={ui_mode} -> algo_mode={algo_mode} world_size={world_size} device={device}"})
+        if selected_devices:
+            emit({"type": "log", "line": f"[INFO] Selected devices: {selected_devices}"})
 
         algo_raw = (algorithm or "").strip()
         try:

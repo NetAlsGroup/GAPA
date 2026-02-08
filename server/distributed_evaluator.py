@@ -148,7 +148,15 @@ def build_device_workers(
                 continue
             lock_status = resp.json()
             if not lock_status.get("active"):
-                # No active lock, skip this server
+                # Lock inactive still means server is reachable: keep it as a CPU worker
+                # so MNM can continue to dispatch remote fitness jobs.
+                device_workers.append(DeviceWorker(
+                    server_id=w.server_id,
+                    base_url=w.base_url,
+                    device="cpu",
+                    is_local=False,
+                    weight=0.5,
+                ))
                 continue
             
             devices = lock_status.get("devices") or []
@@ -462,6 +470,14 @@ class DistributedEvaluator(nn.Module):
         self._current_iter = 0
         self._per_worker_stats: Dict[str, Dict[str, float]] = {}
         self._per_iter_stats: List[Dict[str, Any]] = []
+        self._rr_cursor = 0
+        self._forward_calls = 0
+        self._guard_enabled = bool(int(os.getenv("GAPA_MNM_COMM_GUARD", "1") or 1))
+        self._guard_max_ratio = float(os.getenv("GAPA_MNM_COMM_MAX_RATIO", "1.5") or 1.5)
+        self._guard_min_calls = int(os.getenv("GAPA_MNM_COMM_MIN_CALLS", "8") or 8)
+        self._guard_cooldown_iters = int(os.getenv("GAPA_MNM_COMM_COOLDOWN_ITERS", "5") or 5)
+        self._force_local_until = -1
+        self._guard_reason: Optional[str] = None
     
     def _build_device_workers(self) -> List[DeviceWorker]:
         """Build DeviceWorkers from all servers' locked devices."""
@@ -522,11 +538,22 @@ class DistributedEvaluator(nn.Module):
     def forward(self, population: Any) -> Any:
         """Evaluate fitness using GPU-level distribution across all servers."""
         torch, _nn = _require_torch()
+        self._forward_calls += 1
+        iter_tick = int(self._current_iter) if self._current_iter > 0 else int(self._forward_calls)
         if not isinstance(population, torch.Tensor):
             return self._base(population)
 
         n = int(population.shape[0])
         if n <= 0:
+            return self._base(population)
+
+        # Guardrail: if communication dominated recently, cool down and use local evaluator.
+        if self._guard_enabled and iter_tick <= self._force_local_until:
+            if iter_tick == self._force_local_until and self._guard_reason:
+                print(f"[INFO] MNM comm-guard cooldown finished: {self._guard_reason}")
+                self._guard_reason = None
+            elif iter_tick == self._force_local_until - self._guard_cooldown_iters + 1:
+                print("[WARN] MNM comm-guard active: temporary fallback to local evaluator")
             return self._base(population)
 
         # Build DeviceWorkers from all servers' locked devices
@@ -547,6 +574,13 @@ class DistributedEvaluator(nn.Module):
         # Limit workers to population size
         if len(device_workers) > n:
             device_workers = device_workers[:n]
+
+        # Fairness: rotate worker starting position per forward call.
+        if len(device_workers) > 1:
+            shift = self._rr_cursor % len(device_workers)
+            if shift:
+                device_workers = device_workers[shift:] + device_workers[:shift]
+            self._rr_cursor = (self._rr_cursor + 1) % len(device_workers)
 
         # Split population by worker weights (equal by default)
         weights = [max(1e-6, dw.weight) for dw in device_workers]
@@ -676,13 +710,32 @@ class DistributedEvaluator(nn.Module):
         # Record per-iteration stats
         if iter_calls:
             iter_cumulative = sum(c.total_ms for c in iter_calls)
+            iter_compute = sum(c.compute_ms for c in iter_calls)
+            iter_overhead = sum((c.serialize_ms + c.network_ms + c.deserialize_ms) for c in iter_calls)
             self._per_iter_stats.append({
-                "iter": self._current_iter,
+                "iter": iter_tick,
                 "total_ms": iter_cumulative,  # Cumulative
                 "wall_ms": iter_wall_ms,      # Wall clock
                 "workers": [c.worker_id for c in iter_calls],
                 "calls": len(iter_calls),
+                "compute_ms": iter_compute,
+                "overhead_ms": iter_overhead,
             })
+
+            # Communication guard: if overhead dominates compute, temporarily fallback.
+            if (
+                self._guard_enabled
+                and len(iter_calls) >= self._guard_min_calls
+                and iter_compute > 0.0
+            ):
+                ratio = iter_overhead / max(1e-6, iter_compute)
+                if ratio > self._guard_max_ratio:
+                    self._force_local_until = iter_tick + self._guard_cooldown_iters
+                    self._guard_reason = (
+                        f"iter={iter_tick} overhead/compute={ratio:.2f} "
+                        f"> threshold={self._guard_max_ratio:.2f}"
+                    )
+                    print(f"[WARN] MNM comm-guard triggered: {self._guard_reason}")
 
         return torch.cat(fits, dim=0)
 
@@ -740,6 +793,14 @@ class DistributedEvaluator(nn.Module):
             "total_comm_ms": total_comm,  # Cumulative
             "wall_clock_ms": wall_clock_ms,  # Actual elapsed
             "parallel_efficiency": efficiency,  # Speedup from parallelism
+            "comm_guard": {
+                "enabled": self._guard_enabled,
+                "max_ratio": self._guard_max_ratio,
+                "min_calls": self._guard_min_calls,
+                "cooldown_iters": self._guard_cooldown_iters,
+                "force_local_until": self._force_local_until,
+                "reason": self._guard_reason,
+            },
             "total_serialize_ms": total_serialize,
             "total_network_ms": total_network,
             "total_compute_ms": total_compute,
@@ -750,4 +811,3 @@ class DistributedEvaluator(nn.Module):
             "per_worker": per_worker,
             "per_iteration": self._per_iter_stats,
         }
-
