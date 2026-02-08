@@ -33,254 +33,154 @@
 
   </div>
 
+GAPA is a Python library for accelerated Perturbed Substructure Structure Optimization (PSSO),
+including CND, CDA, NCA, and LPA workloads. It provides a unified GA execution interface across:
 
-GAPA is a Python library that accelerates Perturbed SubStructure Optimization(PSSO).
-This challenging field has many vital applications, such as Community Detection Attacks (CDA), Critical Node Detection(CND), Node Classification Attacks (NCA), and Link Prediction Attacks (LPA).
-<br>
-<br>
-GAPA proposes a parallel acceleration framework to achieve fast computation of the Genetic Algorithm (GA) in PSSO.
-Currently, GAPA contains 10 PSSO algorithms implemented by GA.
-All algorithms built upon [PyTorch](https://github.com/pytorch/pytorch).
-<br><br>
+- local single-process (`s`)
+- single-node multi-GPU (`sm`)
+- local distributed multi-process (`m`)
+- heterogeneous multi-node distributed fitness acceleration (`mnm`)
 
-<h3>
-Basic Environment
-</h3>
+All algorithm implementations are based on [PyTorch](https://github.com/pytorch/pytorch).
 
-* `python == 3.9`
-* `pytorch == 2.3.0`
+For Chinese documentation, see [README.zh-CN.md](README.zh-CN.md).
 
-See `requirements.txt` for more information.
-<br>
+<h3>Requirements</h3>
 
-<h3>
-Installation
-</h3>
-Install from pip
+- Python `3.9+`
+- PyTorch `2.3.0+` (recommended)
 
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
 ```
+
+<h3>Installation</h3>
+
+Install from PyPI:
+
+```bash
 pip install gapa
 ```
 
-<br>
-<h3>
-Install from source
-</h3>
+Install from source:
 
-```
-git clone xxx
+```bash
+git clone https://github.com/NetAlsGroup/GAPA.git
 cd GAPA
 python setup.py install
 ```
 
-If you find the dependencies are complex to install, please try the following: `python setup_empty.py install` (only install GAPA without installing other packages)
+Minimal install (without heavy dependency resolution):
 
-
-<br>
-<h3>
-File tree
-
-</h3>
-
-```
-├─GAPA
-| |
-| |-gapa  # Origin Files with Framework and Algorithms
-| | └─algorithm  # The Files of Algorithms
-| | | ├─CDA
-| | | ├─CND
-| | | ├─LPA
-| | | └─NCA
-| | ├─DeepLearning  # Some Key File for NCA Task
-| | └─framework
-| | | ├─body.py  # The Main Part of GA like Mutation
-| | | ├─controller.py  # The Workflow Controller of all Acceleration Modes
-| | | └─evaluator.py  # Class of Fitness Function
-| | └─utils  # Some helpful Functions
-| |-tests  # Examples for ten Algorithms and Custom Method
-| | ├─absolute_path.py  # The main path of This project and Others.
-| | ├─CDA_new.py  #  Kickstart Algorithms of CDA Tasks
-| | ├─CND_new.py  #  Kickstart Algorithms of CND Tasks
-| | ├─LPA_new.py  #  Kickstart Algorithms of LPA Tasks
-| | ├─NCA_new.py  #  Kickstart Algorithms of NCA Tasks
-| | ├─Custom.py  #  Example for Custom Method
-| | ├─run.py  #  Kickstart a Custom Method
-| | |
-| | ├─Evotorch_SixDST.py  # The implements of examples with Evotorch and Evox
-| | ├─Evotorch_CDA_EDA.py
-| | ├─Evox_SixDST.py
-| | ├─Evox_CDA_EDA.py
+```bash
+python setup_empty.py install
 ```
 
-<br>
-<h3>
-Test Examples
-</h3>
+<h3>Quick Start</h3>
 
-We provide four example files in `tests/` to illustrate how to use our optimization code. The relationship between the algorithm and the reference file is as follows:
+Run the script-first baseline example:
 
-| File               | Algorithm             |
-|--------------------|-----------------------|
-| <center>CDA_new.py | QAttack, CGN, CDA-EDA |
-| <center>CND_new.py | CutOff, SixDST, TDE   |
-| <center>NCA_new.py | GANI, NCA-GA          |
-| <center>LPA_new.py | LPA-EDA, LPA-GA       |
-
-<br>
-Kickstart an algorithm:
-
+```bash
+python examples/run_sixdst.py --dataset ForestFire_n500 --mode s
 ```
-python CND_new.py --dataset=ForestFire_n500 --method=SixDST --pop_size=100 --mode=m
+
+Run remote single-server execution (`s`/`sm`/`m`):
+
+```bash
+python examples/run_sixdst.py --dataset ForestFire_n500 --mode m --server 6 --use-strategy-plan
+python examples/run_sixdst.py --dataset ForestFire_n500 --mode m --server 6 --no-strategy-plan
 ```
-or you can choose your way to start an algorithm.
-<br>
 
-<br>
-<h3>
-GAPA Console（资源监控 + 多机适应度加速）
-</h3>
+Run heterogeneous MNM mode:
 
-1) 本机启动控制台：
-
+```bash
+python examples/run_sixdst.py --dataset ForestFire_n500 --mode mnm --servers "Server 6"
 ```
+
+<h3>Services</h3>
+
+Start local orchestrator service:
+
+```bash
 python app.py
 ```
 
-2) 在每台远程服务器启动 agent（用于资源上报与适应度计算 RPC）：
+Start remote server agent on each compute host:
 
-```
+```bash
 uvicorn server_agent:app --host 0.0.0.0 --port 7777
 ```
 
-3) 配置 `servers.json` 后，在 Console 的“算法运行与监控”里选择运行模式 `MNM（多机适应度加速）`。
-目前 MNM 分布式适应度计算优先支持 CND 系列算法：`SixDST` / `CutOff` / `TDE`。
+Main runtime config files:
 
-可选参数：
-- `GAPA_MNM_MAX_WORKERS`：每次适应度评估最多使用的远程节点数（默认 4）
-- `GAPA_MNM_REFRESH_S`：节点资源与 StrategyPlan 刷新间隔秒数（默认 2.0）
+- `servers.json`: remote server inventory and endpoints
+- `algorithms.json`: registry for generic/user-defined algorithms
 
-<br>
-We also provide application examples of SixDST and CDA-EDA algorithms on Evotorch and Evox for users‘ reference.
+Useful environment variables:
 
+- `GAPA_MNM_MAX_WORKERS` (default: `4`)
+- `GAPA_MNM_REFRESH_S` (default: `2.0`)
 
-| File         | 
-|--------------|
-| <center>Evotorch_CDA_EDA.py  | 
-| <center>Evotorch_CDA_EDA.py |
-| <center>Evox_SixDST.py | 
-| <center>Evox__CDA_EDA.py |
+<h3>Project Layout</h3>
 
-
-<h3>
-Custom Method
-</h3>
-
-We also provide a way to start a custom method. See more details in `custom.py`,  `run.py` and `absolute_path.py`.
-<br>
-
-1. Set up your path.
-
-```
-project_path = ...  # ~/
-dataset_path = ...
-# If NCA -> Set model path
-model_path = ...
-```
-
-
-2. Create your own evaluator and controller classes.
-
-```
-import torch
-from gapa.framework.evaluator import BasicEvaluator
-from gapa.framework.controller import CustomController
-
-
-class ExampleEvaluator(BasicEvaluator):
-    def __init__(self, pop_size, adj: torch.Tensor, device):
-        super().__init__(
-            pop_size=pop_size,
-            device=device
-        )
-        ...
-    def forward(self, population):
-        ...
-        
-
-class ExampleController(CustomController):
-    def __init__(self, budget, pop_size, pc, pm, side, mode, num_to_eval, device):
-        super().__init__(
-            side=side,
-            mode=mode,
-            budget=budget,
-            pop_size=pop_size,
-            num_to_eval=num_to_eval,
-            device=device
-        )
-        self.crossover_rate = pc
-        self.mutate_rate = pm
-        ...
-        
-    def setup(self, data_loader, evaluator, **kwargs):
-        ...
-        return evaluator
-
-    def init(self, body):
-        ...
-        return ONE, population
-
-    def SelectionAndCrossover(self, body, population, fitness_list, ONE):
-        ...
-        return crossover_population
-
-    def Mutation(self, body, crossover_population, ONE):
-        ...
-        return mutation_population
-
-    def Eval(self, generation, population, fitness_list, critical_genes):
-        metric = MetricFunc(args)
-        return {
-            "Metric": metric
-        }
+```text
+GAPA/
+├── app.py                    # Local orchestrator service (API + web entry)
+├── server_agent.py           # Remote compute agent service
+├── algorithms.json           # Generic/user algorithm registry
+├── servers.json              # Remote server inventory
+├── gapa/                     # Core framework + built-in algorithms
+│   ├── algorithm/
+│   │   ├── CDA/
+│   │   ├── CND/
+│   │   ├── LPA/
+│   │   └── NCA/
+│   ├── framework/
+│   ├── utils/
+│   └── workflow.py           # Unified workflow + monitor
+├── server/                   # Runtime modules
+│   ├── distributed_evaluator.py
+│   ├── resource_lock.py
+│   ├── task_queue.py
+│   └── algorithm_registry.py
+├── autoadapt/                # StrategyPlan and adaptive routing
+├── examples/                 # Minimal script-first demos
+├── tests/                    # Regression tests
+├── dataset/                  # Built-in datasets
+└── web/                      # Frontend assets
 ```
 
-3. Create a new python file and initialize your device. Use world_size to choose the desired number of processes:
+<h3>Examples</h3>
 
-```
-import os
-from gapa.utils.init_device import init_device
-device, world_size = init_device(world_size=2)
-```
-4. Then import other package.
+The `examples/` directory is the primary script API for users.
 
-```
-import torch
-import networkx as nx
-from custom import ExampleEvaluator, ExampleController
-from absolute_path import dataset_path
-from gapa.utils.DataLoader import Loader
-from gapa.framework.controller import Start
-from gapa.framework.body import Body
-```
+| File | Purpose |
+|------|---------|
+| `examples/run_sixdst.py` | End-to-end execution in `s`/`sm`/`m`/`mnm` modes |
+| `examples/resource_scheduler.py` | Resource listing, lock, and strategy planning |
+| `examples/run_lock_keepalive.py` | Lock/renew/release keepalive flow |
+| `examples/run_analysis_queue.py` | Queue-based remote scheduling |
+| `examples/run_report_export.py` | Unified monitor export and reporting |
+| `examples/run_trends.py` | Run trend aggregation |
+| `examples/sixdst_custom.py` | Example custom algorithm wrapper |
 
-5. Load your data.
+<h3>Custom Algorithm Integration</h3>
 
-```
-dataset = ...
-data_loader = Loader(
-    dataset, device
-)
-...
-```
+For user-defined or generic algorithms, use `algorithms.json` as a single registration entry point.
 
-6. Run your method.
+Recommended flow:
 
-```
-body = Body(nodes_num, budget, pop_size, "min", device)
-evaluator = ExampleEvaluator(pop_size, adj, device)
-controller = ExampleController(budget, pop_size, pc, pm, fit_side, "s", num_to_eval, device)
-Start(max_generation, data_loader, controller, evaluator, body, world_size)
-```
+1. Implement your algorithm wrapper under `examples/` or your own package.
+2. Register the algorithm in `algorithms.json` with:
+   - `entry`: import path
+   - `init_kwargs`: constructor defaults
+   - `capabilities`: supported modes and runtime traits
+3. Start runs via `Workflow` / `examples/run_sixdst.py` style scripts.
+4. For remote or MNM execution, make sure both local `app.py` and remote `server_agent.py` can import the registered entry.
+
+This approach replaces the old ad-hoc `custom.py/run.py` path and keeps registration centralized.
 
 
 <br>
@@ -302,15 +202,9 @@ Implemented Algorithms
 | <center>NCA-GA   | <center>2018 | <center>NCA | <center>[\[8\]](#r8)</center> | <center>[Link](https://github.com/Hanjun-Dai/graph_adversarial_attack?tab=readme-ov-file)                                              |
 <br>
 
-<h3>
-Changelog
-</h3>
+<h3>Changelog</h3>
 
-* 12/2024: Open source code, providing ten algorithms for four tasks under GA-based PSSO problem.
-
-* 04/2025: Update the communication of arbitrary populations in M mode and MNM mode under different GPUs. 
-Optimized the fitness calculation of CDA-EDA.
-Provides CDA-EDA and SixDST acceleration use cases based on Evox and Evotorch.
+See [CHANGELOG.txt](CHANGELOG.txt) for detailed release and milestone updates.
 
 <br>
 

@@ -1,0 +1,28 @@
+GAPA Changelog
+==============
+
+2026-02
+-------
+- Added script-first remote execution flow for s/sm/m via Workflow(..., remote_server=...).
+- Added stable remote polling and result normalization into Monitor for remote runs.
+- Added unified generic algorithm registration in algorithms.json with capability contracts.
+- Added adaptive resource scheduling APIs in Monitor:
+  resource query, lock/renew/release, strategy plan, distributed strategy plan.
+- Added resource lock lifecycle upgrades:
+  lock_id, owner, renew_count, remaining/expiry tracking.
+- Added /api/resource_lock/renew endpoint and app.py proxy forwarding.
+- Added queue-based analysis scheduling:
+  queue_if_busy, owner, priority, queue status API, fairness/per-owner limits.
+- Added run reporting pipeline:
+  results/runs/* full+summary reports, JSONL run summaries, benchmark regression checks.
+- Added trend aggregation helpers and script examples for report/trend/resource workflows.
+
+2025-04
+-------
+- Improved communication path in M and MNM modes across heterogeneous GPUs.
+- Optimized CDA-EDA fitness calculation path.
+- Added Evox/Evotorch acceleration examples for CDA-EDA and SixDST.
+
+2024-12
+-------
+- Initial open-source release with ten GA-based PSSO algorithms across CDA/CND/LPA/NCA tasks.
