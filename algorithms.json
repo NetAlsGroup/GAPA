@@ -1,5 +1,18 @@
 {
   "algorithms": [
-    {"id": "SixDST", "name": "SixDSTAlgorithm", "aliases": ["SixDSTAlgorithm"], "category": "Custom"}
+    {
+      "id": "SixDST",
+      "name": "SixDSTAlgorithm",
+      "aliases": ["SixDSTAlgorithm"],
+      "entry": "examples.sixdst_custom:SixDSTAlgorithm",
+      "init_kwargs": {
+        "pop_size": 80,
+        "crossover_rate": 0.6,
+        "mutate_rate": 0.2,
+        "cutoff_enabled": true,
+        "cutoff_rounds": 10
+      },
+      "category": "Custom"
+    }
   ]
 }

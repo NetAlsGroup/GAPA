@@ -148,7 +148,15 @@ def build_device_workers(
                 continue
             lock_status = resp.json()
             if not lock_status.get("active"):
-                # No active lock, skip this server
+                # Lock inactive still means server is reachable: keep it as a CPU worker
+                # so MNM can continue to dispatch remote fitness jobs.
+                device_workers.append(DeviceWorker(
+                    server_id=w.server_id,
+                    base_url=w.base_url,
+                    device="cpu",
+                    is_local=False,
+                    weight=0.5,
+                ))
                 continue
             
             devices = lock_status.get("devices") or []
@@ -750,4 +758,3 @@ class DistributedEvaluator(nn.Module):
             "per_worker": per_worker,
             "per_iteration": self._per_iter_stats,
         }
-

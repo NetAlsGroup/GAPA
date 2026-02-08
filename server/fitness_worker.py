@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+import inspect
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -143,6 +144,11 @@ class _FitnessContext:
             raise FileNotFoundError(f"dataset .txt not found for '{self.dataset}' under {_dataset_dir()}")
 
         algo = (self.algorithm or "").strip()
+        try:
+            from .algorithm_registry import resolve_algorithm_id
+            algo = resolve_algorithm_id(algo)
+        except Exception:
+            pass
 
         def _adjlist(sort_nodes: bool) -> Dict[str, Any]:
             g0 = nx.read_adjlist(str(ds_file), nodetype=int)
@@ -294,6 +300,72 @@ class _FitnessContext:
             self._evaluator_setup = _setup
             return
 
+        # Generic registry path:
+        # If algorithm is registered in algorithms.json with an import entry,
+        # build evaluator/controller dynamically without hard-coding branches.
+        try:
+            from .algorithm_registry import load_algorithm_entries, load_algorithm_registry
+            from gapa.workflow import load_dataset
+        except Exception:
+            load_algorithm_entries = None  # type: ignore[assignment]
+            load_algorithm_registry = None  # type: ignore[assignment]
+            load_dataset = None  # type: ignore[assignment]
+
+        if load_algorithm_registry is not None and load_dataset is not None:
+            registry = load_algorithm_registry()
+            algo_cls = registry.get(algo)
+            if algo_cls is not None:
+                # One dataset object can be reused; evaluator is created per pop_size.
+                data_loader = load_dataset(self.dataset, device=self.device)
+                torch_device = torch.device(self.device)
+                init_kwargs_template: Dict[str, Any] = {}
+                if load_algorithm_entries is not None:
+                    for entry in load_algorithm_entries():
+                        if not isinstance(entry, dict):
+                            continue
+                        if str(entry.get("id") or "").strip() == algo:
+                            cfg = entry.get("init_kwargs")
+                            if isinstance(cfg, dict):
+                                init_kwargs_template = dict(cfg)
+                            break
+
+                def _build_algorithm(pop_size: int):
+                    kwargs = dict(init_kwargs_template)
+                    try:
+                        sig = inspect.signature(algo_cls.__init__)
+                        if "pop_size" in sig.parameters and "pop_size" not in kwargs:
+                            kwargs["pop_size"] = int(pop_size)
+                    except Exception:
+                        pass
+                    try:
+                        inst = algo_cls(**kwargs)
+                    except TypeError:
+                        # Last-resort fallback for non-standard __init__ signatures.
+                        inst = algo_cls()
+                    # Keep pop_size aligned with current batch when algorithm exposes it.
+                    if hasattr(inst, "pop_size"):
+                        try:
+                            setattr(inst, "pop_size", int(pop_size))
+                        except Exception:
+                            pass
+                    return inst
+
+                def _setup(pop_size: int):
+                    inst = _build_algorithm(pop_size)
+                    evaluator = inst.create_evaluator(data_loader)
+                    controller = inst.create_controller(data_loader, mode="s", device=torch_device)
+                    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                        return controller.setup(data_loader=data_loader, evaluator=evaluator)
+
+                self._data = data_loader
+                self._evaluator_setup = _setup
+                return
+
+        raise RuntimeError(
+            f"unsupported algorithm for distributed fitness: '{algo}' "
+            f"(raw='{self.algorithm}')"
+        )
+
     def eval(self, population_cpu: Any, extra_context: Optional[Dict[str, Any]] = None) -> Tuple[Any, Dict[str, Any]]:
         torch = _require_torch()
         if not isinstance(population_cpu, torch.Tensor):
@@ -302,6 +374,10 @@ class _FitnessContext:
         with self.lock:
             evaluator = self._evaluator_cache.get(pop_size)
             if evaluator is None:
+                if not callable(self._evaluator_setup):
+                    raise RuntimeError(
+                        f"evaluator setup not ready for algorithm='{self.algorithm}'"
+                    )
                 evaluator = self._evaluator_setup(pop_size)
                 self._evaluator_cache[pop_size] = evaluator
             

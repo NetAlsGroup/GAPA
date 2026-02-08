@@ -36,6 +36,28 @@ __all__ = [
     "load_dataset",
 ]
 
+
+def _resolve_default_api_base() -> str:
+    env_base = os.getenv("GAPA_API_BASE")
+    if env_base:
+        return str(env_base).rstrip("/")
+    cfg = os.getenv("GAPA_SERVERS_FILE")
+    path = Path(cfg) if cfg else Path(__file__).resolve().parents[1] / "servers.json"
+    if path.exists():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            servers = raw.get("servers", []) if isinstance(raw, dict) else []
+            for entry in servers:
+                if not isinstance(entry, dict):
+                    continue
+                port = entry.get("port")
+                protocol = entry.get("protocol") or "http"
+                if port:
+                    return f"{protocol}://127.0.0.1:{port}"
+        except Exception:
+            pass
+    return "http://127.0.0.1:5000"
+
 import os
 import sys
 from abc import ABC, abstractmethod
@@ -434,13 +456,7 @@ class Monitor:
     def _resolve_api_base(self) -> str:
         if self.api_base:
             return self.api_base.rstrip("/")
-        env_base = os.getenv("GAPA_API_BASE")
-        if env_base:
-            return str(env_base).rstrip("/")
-        guessed = self._guess_api_base_from_servers_file()
-        if guessed:
-            return guessed
-        return "http://127.0.0.1:5000"
+        return _resolve_default_api_base()
 
     def _guess_api_base_from_servers_file(self) -> Optional[str]:
         cfg = os.getenv("GAPA_SERVERS_FILE")
@@ -481,6 +497,44 @@ class Monitor:
             return resp.json()
         except Exception as exc:
             return {"error": f"invalid json: {exc}"}
+
+    def _http_post_json(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if requests is None:
+            return {"error": "requests not available"}
+        try:
+            session = requests.Session()
+            session.trust_env = False
+            resp = session.post(url, json=payload, timeout=(3.0, max(5.0, self.timeout_s)))
+        except Exception as exc:
+            return {"error": str(exc)}
+        body: Any
+        try:
+            body = resp.json()
+        except Exception:
+            body = {"raw": (getattr(resp, "text", "") or "")[:500]}
+        if not getattr(resp, "ok", False):
+            return {"error": f"HTTP {resp.status_code}", "body": body}
+        return body if isinstance(body, dict) else {"data": body}
+
+    def _normalize_server_id(self, raw: str, servers: List[Dict[str, Any]]) -> Optional[str]:
+        token = str(raw or "").strip()
+        if not token:
+            return None
+        token_lower = token.lower()
+        aliases = [token, f"Server {token}", f"server {token}"]
+        alias_lower = [a.lower() for a in aliases]
+        for item in servers:
+            sid = str(item.get("id") or "")
+            name = str(item.get("name") or "")
+            sid_lower = sid.lower()
+            name_lower = name.lower()
+            if token in (sid, name) or token_lower in (sid_lower, name_lower):
+                return sid
+            if sid in aliases or sid_lower in alias_lower:
+                return sid
+            if name in aliases or name_lower in alias_lower:
+                return sid
+        return None
 
     def _fetch_snapshots(self) -> Dict[str, Any]:
         base = self._resolve_api_base()
@@ -556,6 +610,95 @@ class Monitor:
         if isinstance(snapshots, dict) and target_id in snapshots:
             return snapshots[target_id]
         return {"error": "server not found in snapshots", "server_id": target_id}
+
+    def lock_mnm(
+        self,
+        server_inputs: Optional[List[str]] = None,
+        duration_s: float = 900.0,
+        warmup_iters: int = 1,
+        mem_mb: int = 1024,
+        print_log: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Acquire resource locks for MNM mode.
+
+        Args:
+            server_inputs: Optional server ids/names. If empty, all online remote servers are targeted.
+            duration_s: Lock duration in seconds.
+            warmup_iters: Warmup iterations hint for lock benchmark.
+            mem_mb: Memory hint in MB.
+            print_log: Whether to print lock logs.
+        """
+        server_list = self.server()
+        if not isinstance(server_list, list):
+            return {"error": "server list error", "detail": server_list}
+        online = [s for s in server_list if s.get("online") and str(s.get("id")) != "local"]
+        if server_inputs:
+            targets: List[str] = []
+            for raw in server_inputs:
+                sid = self._normalize_server_id(str(raw), online)
+                if not sid:
+                    return {"error": "server offline or unknown", "server": raw}
+                targets.append(sid)
+        else:
+            targets = [str(s.get("id")) for s in online]
+
+        if not targets:
+            return {"error": "no online remote servers for mnm lock"}
+
+        api_base = self._resolve_api_base().rstrip("/")
+        if print_log:
+            print(f"[GAPA] MNM lock enabled. api_base={api_base}, targets={targets}")
+
+        locked: List[str] = []
+        details: Dict[str, Any] = {}
+        for sid in targets:
+            payload = {
+                "scope": sid,
+                "duration_s": float(duration_s),
+                "warmup_iters": int(warmup_iters),
+                "mem_mb": int(mem_mb),
+            }
+            body = self._http_post_json(f"{api_base}/api/resource_lock", payload)
+            details[sid] = body
+            result = body.get("results", {}).get(sid, {}) if isinstance(body, dict) else {}
+            active = bool(isinstance(result, dict) and result.get("active"))
+            if print_log:
+                state = "ok" if active else "failed"
+                print(f"[GAPA] MNM lock -> {sid}: {state}")
+            if active:
+                locked.append(sid)
+
+        if not locked:
+            return {
+                "error": "mnm lock failed on all targets",
+                "api_base": api_base,
+                "targets": targets,
+                "details": details,
+            }
+        return {
+            "api_base": api_base,
+            "targets": targets,
+            "locked": locked,
+            "details": details,
+        }
+
+    def unlock_servers(
+        self,
+        server_ids: List[str],
+        api_base: Optional[str] = None,
+        print_log: bool = False,
+    ) -> Dict[str, Any]:
+        """Release resource locks for the given servers."""
+        base = (api_base or self._resolve_api_base()).rstrip("/")
+        results: Dict[str, Any] = {}
+        for sid in server_ids:
+            body = self._http_post_json(f"{base}/api/resource_lock/release", {"scope": sid})
+            results[sid] = body
+            if print_log:
+                ok = bool(isinstance(body, dict) and body.get("results", {}).get(sid))
+                print(f"[GAPA] MNM unlock -> {sid}: {'ok' if ok else 'failed'}")
+        return {"api_base": base, "results": results}
     
     def record(
         self,
@@ -832,7 +975,7 @@ class Workflow:
         auto_select: bool = False,
         servers: Optional[List[str]] = None,
         remote_server: Optional[str] = None,
-        server_url: str = "http://localhost:5000",
+        server_url: str = "",
         verbose: bool = True,
     ):
         """
@@ -866,7 +1009,7 @@ class Workflow:
         self.auto_select = auto_select
         self.servers = servers or []
         self.remote_server = remote_server
-        self.server_url = server_url
+        self.server_url = (server_url or _resolve_default_api_base()).rstrip("/")
         
         # Validate mode
         valid_modes = SOURCE_MODES if HAS_DISTRIBUTED else PYPI_MODES
@@ -974,8 +1117,13 @@ class Workflow:
             print(f"[GAPA] Execution mode: {mode_desc.get(self.mode, self.mode)} | Device: {self.device}")
         
         # For MNM mode, discover resources if needed
-        if self.mode == "mnm" and self.auto_select and not self.servers:
+        if self.mode == "mnm" and not self.servers:
             self.servers = self._discover_resources()
+            if not self.servers:
+                raise RuntimeError(
+                    "MNM mode requires at least one online remote server. "
+                    "Provide `servers=[...]` or make sure remote agents are online."
+                )
         
         # Internal state (created during run)
         self._controller = None
@@ -987,20 +1135,21 @@ class Workflow:
         """Discover available remote servers for MNM mode."""
         try:
             import requests
-            resp = requests.get(
-                f"{self.server_url}/api/resource_lock/status",
-                params={"scope": "all", "realtime": "true"},
-                timeout=10
-            )
-            resp.raise_for_status()
-            
+
+            session = requests.Session()
+            session.trust_env = False
             available = []
-            for server in resp.json().get("status", []):
-                status = server.get("status", "")
-                if "locked" not in status.lower():
-                    server_id = server.get("server_id") or server.get("id")
-                    if server_id:
-                        available.append(server_id)
+            resp = session.get(f"{self.server_url}/api/v1/resources/all", timeout=10)
+            if not resp.ok:
+                resp = session.get(f"{self.server_url}/api/all_resources", timeout=10)
+            if resp.ok:
+                payload = resp.json()
+                if isinstance(payload, dict):
+                    for server_id, snap in payload.items():
+                        if server_id == "local":
+                            continue
+                        if isinstance(snap, dict) and snap.get("online"):
+                            available.append(server_id)
             
             if available and self.verbose:
                 print(f"[GAPA] Discovered {len(available)} available server(s): {available}")
@@ -1031,10 +1180,18 @@ class Workflow:
             if self.verbose:
                 print("[GAPA] Warning: DistributedEvaluator not available. Using local evaluation.")
             return evaluator
-        
+
+        # Use canonical algorithm id for remote fitness workers.
+        # Class names like "SixDSTAlgorithm" may not be recognized remotely.
+        try:
+            from gapa.remote_runner import resolve_algorithm_id
+            algo_id = resolve_algorithm_id(self.algorithm)
+        except Exception:
+            algo_id = self.algorithm.__class__.__name__
+
         wrapped = DistributedEvaluator(
             evaluator,
-            algorithm=self.algorithm.__class__.__name__,
+            algorithm=algo_id,
             dataset=self.data_loader.name,
             allowed_server_ids=self.servers,
         )
