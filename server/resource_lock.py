@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import gc
 import math
 import os
+import uuid
 from typing import Any, Dict, List, Optional
 
 try:
@@ -29,6 +30,10 @@ class LockInfo:
     duration_s: float
     mem_mb: int
     warmup_iters: int
+    lock_id: str = ""
+    owner: str = ""
+    created_at: float = 0.0
+    renew_count: int = 0
     note: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
@@ -40,6 +45,11 @@ class LockInfo:
             "duration_s": self.duration_s,
             "mem_mb": self.mem_mb,
             "warmup_iters": self.warmup_iters,
+            "lock_id": self.lock_id,
+            "owner": self.owner,
+            "created_at": self.created_at,
+            "renew_count": self.renew_count,
+            "remaining_s": max(0.0, self.expires_at - time.time()) if self.active else 0.0,
             "note": self.note,
         }
 
@@ -55,6 +65,10 @@ class ResourceLockManager:
             duration_s=0.0,
             mem_mb=0,
             warmup_iters=0,
+            lock_id="",
+            owner="",
+            created_at=0.0,
+            renew_count=0,
         )
         self._hold: List[Any] = []
         self._timer: Optional[threading.Thread] = None
@@ -81,6 +95,7 @@ class ResourceLockManager:
         mem_mb: int = 1024,
         devices: Optional[List[int]] = None,
         strict_idle: bool = False,
+        owner: str = "",
     ) -> Dict[str, Any]:
         torch = _require_torch()
         duration_s = max(10.0, float(duration_s))
@@ -106,6 +121,10 @@ class ResourceLockManager:
                     duration_s=0.0,
                     mem_mb=0,
                     warmup_iters=0,
+                    lock_id="",
+                    owner=str(owner or ""),
+                    created_at=0.0,
+                    renew_count=0,
                     note="no_available_gpu",
                 )
                 return self._info.to_dict()
@@ -121,10 +140,41 @@ class ResourceLockManager:
                 duration_s=duration_s,
                 mem_mb=mem_mb,
                 warmup_iters=warmup_iters,
+                lock_id=str(uuid.uuid4()),
+                owner=str(owner or ""),
+                created_at=now,
+                renew_count=0,
                 note="locked",
             )
             self._timer = threading.Thread(target=self._auto_release, daemon=True)
             self._timer.start()
+            return self._info.to_dict()
+
+    def renew(
+        self,
+        *,
+        duration_s: Optional[float] = None,
+        lock_id: Optional[str] = None,
+        owner: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        with self._lock:
+            if self._expired():
+                self._release_locked("expired")
+            if not self._info.active:
+                self._info.note = "not_active"
+                return self._info.to_dict()
+            if lock_id and self._info.lock_id and str(lock_id) != str(self._info.lock_id):
+                self._info.note = "lock_id_mismatch"
+                return self._info.to_dict()
+            if owner and self._info.owner and str(owner) != str(self._info.owner):
+                self._info.note = "owner_mismatch"
+                return self._info.to_dict()
+            ext = float(duration_s) if duration_s is not None else float(self._info.duration_s or 600.0)
+            ext = max(10.0, ext)
+            self._info.duration_s = ext
+            self._info.expires_at = time.time() + ext
+            self._info.renew_count = int(self._info.renew_count) + 1
+            self._info.note = "renewed"
             return self._info.to_dict()
 
     def _auto_release(self) -> None:
@@ -173,6 +223,10 @@ class ResourceLockManager:
         self._info.duration_s = 0.0
         self._info.mem_mb = 0
         self._info.warmup_iters = 0
+        self._info.lock_id = ""
+        self._info.owner = ""
+        self._info.created_at = 0.0
+        self._info.renew_count = 0
 
     def _pick_backend(self) -> tuple[str, List[int]]:
         try:

@@ -18,7 +18,8 @@ import signal
 import time
 import traceback
 import uuid
-from typing import Any, Dict
+from typing import Any, Dict, List
+import threading
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +30,7 @@ from server.fitness_protocol import dumps as fitness_dumps, loads as fitness_loa
 from server.fitness_worker import compute_fitness_batch
 from server.ga_worker import ga_worker, select_run_mode
 from server.resource_lock import LOCK_MANAGER
+from server.task_queue import TaskQueueManager
 
 
 
@@ -79,6 +81,11 @@ def api_resources() -> Dict[str, Any]:
 
 TASK = TaskState()
 STRATEGY_PROGRESS: Dict[str, Dict[str, Any]] = {}
+QUEUE_MANAGER = TaskQueueManager(
+    max_total=int(os.getenv("GAPA_QUEUE_MAX_TOTAL", "16") or 16),
+    max_per_owner=int(os.getenv("GAPA_QUEUE_MAX_PER_OWNER", "2") or 2),
+)
+QUEUE_LOCK = threading.Lock()
 
 
 def _summarize_warmup_result(result: dict | None) -> dict:
@@ -202,6 +209,222 @@ def _ga_entry(
     ga_worker(task_id, algorithm, dataset, iterations, crossover_rate, mutate_rate, selected, q)
 
 
+def _resolve_selected(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Resolve run mode/devices with lightweight adaptive pre-check to reduce OOM risk."""
+    requested_mode = str(payload.get("mode") or "AUTO").upper()
+    requested_devices = payload.get("devices")
+    auto_select = bool(payload.get("auto_select_devices", True))
+    use_strategy_plan = bool(payload.get("use_strategy_plan", True))
+    note = ""
+
+    def _normalize_devices(val: Any) -> List[int]:
+        out: List[int] = []
+        if isinstance(val, list):
+            src = val
+        elif val is None:
+            src = []
+        else:
+            src = [val]
+        for x in src:
+            try:
+                out.append(int(x))
+            except Exception:
+                continue
+        # unique preserve order
+        uniq: List[int] = []
+        for d in out:
+            if d not in uniq:
+                uniq.append(d)
+        return uniq
+
+    req_devs = _normalize_devices(requested_devices)
+    if req_devs:
+        selected = select_run_mode(requested_mode, req_devs)
+        selected["selection_note"] = "manual devices"
+        return selected
+
+    # No manual devices: StrategyPlan first, then lock + resource snapshot fallback.
+    if auto_select and requested_mode in ("M", "SM"):
+        locked_devices: List[int] = []
+        try:
+            lock_status = LOCK_MANAGER.status()
+            if lock_status.get("active"):
+                locked_devices = _normalize_devices(lock_status.get("devices"))
+        except Exception:
+            locked_devices = []
+
+        # 1) StrategyPlan as primary selector for M/SM.
+        try:
+            from autoadapt import StrategyPlan as _StrategyPlan  # type: ignore
+        except Exception:
+            _StrategyPlan = None
+        if use_strategy_plan and _StrategyPlan is not None:
+            try:
+                snap = resources_payload()
+                plan = _StrategyPlan(
+                    fitness=None,
+                    warmup=int(payload.get("plan_warmup", 0) or 0),
+                    objective=str(payload.get("plan_objective") or "time"),
+                    multi_gpu=(requested_mode == "M"),
+                    resource_snapshot=snap,
+                    gpu_busy_threshold=payload.get("gpu_busy_threshold"),
+                    min_gpu_free_mb=payload.get("min_gpu_free_mb"),
+                    tpe_trials=payload.get("tpe_trials"),
+                    tpe_warmup=payload.get("tpe_warmup"),
+                )
+                plan_backend = str(getattr(plan, "backend", "") or "").lower()
+                plan_devices = _normalize_devices(getattr(plan, "devices", []) or [])
+
+                # Respect active lock: plan result can only use locked devices.
+                if locked_devices:
+                    plan_devices = [d for d in plan_devices if d in locked_devices]
+
+                if plan_backend == "multi-gpu" and requested_mode == "M":
+                    if len(plan_devices) >= 2:
+                        selected = select_run_mode("M", plan_devices)
+                        selected["selection_note"] = f"strategy_plan backend=multi-gpu devices={plan_devices}"
+                        return selected
+                    if len(plan_devices) == 1:
+                        selected = select_run_mode("SM", plan_devices)
+                        selected["selection_note"] = f"strategy_plan fallback M->SM devices={plan_devices}"
+                        return selected
+                    selected = select_run_mode("S", [])
+                    selected["selection_note"] = "strategy_plan fallback M->S (no usable planned devices)"
+                    return selected
+
+                if plan_backend == "cuda":
+                    if len(plan_devices) >= 1:
+                        dev = [plan_devices[0]]
+                        if requested_mode == "M":
+                            selected = select_run_mode("SM", dev)
+                            selected["selection_note"] = f"strategy_plan fallback M->SM backend=cuda devices={dev}"
+                        else:
+                            selected = select_run_mode("SM", dev)
+                            selected["selection_note"] = f"strategy_plan backend=cuda device={dev[0]}"
+                        return selected
+                    selected = select_run_mode("S", [])
+                    selected["selection_note"] = "strategy_plan fallback to S (cuda backend without usable device)"
+                    return selected
+
+                if plan_backend == "cpu":
+                    selected = select_run_mode("S", [])
+                    selected["selection_note"] = "strategy_plan chose cpu; fallback to S"
+                    return selected
+            except Exception as exc:
+                note = f"strategy_plan failed: {exc}"
+
+        # 2) Fallback heuristics when StrategyPlan disabled/unavailable/failed.
+        min_free_mb = int(os.getenv("GAPA_M_DEVICE_MIN_FREE_MB", "2500") or 2500)
+        max_util = float(os.getenv("GAPA_M_DEVICE_MAX_UTIL", "90") or 90)
+        max_devices = int(os.getenv("GAPA_M_MAX_DEVICES", "8") or 8)
+        try:
+            snap = resources_payload()
+            gpus = snap.get("gpus") or []
+        except Exception:
+            gpus = []
+
+        candidates: List[tuple[int, float, float]] = []
+        for g in gpus if isinstance(gpus, list) else []:
+            if not isinstance(g, dict):
+                continue
+            try:
+                gid = int(g.get("id"))
+            except Exception:
+                continue
+            if locked_devices and gid not in locked_devices:
+                continue
+            free_mb = g.get("free_mb")
+            util = g.get("gpu_util_percent")
+            free_val = float(free_mb) if isinstance(free_mb, (int, float)) else 0.0
+            util_val = float(util) if isinstance(util, (int, float)) else 0.0
+            if free_val >= min_free_mb and util_val <= max_util:
+                candidates.append((gid, free_val, util_val))
+
+        candidates.sort(key=lambda x: (x[1], -x[2]), reverse=True)
+        picked = [gid for gid, _, _ in candidates[:max_devices]]
+
+        if requested_mode == "M":
+            if len(picked) >= 2:
+                selected = select_run_mode("M", picked)
+                note = f"{note + '; ' if note else ''}adaptive devices={picked} (min_free_mb={min_free_mb}, max_util={max_util})"
+            elif len(picked) == 1:
+                selected = select_run_mode("SM", picked)
+                note = f"{note + '; ' if note else ''}adaptive fallback M->SM (only one healthy GPU: {picked})"
+            else:
+                selected = select_run_mode("S", [])
+                note = f"{note + '; ' if note else ''}adaptive fallback M->S (no healthy GPU candidates)"
+        else:  # requested_mode == "SM"
+            if len(picked) >= 1:
+                selected = select_run_mode("SM", [picked[0]])
+                note = f"{note + '; ' if note else ''}adaptive device={picked[0]} (min_free_mb={min_free_mb}, max_util={max_util})"
+            else:
+                selected = select_run_mode("S", [])
+                note = f"{note + '; ' if note else ''}adaptive fallback SM->S (no healthy GPU candidates)"
+        selected["selection_note"] = note
+        return selected
+
+    # Legacy/default path
+    selected = select_run_mode(requested_mode, requested_devices)
+    selected["selection_note"] = "default selection"
+    return selected
+
+
+def _start_task_locked(
+    *,
+    task_id: str,
+    algorithm: str,
+    dataset: str,
+    iterations: int,
+    crossover_rate: float,
+    mutate_rate: float,
+    selected: Dict[str, Any],
+    release_lock_on_finish: bool,
+    queued_owner: str = "",
+) -> None:
+    TASK.reset_for_new_task(task_id)
+    TASK.release_lock_on_finish = release_lock_on_finish
+    mode = selected.get("mode")
+    devices = selected.get("devices")
+    selection_note = selected.get("selection_note")
+    owner_txt = f" owner={queued_owner}" if queued_owner else ""
+    TASK.append_log(f"[INFO] 运行模式: {mode} devices={devices}{owner_txt}")
+    if selection_note:
+        TASK.append_log(f"[INFO] 设备选择: {selection_note}")
+
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    proc = ctx.Process(
+        target=_ga_entry,
+        args=(task_id, algorithm, dataset, iterations, crossover_rate, mutate_rate, selected, q),
+    )
+    TASK.queue = q
+    TASK.process = proc
+    proc.start()
+    start_consumer(TASK, on_finish=_try_dispatch_next_task)
+
+
+def _try_dispatch_next_task() -> None:
+    with TASK.lock:
+        if TASK.state == "running":
+            return
+        with QUEUE_LOCK:
+            nxt = QUEUE_MANAGER.pop_next()
+        if nxt is None:
+            return
+        payload = nxt.payload
+        _start_task_locked(
+            task_id=nxt.task_id,
+            algorithm=str(payload.get("algorithm") or "ga"),
+            dataset=str(payload.get("dataset") or ""),
+            iterations=int(payload.get("iterations") or payload.get("max_generation") or 20),
+            crossover_rate=float(payload.get("crossover_rate") or payload.get("pc") or 0.8),
+            mutate_rate=float(payload.get("mutate_rate") or payload.get("pm") or 0.2),
+            selected=_resolve_selected(payload),
+            release_lock_on_finish=bool(payload.get("release_lock_on_finish", True)),
+            queued_owner=nxt.owner,
+        )
+
+
 @app.post("/api/analysis/start")
 def api_analysis_start(payload: Dict[str, Any]) -> Dict[str, Any]:
     algorithm = str(payload.get("algorithm") or "ga")
@@ -209,29 +432,36 @@ def api_analysis_start(payload: Dict[str, Any]) -> Dict[str, Any]:
     iterations = int(payload.get("iterations") or payload.get("max_generation") or 20)
     crossover_rate = float(payload.get("crossover_rate") or payload.get("pc") or 0.8)
     mutate_rate = float(payload.get("mutate_rate") or payload.get("pm") or 0.2)
-    selected = select_run_mode(payload.get("mode"), payload.get("devices"))
+    selected = _resolve_selected(payload)
     release_lock_on_finish = bool(payload.get("release_lock_on_finish", True))
+    queue_if_busy = bool(payload.get("queue_if_busy", False))
+    owner = str(payload.get("owner") or "anonymous")
+    priority = int(payload.get("priority") or 0)
 
     with TASK.lock:
         if TASK.state == "running":
-            raise HTTPException(status_code=409, detail="A task is already running")
+            if not queue_if_busy:
+                raise HTTPException(status_code=409, detail="A task is already running")
+            task_id = str(uuid.uuid4())
+            with QUEUE_LOCK:
+                ok, info = QUEUE_MANAGER.enqueue(task_id=task_id, payload=payload, owner=owner, priority=priority)
+            if not ok:
+                raise HTTPException(status_code=429, detail=info)
+            return {"task_id": task_id, "status": "queued", **info}
         task_id = str(uuid.uuid4())
-        TASK.reset_for_new_task(task_id)
-        TASK.release_lock_on_finish = release_lock_on_finish
-        TASK.append_log(f"[INFO] 运行模式: {selected.get('mode')} devices={selected.get('devices')}")
-
-        ctx = mp.get_context("spawn")
-        q = ctx.Queue()
-        proc = ctx.Process(
-            target=_ga_entry,
-            args=(task_id, algorithm, dataset, iterations, crossover_rate, mutate_rate, selected, q),
+        _start_task_locked(
+            task_id=task_id,
+            algorithm=algorithm,
+            dataset=dataset,
+            iterations=iterations,
+            crossover_rate=crossover_rate,
+            mutate_rate=mutate_rate,
+            selected=selected,
+            release_lock_on_finish=release_lock_on_finish,
+            queued_owner=owner,
         )
-        TASK.queue = q
-        TASK.process = proc
-        proc.start()
-        start_consumer(TASK)
 
-    return {"task_id": task_id, "status": "started"}
+    return {"task_id": task_id, "status": "started", "owner": owner}
 
 
 @app.post("/api/ga_warmup")
@@ -247,6 +477,8 @@ def api_ga_warmup(payload: Dict[str, Any]) -> Dict[str, Any]:
 @app.get("/api/analysis/status")
 def api_analysis_status() -> Dict[str, Any]:
     with TASK.lock:
+        with QUEUE_LOCK:
+            queue_size = QUEUE_MANAGER.size()
         return {
             "task_id": TASK.task_id,
             "state": TASK.state,
@@ -254,7 +486,15 @@ def api_analysis_status() -> Dict[str, Any]:
             "logs": list(TASK.logs),
             "result": TASK.result,
             "error": TASK.error,
+            "queued": queue_size,
         }
+
+
+@app.get("/api/analysis/queue")
+def api_analysis_queue() -> Dict[str, Any]:
+    with QUEUE_LOCK:
+        items = QUEUE_MANAGER.list_items()
+    return {"size": len(items), "items": items}
 
 @app.post("/api/analysis/stop")
 def api_analysis_stop() -> Dict[str, Any]:
@@ -311,6 +551,7 @@ def api_analysis_stop() -> Dict[str, Any]:
             TASK.progress = 0
             TASK.error = "stopped"
             TASK.append_log("[INFO] task stopped.")
+    _try_dispatch_next_task()
 
     return {"status": "stopped", "task_id": TASK.task_id}
 
@@ -401,11 +642,31 @@ def api_resource_lock(payload: Dict[str, Any]) -> Dict[str, Any]:
     warmup_iters = int(payload.get("warmup_iters", 2) or 2)
     mem_mb = int(payload.get("mem_mb", 1024) or 1024)
     strict_idle = bool(payload.get("strict_idle", False))
+    owner = str(payload.get("owner") or "")
     devices = payload.get("devices")
     if devices is not None and not isinstance(devices, list):
         devices = [devices]
     try:
-        info = LOCK_MANAGER.lock(duration_s=duration_s, warmup_iters=warmup_iters, mem_mb=mem_mb, devices=devices, strict_idle=strict_idle)
+        info = LOCK_MANAGER.lock(
+            duration_s=duration_s,
+            warmup_iters=warmup_iters,
+            mem_mb=mem_mb,
+            devices=devices,
+            strict_idle=strict_idle,
+            owner=owner,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    return info
+
+
+@app.post("/api/resource_lock/renew")
+def api_resource_lock_renew(payload: Dict[str, Any]) -> Dict[str, Any]:
+    duration_s = payload.get("duration_s")
+    lock_id = payload.get("lock_id")
+    owner = payload.get("owner")
+    try:
+        info = LOCK_MANAGER.renew(duration_s=duration_s, lock_id=lock_id, owner=owner)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return info

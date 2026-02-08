@@ -12,6 +12,12 @@
         "cutoff_enabled": true,
         "cutoff_rounds": 10
       },
+      "capabilities": {
+        "supported_modes": ["s", "sm", "m", "mnm"],
+        "supports_distributed_fitness": true,
+        "supports_remote": true,
+        "fitness_direction": "min"
+      },
       "category": "Custom"
     }
   ]

@@ -911,8 +911,12 @@ def api_analysis_start():
                     "mutate_rate": payload.get("mutate_rate"),
                     "mode": payload.get("mode"),
                     "devices": payload.get("devices"),
+                    "use_strategy_plan": payload.get("use_strategy_plan"),
                     "remote_servers": payload.get("remote_servers") or payload.get("allowed_server_ids"),
                     "release_lock_on_finish": payload.get("release_lock_on_finish", True),
+                    "queue_if_busy": payload.get("queue_if_busy", False),
+                    "owner": payload.get("owner"),
+                    "priority": payload.get("priority"),
                     "resume_id": payload.get("resume_id"),
                 },
                 timeout=(3.0, timeout_s),
@@ -972,6 +976,35 @@ def api_analysis_start():
         except Exception:
             body = {"raw": (resp.text or "")[:2000]}
         return jsonify({"error": "remote analysis start failed", "status_code": resp.status_code, "body": body}), 502
+    except Exception as exc:
+        return jsonify({"error": f"proxy failed: {exc}", "server_id": server_id, "base_url": base_url}), 502
+
+
+@app.route("/api/analysis/queue", methods=["GET"])
+def api_analysis_queue():
+    """Proxy queue status from remote server_agent; includes server_id query param."""
+    server_id = request.args.get("server_id") or request.args.get("server")
+    base_url = _resolve_server_base_url(server_id)
+    if base_url is None and server_id and server_id != "local":
+        return jsonify({"error": "unknown server_id or missing base_url", "server_id": server_id}), 404
+
+    try:
+        import requests
+
+        session = requests.Session()
+        session.trust_env = False
+        timeout_s = float(request.args.get("timeout_s") or 10)
+        if base_url:
+            proxy_url = base_url.rstrip("/") + "/api/analysis/queue?server_id=local"
+            resp = session.get(proxy_url, timeout=(3.0, timeout_s))
+            if resp.ok:
+                return jsonify(resp.json())
+            try:
+                body = resp.json()
+            except Exception:
+                body = {"raw": (resp.text or "")[:2000]}
+            return jsonify({"error": "remote analysis queue failed", "status_code": resp.status_code, "body": body}), 502
+        return jsonify({"size": 0, "items": []})
     except Exception as exc:
         return jsonify({"error": f"proxy failed: {exc}", "server_id": server_id, "base_url": base_url}), 502
 
@@ -1126,6 +1159,7 @@ def api_resource_lock():
     warmup_iters = int(payload.get("warmup_iters", 2) or 2)
     mem_mb = int(payload.get("mem_mb", 1024) or 1024)
     strict_idle = bool(payload.get("strict_idle", False))
+    owner = str(payload.get("owner") or "")
     devices = payload.get("devices")
     devices_by_server = payload.get("devices_by_server") or {}
 
@@ -1156,6 +1190,7 @@ def api_resource_lock():
                     "mem_mb": mem_mb,
                     "devices": devs if devs is not None else devices,
                     "strict_idle": strict_idle,
+                    "owner": owner,
                 }
                 print(f"[LOCK] Calling LOCK_MANAGER.lock with params: {lock_params}")
                 results[sid] = LOCK_MANAGER.lock(**lock_params)
@@ -1180,6 +1215,7 @@ def api_resource_lock():
                     "mem_mb": mem_mb,
                     "devices": (devices_by_server.get(sid) if isinstance(devices_by_server, dict) else None) or devices,
                     "strict_idle": strict_idle,
+                    "owner": owner,
                 },
             )
             results[sid] = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}", "body": resp.text[:500]}
@@ -1187,6 +1223,47 @@ def api_resource_lock():
             print(f"[LOCK] Error on remote {sid}: {exc}")
             results[sid] = {"error": str(exc)}
     print(f"[LOCK] Final results: {results}")
+    return jsonify({"scope": scope, "results": results})
+
+
+@app.route("/api/resource_lock/renew", methods=["POST"])
+def api_resource_lock_renew():
+    payload = request.get_json(silent=True) or {}
+    scope = payload.get("scope") or payload.get("server_id") or payload.get("server") or "local"
+    duration_s = payload.get("duration_s")
+    lock_id = payload.get("lock_id")
+    owner = payload.get("owner")
+    servers = load_server_list()
+    targets = servers if scope in ("all", "*") else [s for s in servers if s.get("id") == scope]
+    if not targets:
+        return jsonify({"error": "unknown server", "scope": scope}), 404
+
+    results = {}
+    for s in targets:
+        sid = s.get("id")
+        if sid == "local":
+            try:
+                results[sid] = LOCK_MANAGER.renew(duration_s=duration_s, lock_id=lock_id, owner=owner)
+            except Exception as exc:
+                results[sid] = {"error": str(exc)}
+            continue
+        base_url = _resolve_server_base_url(sid)
+        if not base_url:
+            results[sid] = {"error": "missing base_url"}
+            continue
+        try:
+            resp = _proxy_resource_lock(
+                base_url,
+                "/api/resource_lock/renew",
+                {
+                    "duration_s": duration_s,
+                    "lock_id": lock_id,
+                    "owner": owner,
+                },
+            )
+            results[sid] = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}", "body": resp.text[:500]}
+        except Exception as exc:
+            results[sid] = {"error": str(exc)}
     return jsonify({"scope": scope, "results": results})
 
 

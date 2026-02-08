@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable
 
 import multiprocessing as mp
 
@@ -41,7 +41,7 @@ class TaskState:
         self.progress = max(0, min(100, int(val)))
 
 
-def start_consumer(task: TaskState) -> None:
+def start_consumer(task: TaskState, on_finish: Optional[Callable[[], None]] = None) -> None:
     """Drain child events into task state in a background thread."""
 
     def loop() -> None:
@@ -77,6 +77,11 @@ def start_consumer(task: TaskState) -> None:
                 from server.resource_lock import LOCK_MANAGER
 
                 LOCK_MANAGER.release(reason="task_done")
+            except Exception:
+                pass
+        if on_finish:
+            try:
+                on_finish()
             except Exception:
                 pass
 
