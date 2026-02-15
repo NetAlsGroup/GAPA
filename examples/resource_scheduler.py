@@ -112,7 +112,7 @@ def main() -> None:
             )
         )
     elif args.cmd == "transport-metrics":
-        _print(monitor._http_get_json(f"{monitor._resolve_api_base().rstrip('/')}/api/transport/metrics"))
+        _print(monitor.transport_metrics())
 
 
 if __name__ == "__main__":

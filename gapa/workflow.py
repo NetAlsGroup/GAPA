@@ -1015,6 +1015,11 @@ class Monitor:
             payload["server_id"] = server_id
         return self._http_post_json(f"{base}/api/analysis/stop", payload)
 
+    def transport_metrics(self) -> Dict[str, Any]:
+        """Fetch transport-layer diagnostics (retries/failures/degrade reasons)."""
+        base = self._resolve_api_base()
+        return self._http_get_json(f"{base}/api/transport/metrics")
+
     def resource_rows(self, resources: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Flatten resource snapshots for table display."""
         snap = resources or self.resources(all_servers=True)
