@@ -2086,6 +2086,8 @@ async function startRun(opts = {}) {
     let errBody = null;
     try { errBody = await resp.json(); } catch (e) { errBody = { raw: await resp.text() }; }
     appendRunLog([`[ERROR] start failed: HTTP ${resp.status} ${JSON.stringify(errBody)}`]);
+    if (errBody?.code) appendRunLog([`[ERROR] code=${errBody.code}`]);
+    if (errBody?.transport_meta) appendRunLog([`[WARN] transport=${JSON.stringify(errBody.transport_meta)}`]);
     runState.textContent = "error";
     return;
   }
@@ -2093,6 +2095,15 @@ async function startRun(opts = {}) {
   runTaskId.textContent = data.task_id || "-";
   runState.textContent = data.status || "started";
   appendRunLog([`[INFO] task started: ${data.task_id}`]);
+  if (data.mode_decision) {
+    const md = data.mode_decision;
+    appendRunLog([
+      `[INFO] mode decision: requested=${md.requested_mode} selected=${md.selected_mode} degraded=${md.degraded} reason=${md.reason || "-"}`,
+    ]);
+  }
+  if (data.transport_meta) {
+    appendRunLog([`[INFO] transport: ${JSON.stringify(data.transport_meta)}`]);
+  }
 
   // poll status
   if (currentPoll) clearInterval(currentPoll);
@@ -2125,6 +2136,17 @@ async function pollRunStatus(server_id) {
   if (!resp.ok) return;
   const st = await resp.json();
   runState.textContent = st.state || "unknown";
+  if (st.mode_decision) {
+    const md = st.mode_decision;
+    if (st.state === "running" && lastLogCount === 0) {
+      appendRunLog([
+        `[INFO] mode decision: requested=${md.requested_mode} selected=${md.selected_mode} degraded=${md.degraded} reason=${md.reason || "-"}`,
+      ]);
+    }
+  }
+  if (st.transport_meta && st.state === "running" && lastLogCount === 0) {
+    appendRunLog([`[INFO] transport: ${JSON.stringify(st.transport_meta)}`]);
+  }
   btnRunStop.disabled = !(st.state === "running");
   const p = Number(st.progress || 0);
   runProgress.style.width = `${Math.max(0, Math.min(100, p))}%`;
@@ -2176,7 +2198,7 @@ async function pollRunStatus(server_id) {
     renderRunCharts(st.result);
   }
 
-  if (st.state === "completed" || st.state === "error" || st.state === "idle") {
+  if (st.state === "completed" || st.state === "error" || st.state === "cancelled" || st.state === "idle") {
     if (currentPoll) {
       clearInterval(currentPoll);
       currentPoll = null;
@@ -2195,6 +2217,7 @@ async function pollRunStatus(server_id) {
       hyperparams: st.result ? st.result.hyperparams : null,
       logs: logs.slice(-500),
       result: st.result || null,
+      mode_decision: st.mode_decision || null,
     };
     const ok = await historyAdd(saved);
     if (ok) {

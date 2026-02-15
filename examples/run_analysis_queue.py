@@ -44,6 +44,12 @@ def main() -> None:
     )
     print("=== analysis_start ===")
     _p(started)
+    md = started.get("mode_decision") if isinstance(started, dict) else None
+    if isinstance(md, dict):
+        print(
+            f"[mode] requested={md.get('requested_mode')} selected={md.get('selected_mode')} "
+            f"degraded={md.get('degraded')} reason={md.get('reason') or '-'}"
+        )
 
     for i in range(max(1, args.poll_seconds)):
         status = monitor.analysis_status(server_id=args.server_id)
@@ -51,10 +57,16 @@ def main() -> None:
         print(f"\n=== poll {i+1} ===")
         print("status:")
         _p(status)
+        md = status.get("mode_decision") if isinstance(status, dict) else None
+        if isinstance(md, dict):
+            print(
+                f"[mode] requested={md.get('requested_mode')} selected={md.get('selected_mode')} "
+                f"degraded={md.get('degraded')} reason={md.get('reason') or '-'}"
+            )
         print("queue:")
         _p(queue)
         state = str(status.get("state") or "")
-        if state in ("completed", "error", "idle"):
+        if state in ("completed", "error", "cancelled", "idle"):
             break
         time.sleep(1)
 

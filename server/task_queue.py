@@ -12,6 +12,7 @@ class QueuedTask:
     priority: int
     created_at: float
     payload: Dict[str, Any]
+    retry_count: int = 0
 
 
 class TaskQueueManager:
@@ -36,6 +37,7 @@ class TaskQueueManager:
                     "priority": item.priority,
                     "created_at": item.created_at,
                     "position": idx,
+                    "retry_count": item.retry_count,
                 }
             )
         return out
@@ -79,3 +81,12 @@ class TaskQueueManager:
         self._items = [i for i in self._items if i.task_id != pick.task_id]
         self._last_dispatched_owner = pick.owner
         return pick
+
+    def requeue(self, item: QueuedTask, *, reason: str = "") -> Tuple[bool, Dict[str, Any]]:
+        item.retry_count = int(item.retry_count) + 1
+        if len(self._items) >= self.max_total:
+            return False, {"error": "queue full", "error_code": "QUEUE_FULL", "reason": reason}
+        self._items.append(item)
+        self._items.sort(key=lambda x: (-x.priority, x.created_at))
+        pos = next((idx for idx, x in enumerate(self._items, start=1) if x.task_id == item.task_id), len(self._items))
+        return True, {"task_id": item.task_id, "position": pos, "retry_count": item.retry_count, "reason": reason}

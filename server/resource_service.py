@@ -8,6 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from .mode_runtime import classify_transport_error, request_with_retry
 
 try:
     import psutil
@@ -249,10 +250,18 @@ def get_all_resources(remote_addr: Optional[str]) -> Dict[str, Dict[str, Any]]:
 
                 session = requests.Session()
                 session.trust_env = False  # avoid routing LAN traffic via HTTP(S)_PROXY
-                resp = session.get(base_url.rstrip("/") + "/api/resources", timeout=5)
-                data = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}"}
+                resp, tmeta = request_with_retry(
+                    session=session,
+                    method="GET",
+                    url=base_url.rstrip("/") + "/api/resources",
+                    timeout=(2.0, 5.0),
+                    op="resource_lock_status",
+                )
+                data = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}", "code": classify_transport_error(status_code=resp.status_code)}
+                if isinstance(data, dict):
+                    data["transport_meta"] = tmeta
             except Exception as exc:  # pragma: no cover - network issues
-                data = {"error": f"{exc}", "hostname": server.get("name", server_id)}
+                data = {"error": f"{exc}", "code": classify_transport_error(exc=exc), "hostname": server.get("name", server_id)}
         # Normalize timestamp field from agent to UI expected time
         if isinstance(data, dict) and "time" not in data and "timestamp" in data:
             data["time"] = data.get("timestamp")

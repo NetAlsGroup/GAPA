@@ -12,11 +12,18 @@ Script-first minimal examples (no Web UI dependency).
   - Server/resource query
   - lock/unlock/lock-status
   - strategy plan and distributed plan
+  - `transport-metrics` for retry/failure/degrade diagnostics
 
 ## Queue-aware remote task submit
 - `run_analysis_queue.py`
   - Start analysis with `queue_if_busy`
   - Poll `/api/analysis/status` and `/api/analysis/queue`
+  - Print `mode_decision` (`requested_mode/selected_mode/degraded/reason`)
+  - Recognize terminal states: `completed/error/cancelled`
+
+## Unstable Network Tips
+- Prefer `queue_if_busy=true` and poll `analysis/status` instead of tight restart loops.
+- Check `/api/transport/metrics` when remote nodes flap (failure rate / retries / recovery latency).
 
 ## Lock keepalive
 - `run_lock_keepalive.py`

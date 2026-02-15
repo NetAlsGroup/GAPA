@@ -60,6 +60,7 @@ def main() -> None:
     p_dplan = sub.add_parser("distributed-plan", help="Run distributed strategy plan")
     p_dplan.add_argument("--servers", nargs="*", default=None)
     p_dplan.add_argument("--per-server-gpus", type=int, default=1)
+    sub.add_parser("transport-metrics", help="Show transport retry/failure/degrade diagnostics")
 
     args = parser.parse_args()
     monitor = Monitor(api_base=args.api_base, timeout_s=args.timeout)
@@ -110,6 +111,8 @@ def main() -> None:
                 per_server_gpus=args.per_server_gpus,
             )
         )
+    elif args.cmd == "transport-metrics":
+        _print(monitor._http_get_json(f"{monitor._resolve_api_base().rstrip('/')}/api/transport/metrics"))
 
 
 if __name__ == "__main__":

@@ -26,6 +26,13 @@ from server import (
 from server.resource_lock import LOCK_MANAGER
 from server.agent_state import TaskState, start_consumer
 from server.ga_worker import ga_worker, select_run_mode
+from server.mode_runtime import (
+    build_mode_decision,
+    classify_transport_error,
+    detect_capability,
+    request_with_retry,
+    transport_contract,
+)
 from server.api_schemas import (
     ErrorResponse,
     HTTPStatus,
@@ -40,6 +47,10 @@ HISTORY_FILE = (Path(__file__).resolve().parent / "results" / "history.json").re
 HISTORY_LOCK = threading.Lock()
 STRATEGY_PROGRESS: dict[str, dict[str, object]] = {}
 STRATEGY_PROGRESS_LOCK = threading.Lock()
+TRANSPORT_METRICS: dict[str, dict[str, float | int]] = {}
+TRANSPORT_METRICS_LOCK = threading.Lock()
+DEGRADE_REASON_COUNTS: dict[str, int] = {}
+DEGRADE_REASON_LOCK = threading.Lock()
 
 
 def _load_history() -> list[dict]:
@@ -69,6 +80,59 @@ def _set_strategy_progress(progress_id: str, *, current: int, total: int, status
 def _get_strategy_progress(progress_id: str) -> dict[str, object] | None:
     with STRATEGY_PROGRESS_LOCK:
         return STRATEGY_PROGRESS.get(progress_id)
+
+
+def _record_transport_metric(op: str, meta: dict | None, ok: bool) -> None:
+    if not meta:
+        return
+    with TRANSPORT_METRICS_LOCK:
+        row = TRANSPORT_METRICS.setdefault(
+            op,
+            {
+                "calls": 0,
+                "failures": 0,
+                "retries": 0,
+                "backoff_ms": 0.0,
+                "recovery_ms_sum": 0.0,
+            },
+        )
+        row["calls"] = int(row.get("calls", 0)) + 1
+        if not ok:
+            row["failures"] = int(row.get("failures", 0)) + 1
+        row["retries"] = int(row.get("retries", 0)) + int(meta.get("retries") or 0)
+        row["backoff_ms"] = float(row.get("backoff_ms", 0.0)) + float(meta.get("backoff_ms") or 0.0)
+        if int(meta.get("retries") or 0) > 0 and ok:
+            row["recovery_ms_sum"] = float(row.get("recovery_ms_sum", 0.0)) + float(meta.get("duration_ms") or 0.0)
+
+
+def _transport_metric_summary() -> dict[str, dict[str, float | int]]:
+    with TRANSPORT_METRICS_LOCK:
+        out: dict[str, dict[str, float | int]] = {}
+        for op, row in TRANSPORT_METRICS.items():
+            calls = int(row.get("calls", 0))
+            failures = int(row.get("failures", 0))
+            retries = int(row.get("retries", 0))
+            recovered = max(0, calls - failures)
+            recovery_avg_ms = float(row.get("recovery_ms_sum", 0.0)) / max(1, recovered)
+            out[op] = {
+                "calls": calls,
+                "failures": failures,
+                "failure_rate": round((failures / max(1, calls)), 4),
+                "retries": retries,
+                "avg_retries_per_call": round(retries / max(1, calls), 4),
+                "avg_recovery_ms": round(recovery_avg_ms, 3),
+            }
+        return out
+
+
+def _record_degrade_reason(mode_decision: dict | None) -> None:
+    if not isinstance(mode_decision, dict):
+        return
+    reason = str(mode_decision.get("reason") or "").strip()
+    if not reason:
+        return
+    with DEGRADE_REASON_LOCK:
+        DEGRADE_REASON_COUNTS[reason] = int(DEGRADE_REASON_COUNTS.get(reason, 0)) + 1
 
 
 def _resolve_server_base_url(server_id: str | None) -> str | None:
@@ -891,7 +955,7 @@ def api_analysis_start():
     server_id = payload.get("server_id") or payload.get("server")
     base_url = _resolve_server_base_url(server_id)
     if base_url is None and server_id and server_id != "local":
-        return jsonify({"error": "unknown server_id or missing base_url", "server_id": server_id}), 404
+        return jsonify({"error": "unknown server_id or missing base_url", "code": "UNKNOWN_SERVER", "server_id": server_id}), 404
 
     try:
         import requests
@@ -900,9 +964,11 @@ def api_analysis_start():
         session.trust_env = False
         timeout_s = float(payload.get("timeout_s", 20) or 20)
         if base_url:
-            resp = session.post(
-                base_url.rstrip("/") + "/api/analysis/start",
-                json={
+            resp, tmeta = request_with_retry(
+                session=session,
+                method="POST",
+                url=base_url.rstrip("/") + "/api/analysis/start",
+                json_payload={
                     "server_id": "local",  # Force local on remote agent to prevent proxy loop
                     "algorithm": payload.get("algorithm"),
                     "dataset": payload.get("dataset"),
@@ -920,7 +986,9 @@ def api_analysis_start():
                     "resume_id": payload.get("resume_id"),
                 },
                 timeout=(3.0, timeout_s),
+                op="analysis_start",
             )
+            _record_transport_metric("analysis_start", tmeta, bool(resp.ok))
         else:
             # Local execution with real GA worker
             import uuid
@@ -935,6 +1003,8 @@ def api_analysis_start():
             if remote_servers is not None:
                 selected["remote_servers"] = remote_servers
             release_lock_on_finish = bool(payload.get("release_lock_on_finish", True))
+            capability = detect_capability(target="local", resource_snapshot=current_resource_snapshot(), remote_reachable=True)
+            mode_reason = ""
 
             # If no resource lock is active, force CPU execution.
             try:
@@ -943,16 +1013,33 @@ def api_analysis_start():
                 lock_active = False
             if not lock_active and (selected.get("mode") or "").upper() not in ("MNM",):
                 selected = select_run_mode("CPU", None)
+                mode_reason = "no_active_lock->CPU"
+
+            mode_decision = build_mode_decision(
+                requested_mode=payload.get("mode"),
+                selected_mode=selected.get("mode"),
+                devices=selected.get("devices"),
+                target="local",
+                capability=capability,
+                reason=mode_reason,
+                use_strategy_plan=payload.get("use_strategy_plan"),
+            )
+            _record_degrade_reason(mode_decision)
 
             with LOCAL_TASK.lock:
                 if LOCAL_TASK.state == "running":
-                    return jsonify({"error": "A task is already running"}), 409
+                    return jsonify({"error": "A task is already running", "code": "TASK_BUSY"}), 409
                 task_id = str(uuid.uuid4())
                 resume_id = payload.get("resume_id")
                 
-                LOCAL_TASK.reset_for_new_task(task_id)
+                LOCAL_TASK.reset_for_new_task(task_id, mode_decision=mode_decision)
                 LOCAL_TASK.release_lock_on_finish = release_lock_on_finish
                 LOCAL_TASK.append_log(f"[INFO] 运行模式: {selected.get('mode')} devices={selected.get('devices')}")
+                LOCAL_TASK.append_log(
+                    f"[INFO] 模式决策: requested={mode_decision.get('requested_mode')} "
+                    f"selected={mode_decision.get('selected_mode')} degraded={mode_decision.get('degraded')} "
+                    f"reason={mode_decision.get('reason') or '-'}"
+                )
                 if resume_id:
                     LOCAL_TASK.append_log(f"[INFO] 正在尝试从状态 {resume_id} 继续迭代...")
 
@@ -967,17 +1054,39 @@ def api_analysis_start():
                 proc.start()
                 start_consumer(LOCAL_TASK)
 
-            return jsonify({"task_id": task_id, "status": "started"})
+            return jsonify(
+                {
+                    "task_id": task_id,
+                    "status": "started",
+                    "mode_decision": mode_decision,
+                    "transport": transport_contract(),
+                }
+            )
 
         if resp.ok:
-            return jsonify(resp.json())
+            body = resp.json()
+            if isinstance(body, dict):
+                body.setdefault("transport", transport_contract())
+                body.setdefault("transport_meta", tmeta if base_url else {})
+                body.setdefault("transport_metrics", _transport_metric_summary())
+                _record_degrade_reason(body.get("mode_decision"))
+            return jsonify(body)
         try:
             body = resp.json()
         except Exception:
             body = {"raw": (resp.text or "")[:2000]}
-        return jsonify({"error": "remote analysis start failed", "status_code": resp.status_code, "body": body}), 502
+        return jsonify(
+            {
+                "error": "remote analysis start failed",
+                "code": classify_transport_error(status_code=resp.status_code, response_body=body),
+                "status_code": resp.status_code,
+                "body": body,
+                "transport_meta": tmeta if base_url else {},
+                "transport_metrics": _transport_metric_summary(),
+            }
+        ), 502
     except Exception as exc:
-        return jsonify({"error": f"proxy failed: {exc}", "server_id": server_id, "base_url": base_url}), 502
+        return jsonify({"error": f"proxy failed: {exc}", "code": "PROXY_FAILED", "server_id": server_id, "base_url": base_url}), 502
 
 
 @app.route("/api/analysis/queue", methods=["GET"])
@@ -986,7 +1095,7 @@ def api_analysis_queue():
     server_id = request.args.get("server_id") or request.args.get("server")
     base_url = _resolve_server_base_url(server_id)
     if base_url is None and server_id and server_id != "local":
-        return jsonify({"error": "unknown server_id or missing base_url", "server_id": server_id}), 404
+        return jsonify({"error": "unknown server_id or missing base_url", "code": "UNKNOWN_SERVER", "server_id": server_id}), 404
 
     try:
         import requests
@@ -996,17 +1105,37 @@ def api_analysis_queue():
         timeout_s = float(request.args.get("timeout_s") or 10)
         if base_url:
             proxy_url = base_url.rstrip("/") + "/api/analysis/queue?server_id=local"
-            resp = session.get(proxy_url, timeout=(3.0, timeout_s))
+            resp, tmeta = request_with_retry(
+                session=session,
+                method="GET",
+                url=proxy_url,
+                timeout=(3.0, timeout_s),
+                op="analysis_status",
+            )
+            _record_transport_metric("analysis_queue", tmeta, bool(resp.ok))
             if resp.ok:
-                return jsonify(resp.json())
+                body = resp.json()
+                if isinstance(body, dict):
+                    body.setdefault("transport_meta", tmeta)
+                    body.setdefault("transport_metrics", _transport_metric_summary())
+                return jsonify(body)
             try:
                 body = resp.json()
             except Exception:
                 body = {"raw": (resp.text or "")[:2000]}
-            return jsonify({"error": "remote analysis queue failed", "status_code": resp.status_code, "body": body}), 502
+            return jsonify(
+                {
+                    "error": "remote analysis queue failed",
+                    "code": classify_transport_error(status_code=resp.status_code, response_body=body),
+                    "status_code": resp.status_code,
+                    "body": body,
+                    "transport_meta": tmeta,
+                    "transport_metrics": _transport_metric_summary(),
+                }
+            ), 502
         return jsonify({"size": 0, "items": []})
     except Exception as exc:
-        return jsonify({"error": f"proxy failed: {exc}", "server_id": server_id, "base_url": base_url}), 502
+        return jsonify({"error": f"proxy failed: {exc}", "code": "PROXY_FAILED", "server_id": server_id, "base_url": base_url}), 502
 
 
 @app.route("/api/analysis/status", methods=["GET"])
@@ -1015,7 +1144,7 @@ def api_analysis_status():
     server_id = request.args.get("server_id") or request.args.get("server")
     base_url = _resolve_server_base_url(server_id)
     if base_url is None and server_id and server_id != "local":
-        return jsonify({"error": "unknown server_id or missing base_url", "server_id": server_id}), 404
+        return jsonify({"error": "unknown server_id or missing base_url", "code": "UNKNOWN_SERVER", "server_id": server_id}), 404
 
     try:
         import requests
@@ -1026,7 +1155,14 @@ def api_analysis_status():
         if base_url:
             # Append server_id=local to prevent proxy loop on the remote side
             proxy_url = base_url.rstrip("/") + "/api/analysis/status?server_id=local"
-            resp = session.get(proxy_url, timeout=(3.0, timeout_s))
+            resp, tmeta = request_with_retry(
+                session=session,
+                method="GET",
+                url=proxy_url,
+                timeout=(3.0, timeout_s),
+                op="analysis_status",
+            )
+            _record_transport_metric("analysis_status", tmeta, bool(resp.ok))
         else:
             with LOCAL_TASK.lock:
                 return jsonify(
@@ -1037,18 +1173,37 @@ def api_analysis_status():
                         "logs": list(LOCAL_TASK.logs),
                         "result": LOCAL_TASK.result,
                         "error": LOCAL_TASK.error,
+                        "mode_decision": LOCAL_TASK.mode_decision,
+                        "lifecycle": {
+                            "terminal_states": ["completed", "error", "cancelled"],
+                            "is_terminal": LOCAL_TASK.state in ("completed", "error", "cancelled"),
+                        },
+                        "transport_metrics": _transport_metric_summary(),
                     }
                 )
 
         if resp.ok:
-            return jsonify(resp.json())
+            body = resp.json()
+            if isinstance(body, dict):
+                body.setdefault("transport_meta", tmeta if base_url else {})
+                body.setdefault("transport_metrics", _transport_metric_summary())
+            return jsonify(body)
         try:
             body = resp.json()
         except Exception:
             body = {"raw": (resp.text or "")[:2000]}
-        return jsonify({"error": "remote analysis status failed", "status_code": resp.status_code, "body": body}), 502
+        return jsonify(
+            {
+                "error": "remote analysis status failed",
+                "code": classify_transport_error(status_code=resp.status_code, response_body=body),
+                "status_code": resp.status_code,
+                "body": body,
+                "transport_meta": tmeta if base_url else {},
+                "transport_metrics": _transport_metric_summary(),
+            }
+        ), 502
     except Exception as exc:
-        return jsonify({"error": f"proxy failed: {exc}", "server_id": server_id, "base_url": base_url}), 502
+        return jsonify({"error": f"proxy failed: {exc}", "code": "PROXY_FAILED", "server_id": server_id, "base_url": base_url}), 502
 
 
 @app.route("/api/analysis/stop", methods=["POST"])
@@ -1058,7 +1213,7 @@ def api_analysis_stop():
     server_id = payload.get("server_id") or payload.get("server")
     base_url = _resolve_server_base_url(server_id)
     if base_url is None and server_id and server_id != "local":
-        return jsonify({"error": "unknown server_id or missing base_url", "server_id": server_id}), 404
+        return jsonify({"error": "unknown server_id or missing base_url", "code": "UNKNOWN_SERVER", "server_id": server_id}), 404
 
     try:
         import requests
@@ -1067,25 +1222,47 @@ def api_analysis_stop():
         session.trust_env = False
         timeout_s = float(payload.get("timeout_s", 10) or 10)
         if base_url:
-            resp = session.post(
-                base_url.rstrip("/") + "/api/analysis/stop",
-                json={"server_id": "local"},  # Prevent proxy loop
-                timeout=(3.0, timeout_s)
+            resp, tmeta = request_with_retry(
+                session=session,
+                method="POST",
+                url=base_url.rstrip("/") + "/api/analysis/stop",
+                json_payload={"server_id": "local"},  # Prevent proxy loop
+                timeout=(3.0, timeout_s),
+                op="analysis_stop",
             )
+            _record_transport_metric("analysis_stop", tmeta, bool(resp.ok))
             if resp.ok:
-                return jsonify(resp.json())
+                body = resp.json()
+                if isinstance(body, dict):
+                    body.setdefault("transport_meta", tmeta)
+                    body.setdefault("transport_metrics", _transport_metric_summary())
+                return jsonify(body)
             try:
                 body = resp.json()
             except Exception:
                 body = {"raw": (resp.text or "")[:2000]}
-            return jsonify({"error": "remote analysis stop failed", "status_code": resp.status_code, "body": body}), 502
+            return jsonify(
+                {
+                    "error": "remote analysis stop failed",
+                    "code": classify_transport_error(status_code=resp.status_code, response_body=body),
+                    "status_code": resp.status_code,
+                    "body": body,
+                    "transport_meta": tmeta,
+                    "transport_metrics": _transport_metric_summary(),
+                }
+            ), 502
 
         # Local fallback stop
         with LOCAL_TASK.lock:
             proc = LOCAL_TASK.process
             if LOCAL_TASK.state != "running" or not proc or not proc.is_alive():
-                LOCAL_TASK.state = "idle" if LOCAL_TASK.state != "error" else LOCAL_TASK.state
-                return jsonify({"status": "idle", "task_id": LOCAL_TASK.task_id})
+                return jsonify(
+                    {
+                        "status": LOCAL_TASK.state if LOCAL_TASK.state != "idle" else "idle",
+                        "task_id": LOCAL_TASK.task_id,
+                        "mode_decision": LOCAL_TASK.mode_decision,
+                    }
+                )
             pid = proc.pid
             LOCAL_TASK.append_log("[WARN] stop requested, terminating task...")
 
@@ -1129,14 +1306,27 @@ def api_analysis_stop():
                 proc.join(timeout=1.0)
         finally:
             with LOCAL_TASK.lock:
-                LOCAL_TASK.state = "idle"
+                LOCAL_TASK.state = "cancelled"
                 LOCAL_TASK.progress = 0
-                LOCAL_TASK.error = "stopped"
+                LOCAL_TASK.error = "cancelled by user"
                 LOCAL_TASK.append_log("[INFO] task stopped.")
 
-        return jsonify({"status": "stopped", "task_id": LOCAL_TASK.task_id})
+        return jsonify({"status": "cancelled", "task_id": LOCAL_TASK.task_id, "mode_decision": LOCAL_TASK.mode_decision})
     except Exception as exc:
-        return jsonify({"error": f"proxy failed: {exc}", "server_id": server_id, "base_url": base_url}), 502
+        return jsonify({"error": f"proxy failed: {exc}", "code": "PROXY_FAILED", "server_id": server_id, "base_url": base_url}), 502
+
+
+@app.route("/api/transport/metrics", methods=["GET"])
+def api_transport_metrics():
+    with DEGRADE_REASON_LOCK:
+        degrade_reasons = dict(DEGRADE_REASON_COUNTS)
+    return jsonify(
+        {
+            "transport_metrics": _transport_metric_summary(),
+            "degrade_reasons": degrade_reasons,
+            "transport_contract": transport_contract(),
+        }
+    )
 
 
 def _proxy_resource_lock(base_url: str, endpoint: str, payload: dict | None = None):
@@ -1144,11 +1334,16 @@ def _proxy_resource_lock(base_url: str, endpoint: str, payload: dict | None = No
 
     session = requests.Session()
     session.trust_env = False
-    if payload is None:
-        resp = session.post(base_url.rstrip("/") + endpoint, timeout=(3.0, 20.0))
-    else:
-        resp = session.post(base_url.rstrip("/") + endpoint, json=payload, timeout=(3.0, 20.0))
-    return resp
+    resp, tmeta = request_with_retry(
+        session=session,
+        method="POST",
+        url=base_url.rstrip("/") + endpoint,
+        json_payload=payload,
+        timeout=(3.0, 20.0),
+        op="resource_lock",
+    )
+    _record_transport_metric("resource_lock", tmeta, bool(resp.ok))
+    return resp, tmeta
 
 
 @app.route("/api/resource_lock", methods=["POST"])
@@ -1206,7 +1401,7 @@ def api_resource_lock():
             results[sid] = {"error": "missing base_url"}
             continue
         try:
-            resp = _proxy_resource_lock(
+            resp, tmeta = _proxy_resource_lock(
                 base_url,
                 "/api/resource_lock",
                 {
@@ -1218,12 +1413,21 @@ def api_resource_lock():
                     "owner": owner,
                 },
             )
-            results[sid] = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}", "body": resp.text[:500]}
+            results[sid] = (
+                resp.json()
+                if resp.ok
+                else {
+                    "error": f"HTTP {resp.status_code}",
+                    "code": classify_transport_error(status_code=resp.status_code),
+                    "transport_meta": tmeta,
+                    "body": resp.text[:500],
+                }
+            )
         except Exception as exc:
             print(f"[LOCK] Error on remote {sid}: {exc}")
-            results[sid] = {"error": str(exc)}
+            results[sid] = {"error": str(exc), "code": classify_transport_error(exc=exc)}
     print(f"[LOCK] Final results: {results}")
-    return jsonify({"scope": scope, "results": results})
+    return jsonify({"scope": scope, "results": results, "transport_metrics": _transport_metric_summary()})
 
 
 @app.route("/api/resource_lock/renew", methods=["POST"])
@@ -1252,7 +1456,7 @@ def api_resource_lock_renew():
             results[sid] = {"error": "missing base_url"}
             continue
         try:
-            resp = _proxy_resource_lock(
+            resp, tmeta = _proxy_resource_lock(
                 base_url,
                 "/api/resource_lock/renew",
                 {
@@ -1261,10 +1465,19 @@ def api_resource_lock_renew():
                     "owner": owner,
                 },
             )
-            results[sid] = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}", "body": resp.text[:500]}
+            results[sid] = (
+                resp.json()
+                if resp.ok
+                else {
+                    "error": f"HTTP {resp.status_code}",
+                    "code": classify_transport_error(status_code=resp.status_code),
+                    "transport_meta": tmeta,
+                    "body": resp.text[:500],
+                }
+            )
         except Exception as exc:
-            results[sid] = {"error": str(exc)}
-    return jsonify({"scope": scope, "results": results})
+            results[sid] = {"error": str(exc), "code": classify_transport_error(exc=exc)}
+    return jsonify({"scope": scope, "results": results, "transport_metrics": _transport_metric_summary()})
 
 
 @app.route("/api/resource_lock/release", methods=["POST"])
@@ -1302,13 +1515,22 @@ def api_resource_lock_release():
             results[sid] = {"error": "missing base_url"}
             continue
         try:
-            resp = _proxy_resource_lock(base_url, "/api/resource_lock/release", None)
-            results[sid] = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}", "body": resp.text[:500]}
+            resp, tmeta = _proxy_resource_lock(base_url, "/api/resource_lock/release", None)
+            results[sid] = (
+                resp.json()
+                if resp.ok
+                else {
+                    "error": f"HTTP {resp.status_code}",
+                    "code": classify_transport_error(status_code=resp.status_code),
+                    "transport_meta": tmeta,
+                    "body": resp.text[:500],
+                }
+            )
         except Exception as exc:
             print(f"[LOCK_RELEASE] Error on remote {sid}: {exc}")
-            results[sid] = {"error": str(exc)}
+            results[sid] = {"error": str(exc), "code": classify_transport_error(exc=exc)}
     print(f"[LOCK_RELEASE] Final results: {results}")
-    return jsonify({"scope": scope, "results": results})
+    return jsonify({"scope": scope, "results": results, "transport_metrics": _transport_metric_summary()})
 
 
 @app.route("/api/resource_lock/status", methods=["GET"])
@@ -1343,7 +1565,7 @@ def api_resource_lock_status():
                     all_results[sid] = {"error": f"HTTP {lock_payload.get('error_lock')}", "active": False}
                 elif isinstance(lock_payload, dict) and "error" in lock_payload:
                     all_results[sid] = {"error": lock_payload.get("error"), "active": False}
-        return jsonify({"scope": "all", "results": all_results})
+        return jsonify({"scope": "all", "results": all_results, "transport_metrics": _transport_metric_summary()})
     
     # Single server scope
     snap = snapshots.get(scope)
@@ -1351,18 +1573,38 @@ def api_resource_lock_status():
         return jsonify({"error": "unknown server", "scope": scope}), 404
     
     if not snap.get("online"):
-        return jsonify({"scope": scope, "results": {scope: {"error": snap.get("error") or "Server Offline", "active": False}}})
+        return jsonify(
+            {
+                "scope": scope,
+                "results": {scope: {"error": snap.get("error") or "Server Offline", "active": False}},
+                "transport_metrics": _transport_metric_summary(),
+            }
+        )
     
     lock_payload = snap.get("lock") or {}
     if isinstance(lock_payload, dict) and isinstance(lock_payload.get("results"), dict):
+        if isinstance(lock_payload, dict):
+            lock_payload.setdefault("transport_metrics", _transport_metric_summary())
         return jsonify(lock_payload)
     if isinstance(lock_payload, dict) and any(k in lock_payload for k in ("active", "backend", "devices", "note")):
-        return jsonify({"scope": scope, "results": {scope: lock_payload}})
+        return jsonify({"scope": scope, "results": {scope: lock_payload}, "transport_metrics": _transport_metric_summary()})
     if isinstance(lock_payload, dict) and "error_lock" in lock_payload:
-        return jsonify({"scope": scope, "results": {scope: {"error": f"HTTP {lock_payload.get('error_lock')}", "active": False}}})
+        return jsonify(
+            {
+                "scope": scope,
+                "results": {scope: {"error": f"HTTP {lock_payload.get('error_lock')}", "active": False}},
+                "transport_metrics": _transport_metric_summary(),
+            }
+        )
     if isinstance(lock_payload, dict) and "error" in lock_payload:
-        return jsonify({"scope": scope, "results": {scope: {"error": lock_payload.get("error"), "active": False}}})
-    return jsonify({"scope": scope, "results": {}})
+        return jsonify(
+            {
+                "scope": scope,
+                "results": {scope: {"error": lock_payload.get("error"), "active": False}},
+                "transport_metrics": _transport_metric_summary(),
+            }
+        )
+    return jsonify({"scope": scope, "results": {}, "transport_metrics": _transport_metric_summary()})
 
 def check_dependencies():
     """Check for essential packages and print warnings if missing."""

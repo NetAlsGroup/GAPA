@@ -4,6 +4,7 @@ import requests
 from typing import Any, Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .resource_service import load_server_list, current_resource_snapshot
+from .mode_runtime import classify_transport_error, request_with_retry
 
 class ServerStateManager:
     _instance = None
@@ -27,6 +28,7 @@ class ServerStateManager:
         self._stop_event = threading.Event()
         self._thread = threading.Thread(target=self._worker, daemon=True)
         self._thread.start()
+        self.transport_metrics: Dict[str, Dict[str, float | int]] = {}
         self._initialized = True
 
     def _worker(self):
@@ -63,19 +65,37 @@ class ServerStateManager:
         try:
             session = requests.Session()
             session.trust_env = False
-            r_resp = session.get(base_url.rstrip("/") + "/api/resources", timeout=5)
-            l_resp = session.get(base_url.rstrip("/") + "/api/resource_lock/status", timeout=5)
+            r_resp, r_meta = request_with_retry(
+                session=session,
+                method="GET",
+                url=base_url.rstrip("/") + "/api/resources",
+                timeout=(2.0, 5.0),
+                op="resource_lock_status",
+            )
+            l_resp, l_meta = request_with_retry(
+                session=session,
+                method="GET",
+                url=base_url.rstrip("/") + "/api/resource_lock/status",
+                timeout=(2.0, 5.0),
+                op="resource_lock_status",
+            )
             
             data = r_resp.json() if r_resp.ok else {"error_res": r_resp.status_code}
             data["lock"] = l_resp.json() if l_resp.ok else {"error_lock": l_resp.status_code}
             data["online"] = True
+            data["transport_meta"] = {"resources": r_meta, "lock_status": l_meta}
+            self.transport_metrics[sid] = {
+                "retries": int(r_meta.get("retries") or 0) + int(l_meta.get("retries") or 0),
+                "calls": 2,
+                "failures": int(not r_resp.ok) + int(not l_resp.ok),
+            }
             
             with self.lock:
                 self.snapshots[sid] = data
                 self.status[sid] = "online"
             return data
         except Exception as e:
-            res = {"error": str(e), "online": False}
+            res = {"error": str(e), "code": classify_transport_error(exc=e), "online": False}
             with self.lock:
                 self.snapshots[sid] = res
                 self.status[sid] = "offline"

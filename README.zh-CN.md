@@ -49,6 +49,24 @@ uvicorn server_agent:app --host 0.0.0.0 --port 7777
 - `servers.json`：远程服务器列表与地址
 - `algorithms.json`：通用/自定义算法统一注册入口
 
+## 运行时契约（跨平台）
+
+`/api/analysis/start` 与 `/api/analysis/status` 统一返回 `mode_decision`：
+
+- `requested_mode`
+- `selected_mode`
+- `degraded`
+- `reason`
+- `target`
+- `devices`
+
+当请求模式不可用时，严格按 `MNM -> M -> SM -> S`（或其前缀）降级，并返回可追踪 `reason`。
+任务终态统一为：`completed`、`error`、`cancelled`。
+
+针对网络抖动或部分节点离线：
+- `analysis/*` 与 `resource_lock*` 已统一接入重试、超时与结构化错误码。
+- 可通过 `GET /api/transport/metrics` 导出诊断指标（失败率、重试次数、降级原因、平均恢复时长）。
+
 ## 项目结构
 
 ```text

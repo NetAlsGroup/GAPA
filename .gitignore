@@ -19,4 +19,8 @@ __pycache__/
 /tmp_test.py
 /results/
 
+# Agent SKILL
+/docs
+/project_skills
+
 /tests/

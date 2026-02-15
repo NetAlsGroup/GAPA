@@ -21,6 +21,7 @@ except Exception:  # pragma: no cover
     nn = None
 
 from .fitness_protocol import dumps, loads
+from .mode_runtime import request_with_retry
 
 
 def _require_requests():
@@ -132,9 +133,12 @@ def build_device_workers(
     # Query each remote server for its locked devices
     for w in workers:
         try:
-            resp = session.get(
-                w.base_url + "/api/resource_lock/status",
+            resp, meta = request_with_retry(
+                session=session,
+                method="GET",
+                url=w.base_url + "/api/resource_lock/status",
                 timeout=(2.0, request_timeout),
+                op="resource_lock_status",
             )
             if not resp.ok:
                 # Server unreachable, but still add as CPU fallback worker
@@ -143,7 +147,7 @@ def build_device_workers(
                     base_url=w.base_url,
                     device="cpu",
                     is_local=False,
-                    weight=0.5,
+                    weight=0.4,
                 ))
                 continue
             lock_status = resp.json()
@@ -155,7 +159,7 @@ def build_device_workers(
                     base_url=w.base_url,
                     device="cpu",
                     is_local=False,
-                    weight=0.5,
+                    weight=0.5 if int(meta.get("retries") or 0) == 0 else 0.4,
                 ))
                 continue
             
@@ -220,6 +224,13 @@ class AdaptiveWorkerPool:
         self._scores: Dict[str, float] = {}
         self._ok: Dict[str, bool] = {}
         self._backend: Dict[str, str] = {}
+        self._transport_stats: Dict[str, float | int] = {
+            "calls": 0,
+            "failures": 0,
+            "retries": 0,
+            "recovered_calls": 0,
+            "recovery_ms_sum": 0.0,
+        }
 
         # Thread-local storage for Sessions (avoids cross-thread contention)
         import threading
@@ -232,6 +243,34 @@ class AdaptiveWorkerPool:
             self._thread_local.session = req.Session()
             self._thread_local.session.trust_env = False
         return self._thread_local.session
+
+    def _update_transport_stats(self, meta: Optional[Dict[str, Any]], ok: bool) -> None:
+        self._transport_stats["calls"] = int(self._transport_stats.get("calls", 0)) + 1
+        if not ok:
+            self._transport_stats["failures"] = int(self._transport_stats.get("failures", 0)) + 1
+        if not meta:
+            return
+        retries = int(meta.get("retries") or 0)
+        self._transport_stats["retries"] = int(self._transport_stats.get("retries", 0)) + retries
+        if ok and retries > 0:
+            self._transport_stats["recovered_calls"] = int(self._transport_stats.get("recovered_calls", 0)) + 1
+            self._transport_stats["recovery_ms_sum"] = float(self._transport_stats.get("recovery_ms_sum", 0.0)) + float(meta.get("duration_ms") or 0.0)
+
+    def transport_metrics(self) -> Dict[str, Any]:
+        calls = int(self._transport_stats.get("calls", 0))
+        failures = int(self._transport_stats.get("failures", 0))
+        retries = int(self._transport_stats.get("retries", 0))
+        recovered_calls = int(self._transport_stats.get("recovered_calls", 0))
+        avg_recovery_ms = float(self._transport_stats.get("recovery_ms_sum", 0.0)) / max(1, recovered_calls)
+        return {
+            "calls": calls,
+            "failures": failures,
+            "failure_rate": float(failures) / max(1, calls),
+            "retries": retries,
+            "avg_retries_per_call": float(retries) / max(1, calls),
+            "recovered_calls": recovered_calls,
+            "avg_recovery_ms": avg_recovery_ms,
+        }
 
     def _score_from_snapshot(self, snap: Dict[str, Any]) -> float:
         cpu = snap.get("cpu") or {}
@@ -272,7 +311,15 @@ class AdaptiveWorkerPool:
         backend: Dict[str, str] = {}
         for w in self._workers:
             try:
-                resp = self._session.get(w.base_url + "/api/resources", timeout=(2.0, 5.0))
+                session = self._get_session()
+                resp, meta = request_with_retry(
+                    session=session,
+                    method="GET",
+                    url=w.base_url + "/api/resources",
+                    timeout=(2.0, 5.0),
+                    op="resource_lock_status",
+                )
+                self._update_transport_stats(meta, bool(resp.ok))
                 snap = resp.json() if resp.ok else {"error": f"HTTP {resp.status_code}"}
                 if not isinstance(snap, dict) or snap.get("error"):
                     ok[w.server_id] = False
@@ -281,11 +328,15 @@ class AdaptiveWorkerPool:
                 base_score = self._score_from_snapshot(snap)
                 if self._use_strategy_plan:
                     try:
-                        pr = self._session.post(
-                            w.base_url + "/api/strategy_plan",
-                            json={"warmup": 0, "objective": "time", "multi_gpu": True},
+                        pr, pmeta = request_with_retry(
+                            session=session,
+                            method="POST",
+                            url=w.base_url + "/api/strategy_plan",
+                            json_payload={"warmup": 0, "objective": "time", "multi_gpu": True},
                             timeout=(3.0, 15.0),
+                            op="analysis_status",
                         )
+                        self._update_transport_stats(pmeta, bool(pr.ok))
                         plan = pr.json() if pr.ok else {}
                         b = str(plan.get("backend") or plan.get("plan", {}).get("backend") or "").lower()
                         if b:
@@ -351,12 +402,16 @@ class AdaptiveWorkerPool:
         # Use thread-local session for connection reuse
         session = self._get_session()
         t_network_start = time.perf_counter()
-        resp = session.post(
-            worker.base_url + "/api/fitness/batch",
+        resp, meta = request_with_retry(
+            session=session,
+            method="POST",
+            url=worker.base_url + "/api/fitness/batch",
             data=payload,
             headers={"Content-Type": "application/octet-stream"},
             timeout=(3.0, self._request_timeout_s),
+            op="fitness_batch",
         )
+        self._update_transport_stats(meta, bool(resp.ok))
         network_total_ms = (time.perf_counter() - t_network_start) * 1000.0
         
         if not resp.ok:
@@ -478,6 +533,7 @@ class DistributedEvaluator(nn.Module):
         self._guard_cooldown_iters = int(os.getenv("GAPA_MNM_COMM_COOLDOWN_ITERS", "5") or 5)
         self._force_local_until = -1
         self._guard_reason: Optional[str] = None
+        self._recovery_events: List[float] = []
     
     def _build_device_workers(self) -> List[DeviceWorker]:
         """Build DeviceWorkers from all servers' locked devices."""
@@ -701,6 +757,7 @@ class DistributedEvaluator(nn.Module):
                     fits[idx] = fit_cpu.to(population.device)
                 except Exception as e:
                     print(f"[WARN] Device {dw.server_id}:{dw.device} failed: {e}, falling back to local")
+                    self._recovery_events.append(time.perf_counter())
                     fits[stored_idx] = self._base(pop_chunk)
         
         # Update wall clock time
@@ -750,6 +807,7 @@ class DistributedEvaluator(nn.Module):
             "wall_clock_ms": float(self._comm_wall_clock_ms),  # Actual elapsed
             "parallel_efficiency": float(efficiency),  # Speedup from parallelism
             "calls": int(self._comm_calls),
+            "transport": self._pool.transport_metrics(),
         }
 
     def detailed_stats(self) -> Dict[str, Any]:
@@ -810,4 +868,9 @@ class DistributedEvaluator(nn.Module):
             "avg_ms": avg_total,
             "per_worker": per_worker,
             "per_iteration": self._per_iter_stats,
+            "transport": self._pool.transport_metrics(),
+            "recovery": {
+                "events": len(self._recovery_events),
+                "last_recovery_ts": self._recovery_events[-1] if self._recovery_events else None,
+            },
         }

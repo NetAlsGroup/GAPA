@@ -8,6 +8,57 @@ from ..route.perf_profiler import PerformanceProfiler
 from ..route.strategy_router import StrategyRouter
 from ..exec.executor import apply_plan_env
 
+_STABILITY_CACHE: Dict[str, Any] = {
+    "timestamp": 0.0,
+    "plan_key": "",
+    "plan": None,
+}
+
+
+def _plan_key(plan: Plan) -> str:
+    devs = ",".join(str(d) for d in (plan.devices or []))
+    return f"{plan.backend}:{devs}:{int(plan.world_size or 1)}"
+
+
+def _apply_stability_guard(selected: Plan, *, guard_window_s: float, switch_min_gain: float) -> Plan:
+    now = time.time()
+    cached_plan = _STABILITY_CACHE.get("plan")
+    cached_ts = float(_STABILITY_CACHE.get("timestamp") or 0.0)
+    if cached_plan is None:
+        _STABILITY_CACHE["plan"] = selected
+        _STABILITY_CACHE["plan_key"] = _plan_key(selected)
+        _STABILITY_CACHE["timestamp"] = now
+        return selected
+
+    if (now - cached_ts) > guard_window_s:
+        _STABILITY_CACHE["plan"] = selected
+        _STABILITY_CACHE["plan_key"] = _plan_key(selected)
+        _STABILITY_CACHE["timestamp"] = now
+        return selected
+
+    prev = cached_plan
+    prev_est = float(getattr(prev, "estimated_time_ms", 0.0) or 0.0)
+    cur_est = float(getattr(selected, "estimated_time_ms", 0.0) or 0.0)
+    if prev_est <= 0 or cur_est <= 0:
+        _STABILITY_CACHE["plan"] = selected
+        _STABILITY_CACHE["plan_key"] = _plan_key(selected)
+        _STABILITY_CACHE["timestamp"] = now
+        return selected
+
+    gain = (prev_est - cur_est) / max(prev_est, 1e-6)
+    if _plan_key(prev) != _plan_key(selected) and gain < switch_min_gain:
+        try:
+            prev.reason = f"{prev.reason} | stability_guard_hold(gain={gain:.3f}<min={switch_min_gain:.3f})".strip()
+            prev.notes = (prev.notes + " " if prev.notes else "") + f"stability_hold_from={_plan_key(selected)}"
+        except Exception:
+            pass
+        return prev
+
+    _STABILITY_CACHE["plan"] = selected
+    _STABILITY_CACHE["plan_key"] = _plan_key(selected)
+    _STABILITY_CACHE["timestamp"] = now
+    return selected
+
 
 def _gpu_filter_from_snapshot(
     snapshot: Optional[Dict[str, Any]],
@@ -432,6 +483,20 @@ def StrategyPlan(
     else:
         final_plan = static_best
         final_plan.reason += f" | static_winner(tpe_ratio={tpe_faster_ratio:.2f})"
+
+    stability_window_s = float(os.getenv("GAPA_STRATEGY_STABILITY_WINDOW_S", "30") or 30)
+    switch_min_gain = float(os.getenv("GAPA_STRATEGY_SWITCH_MIN_GAIN", "0.08") or 0.08)
+    final_plan = _apply_stability_guard(
+        final_plan,
+        guard_window_s=stability_window_s,
+        switch_min_gain=switch_min_gain,
+    )
+    try:
+        final_plan.notes = (final_plan.notes + " " if final_plan.notes else "") + (
+            f"stability_window_s={stability_window_s} switch_min_gain={switch_min_gain}"
+        )
+    except Exception:
+        pass
 
     if avail_gpus is not None:
         try:

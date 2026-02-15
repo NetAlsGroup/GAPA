@@ -123,6 +123,24 @@ Useful environment variables:
 - `GAPA_MNM_MAX_WORKERS` (default: `4`)
 - `GAPA_MNM_REFRESH_S` (default: `2.0`)
 
+<h3>Runtime Contract (Cross-Platform)</h3>
+
+`/api/analysis/start` and `/api/analysis/status` expose a unified `mode_decision` object:
+
+- `requested_mode`
+- `selected_mode`
+- `degraded`
+- `reason`
+- `target`
+- `devices`
+
+When fallback happens, it follows `MNM -> M -> SM -> S` (or prefix of this chain) and `reason` is always returned.
+Terminal runtime states are `completed`, `error`, and `cancelled`.
+
+For unstable networks or partially offline nodes:
+- The orchestrator now applies retry + timeout + structured error code on `analysis/*` and `resource_lock*`.
+- Export diagnostics from `GET /api/transport/metrics` (failure rate, retries, degrade reasons, average recovery latency).
+
 <h3>Project Layout</h3>
 
 ```text

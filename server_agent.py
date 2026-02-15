@@ -29,6 +29,7 @@ from server.agent_state import TaskState, start_consumer
 from server.fitness_protocol import dumps as fitness_dumps, loads as fitness_loads
 from server.fitness_worker import compute_fitness_batch
 from server.ga_worker import ga_worker, select_run_mode
+from server.mode_runtime import build_mode_decision, detect_capability, transport_contract
 from server.resource_lock import LOCK_MANAGER
 from server.task_queue import TaskQueueManager
 
@@ -378,16 +379,23 @@ def _start_task_locked(
     crossover_rate: float,
     mutate_rate: float,
     selected: Dict[str, Any],
+    mode_decision: Dict[str, Any],
     release_lock_on_finish: bool,
     queued_owner: str = "",
 ) -> None:
-    TASK.reset_for_new_task(task_id)
+    TASK.reset_for_new_task(task_id, mode_decision=mode_decision)
     TASK.release_lock_on_finish = release_lock_on_finish
     mode = selected.get("mode")
     devices = selected.get("devices")
     selection_note = selected.get("selection_note")
     owner_txt = f" owner={queued_owner}" if queued_owner else ""
     TASK.append_log(f"[INFO] 运行模式: {mode} devices={devices}{owner_txt}")
+    if mode_decision:
+        TASK.append_log(
+            f"[INFO] 模式决策: requested={mode_decision.get('requested_mode')} "
+            f"selected={mode_decision.get('selected_mode')} degraded={mode_decision.get('degraded')} "
+            f"reason={mode_decision.get('reason') or '-'}"
+        )
     if selection_note:
         TASK.append_log(f"[INFO] 设备选择: {selection_note}")
 
@@ -412,6 +420,18 @@ def _try_dispatch_next_task() -> None:
         if nxt is None:
             return
         payload = nxt.payload
+        selected = _resolve_selected(payload)
+        capability = detect_capability(target="local", resource_snapshot=resources_payload(), remote_reachable=True)
+        requested_mode = payload.get("mode")
+        mode_decision = build_mode_decision(
+            requested_mode=requested_mode,
+            selected_mode=selected.get("mode"),
+            devices=selected.get("devices"),
+            target="local",
+            capability=capability,
+            reason=str(selected.get("selection_note") or ""),
+            use_strategy_plan=payload.get("use_strategy_plan"),
+        )
         _start_task_locked(
             task_id=nxt.task_id,
             algorithm=str(payload.get("algorithm") or "ga"),
@@ -419,7 +439,8 @@ def _try_dispatch_next_task() -> None:
             iterations=int(payload.get("iterations") or payload.get("max_generation") or 20),
             crossover_rate=float(payload.get("crossover_rate") or payload.get("pc") or 0.8),
             mutate_rate=float(payload.get("mutate_rate") or payload.get("pm") or 0.2),
-            selected=_resolve_selected(payload),
+            selected=selected,
+            mode_decision=mode_decision,
             release_lock_on_finish=bool(payload.get("release_lock_on_finish", True)),
             queued_owner=nxt.owner,
         )
@@ -433,6 +454,16 @@ def api_analysis_start(payload: Dict[str, Any]) -> Dict[str, Any]:
     crossover_rate = float(payload.get("crossover_rate") or payload.get("pc") or 0.8)
     mutate_rate = float(payload.get("mutate_rate") or payload.get("pm") or 0.2)
     selected = _resolve_selected(payload)
+    capability = detect_capability(target="local", resource_snapshot=resources_payload(), remote_reachable=True)
+    mode_decision = build_mode_decision(
+        requested_mode=payload.get("mode"),
+        selected_mode=selected.get("mode"),
+        devices=selected.get("devices"),
+        target="local",
+        capability=capability,
+        reason=str(selected.get("selection_note") or ""),
+        use_strategy_plan=payload.get("use_strategy_plan"),
+    )
     release_lock_on_finish = bool(payload.get("release_lock_on_finish", True))
     queue_if_busy = bool(payload.get("queue_if_busy", False))
     owner = str(payload.get("owner") or "anonymous")
@@ -441,13 +472,19 @@ def api_analysis_start(payload: Dict[str, Any]) -> Dict[str, Any]:
     with TASK.lock:
         if TASK.state == "running":
             if not queue_if_busy:
-                raise HTTPException(status_code=409, detail="A task is already running")
+                raise HTTPException(status_code=409, detail={"code": "TASK_BUSY", "message": "A task is already running"})
             task_id = str(uuid.uuid4())
             with QUEUE_LOCK:
                 ok, info = QUEUE_MANAGER.enqueue(task_id=task_id, payload=payload, owner=owner, priority=priority)
             if not ok:
-                raise HTTPException(status_code=429, detail=info)
-            return {"task_id": task_id, "status": "queued", **info}
+                raise HTTPException(status_code=429, detail={"code": "QUEUE_LIMIT", "message": info})
+            return {
+                "task_id": task_id,
+                "status": "queued",
+                "mode_decision": mode_decision,
+                "transport": transport_contract(),
+                **info,
+            }
         task_id = str(uuid.uuid4())
         _start_task_locked(
             task_id=task_id,
@@ -457,11 +494,18 @@ def api_analysis_start(payload: Dict[str, Any]) -> Dict[str, Any]:
             crossover_rate=crossover_rate,
             mutate_rate=mutate_rate,
             selected=selected,
+            mode_decision=mode_decision,
             release_lock_on_finish=release_lock_on_finish,
             queued_owner=owner,
         )
 
-    return {"task_id": task_id, "status": "started", "owner": owner}
+    return {
+        "task_id": task_id,
+        "status": "started",
+        "owner": owner,
+        "mode_decision": mode_decision,
+        "transport": transport_contract(),
+    }
 
 
 @app.post("/api/ga_warmup")
@@ -487,6 +531,11 @@ def api_analysis_status() -> Dict[str, Any]:
             "result": TASK.result,
             "error": TASK.error,
             "queued": queue_size,
+            "mode_decision": TASK.mode_decision,
+            "lifecycle": {
+                "terminal_states": ["completed", "error", "cancelled"],
+                "is_terminal": TASK.state in ("completed", "error", "cancelled"),
+            },
         }
 
 
@@ -501,8 +550,11 @@ def api_analysis_stop() -> Dict[str, Any]:
     with TASK.lock:
         proc = TASK.process
         if TASK.state != "running" or not proc or not proc.is_alive():
-            TASK.state = "idle" if TASK.state != "error" else TASK.state
-            return {"status": "idle", "task_id": TASK.task_id}
+            return {
+                "status": TASK.state if TASK.state != "idle" else "idle",
+                "task_id": TASK.task_id,
+                "mode_decision": TASK.mode_decision,
+            }
 
         pid = proc.pid
         TASK.append_log("[WARN] stop requested, terminating task...")
@@ -547,13 +599,13 @@ def api_analysis_stop() -> Dict[str, Any]:
             proc.join(timeout=1.0)
     finally:
         with TASK.lock:
-            TASK.state = "idle"
+            TASK.state = "cancelled"
             TASK.progress = 0
-            TASK.error = "stopped"
+            TASK.error = "cancelled by user"
             TASK.append_log("[INFO] task stopped.")
     _try_dispatch_next_task()
 
-    return {"status": "stopped", "task_id": TASK.task_id}
+    return {"status": "cancelled", "task_id": TASK.task_id, "mode_decision": TASK.mode_decision}
 
 @app.post("/api/fitness/batch")
 async def api_fitness_batch(req: Request) -> Response:
