@@ -67,6 +67,10 @@ uvicorn server_agent:app --host 0.0.0.0 --port 7777
 - `analysis/*` 与 `resource_lock*` 已统一接入重试、超时与结构化错误码。
 - 可通过 `GET /api/transport/metrics` 导出诊断指标（失败率、重试次数、降级原因、平均恢复时长）。
 
+恢复优先流程（兼容 schema 版本）：
+- `POST /api/analysis/start` 支持 `schema_version`（默认 `v1`，扩展为 `v2`）、`checkpoint_ref`、`retry_last`。
+- `start/status/stop` 统一返回 `schema_version`、`run_id`、`resume_metadata` 与标准化 `mode_decision`（`degraded/reason/code`）。
+
 ## 项目结构
 
 ```text

@@ -141,6 +141,10 @@ For unstable networks or partially offline nodes:
 - The orchestrator now applies retry + timeout + structured error code on `analysis/*` and `resource_lock*`.
 - Export diagnostics from `GET /api/transport/metrics` (failure rate, retries, degrade reasons, average recovery latency).
 
+Recovery-first workflow (schema-compatible):
+- `POST /api/analysis/start` accepts `schema_version` (`v1` default, `v2` extended), `checkpoint_ref`, and `retry_last`.
+- `start/status/stop` return `schema_version`, `run_id`, `resume_metadata`, and normalized `mode_decision` (`degraded/reason/code`).
+
 <h3>Project Layout</h3>
 
 ```text

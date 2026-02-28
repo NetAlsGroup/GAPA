@@ -28,6 +28,9 @@ def main() -> None:
     parser.add_argument("--owner", default="example_queue")
     parser.add_argument("--priority", type=int, default=0)
     parser.add_argument("--poll-seconds", type=int, default=10)
+    parser.add_argument("--checkpoint-ref", default=None, help="Checkpoint/task id to resume from")
+    parser.add_argument("--retry-last", action="store_true", help="Retry using last known checkpoint on target server")
+    parser.add_argument("--schema-version", default="v2", choices=["v1", "v2"])
     args = parser.parse_args()
 
     monitor = Monitor()
@@ -41,6 +44,11 @@ def main() -> None:
         queue_if_busy=args.queue_if_busy,
         owner=args.owner,
         priority=args.priority,
+        extra={
+            "checkpoint_ref": args.checkpoint_ref,
+            "retry_last": args.retry_last,
+            "schema_version": args.schema_version,
+        },
     )
     print("=== analysis_start ===")
     _p(started)
@@ -48,8 +56,11 @@ def main() -> None:
     if isinstance(md, dict):
         print(
             f"[mode] requested={md.get('requested_mode')} selected={md.get('selected_mode')} "
-            f"degraded={md.get('degraded')} reason={md.get('reason') or '-'}"
+            f"degraded={md.get('degraded')} reason={md.get('reason') or '-'} code={md.get('code') or '-'}"
         )
+    if isinstance(started, dict) and isinstance(started.get("resume_metadata"), dict):
+        rm = started["resume_metadata"]
+        print(f"[resume] run_id={rm.get('run_id')} checkpoint_ref={rm.get('checkpoint_ref') or '-'}")
 
     for i in range(max(1, args.poll_seconds)):
         status = monitor.analysis_status(server_id=args.server_id)
@@ -61,8 +72,11 @@ def main() -> None:
         if isinstance(md, dict):
             print(
                 f"[mode] requested={md.get('requested_mode')} selected={md.get('selected_mode')} "
-                f"degraded={md.get('degraded')} reason={md.get('reason') or '-'}"
+                f"degraded={md.get('degraded')} reason={md.get('reason') or '-'} code={md.get('code') or '-'}"
             )
+        rm = status.get("resume_metadata") if isinstance(status, dict) else None
+        if isinstance(rm, dict):
+            print(f"[resume] run_id={rm.get('run_id')} checkpoint_ref={rm.get('checkpoint_ref') or '-'}")
         print("queue:")
         _p(queue)
         state = str(status.get("state") or "")

@@ -2098,8 +2098,11 @@ async function startRun(opts = {}) {
   if (data.mode_decision) {
     const md = data.mode_decision;
     appendRunLog([
-      `[INFO] mode decision: requested=${md.requested_mode} selected=${md.selected_mode} degraded=${md.degraded} reason=${md.reason || "-"}`,
+      `[INFO] mode decision: requested=${md.requested_mode} selected=${md.selected_mode} degraded=${md.degraded} reason=${md.reason || "-"} code=${md.code || "-"}`,
     ]);
+  }
+  if (data.resume_metadata) {
+    appendRunLog([`[INFO] resume metadata: checkpoint_ref=${data.resume_metadata.checkpoint_ref || "-"} run_id=${data.resume_metadata.run_id || "-"}`]);
   }
   if (data.transport_meta) {
     appendRunLog([`[INFO] transport: ${JSON.stringify(data.transport_meta)}`]);
@@ -2140,9 +2143,12 @@ async function pollRunStatus(server_id) {
     const md = st.mode_decision;
     if (st.state === "running" && lastLogCount === 0) {
       appendRunLog([
-        `[INFO] mode decision: requested=${md.requested_mode} selected=${md.selected_mode} degraded=${md.degraded} reason=${md.reason || "-"}`,
+        `[INFO] mode decision: requested=${md.requested_mode} selected=${md.selected_mode} degraded=${md.degraded} reason=${md.reason || "-"} code=${md.code || "-"}`,
       ]);
     }
+  }
+  if (st.resume_metadata && st.state === "running" && lastLogCount === 0) {
+    appendRunLog([`[INFO] resume metadata: checkpoint_ref=${st.resume_metadata.checkpoint_ref || "-"} run_id=${st.resume_metadata.run_id || "-"}`]);
   }
   if (st.transport_meta && st.state === "running" && lastLogCount === 0) {
     appendRunLog([`[INFO] transport: ${JSON.stringify(st.transport_meta)}`]);

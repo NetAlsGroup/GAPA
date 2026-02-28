@@ -34,10 +34,15 @@ from server.mode_runtime import (
     transport_contract,
 )
 from server.api_schemas import (
+    CURRENT_SCHEMA_VERSION,
+    DEFAULT_SCHEMA_VERSION,
     ErrorResponse,
     HTTPStatus,
+    build_resume_metadata,
     make_error_response,
     make_paginated_response,
+    normalize_mode_decision,
+    resolve_schema_version,
 )
 
 import threading
@@ -133,6 +138,13 @@ def _record_degrade_reason(mode_decision: dict | None) -> None:
         return
     with DEGRADE_REASON_LOCK:
         DEGRADE_REASON_COUNTS[reason] = int(DEGRADE_REASON_COUNTS.get(reason, 0)) + 1
+
+
+def _response_with_schema(body: dict, schema_version: str) -> dict:
+    out = dict(body or {})
+    out.setdefault("schema_version", schema_version or DEFAULT_SCHEMA_VERSION)
+    out.setdefault("schema_current", CURRENT_SCHEMA_VERSION)
+    return out
 
 
 def _resolve_server_base_url(server_id: str | None) -> str | None:
@@ -952,6 +964,7 @@ def api_observer():
 def api_analysis_start():
     """Proxy analysis start to remote server_agent; includes server_id."""
     payload = request.get_json(silent=True) or {}
+    schema_version = resolve_schema_version(payload)
     server_id = payload.get("server_id") or payload.get("server")
     base_url = _resolve_server_base_url(server_id)
     if base_url is None and server_id and server_id != "local":
@@ -984,6 +997,10 @@ def api_analysis_start():
                     "owner": payload.get("owner"),
                     "priority": payload.get("priority"),
                     "resume_id": payload.get("resume_id"),
+                    "checkpoint_ref": payload.get("checkpoint_ref"),
+                    "retry_last": payload.get("retry_last"),
+                    "run_id": payload.get("run_id"),
+                    "schema_version": schema_version,
                 },
                 timeout=(3.0, timeout_s),
                 op="analysis_start",
@@ -998,6 +1015,9 @@ def api_analysis_start():
             iterations = int(payload.get("iterations") or payload.get("max_generation") or 20)
             pc = float(payload.get("crossover_rate") or payload.get("pc") or 0.8)
             pm = float(payload.get("mutate_rate") or payload.get("pm") or 0.2)
+            run_id = str(payload.get("run_id") or uuid.uuid4())
+            retry_last = bool(payload.get("retry_last", False))
+            resume_id = payload.get("resume_id") or payload.get("checkpoint_ref")
             selected = select_run_mode(payload.get("mode"), payload.get("devices"))
             remote_servers = payload.get("remote_servers") or payload.get("allowed_server_ids")
             if remote_servers is not None:
@@ -1024,27 +1044,47 @@ def api_analysis_start():
                 reason=mode_reason,
                 use_strategy_plan=payload.get("use_strategy_plan"),
             )
+            mode_decision = normalize_mode_decision(mode_decision)
             _record_degrade_reason(mode_decision)
 
             with LOCAL_TASK.lock:
                 if LOCAL_TASK.state == "running":
                     return jsonify({"error": "A task is already running", "code": "TASK_BUSY"}), 409
                 task_id = str(uuid.uuid4())
-                resume_id = payload.get("resume_id")
+                if retry_last and not resume_id:
+                    resume_id = LOCAL_TASK.last_checkpoint_ref
+                checkpoint_ref = str(resume_id or "")
+                resume_metadata = build_resume_metadata(
+                    run_id=run_id,
+                    task_id=task_id,
+                    schema_version=schema_version,
+                    mode_plan_snapshot=mode_decision,
+                    checkpoint_ref=checkpoint_ref,
+                )
                 
-                LOCAL_TASK.reset_for_new_task(task_id, mode_decision=mode_decision)
+                LOCAL_TASK.reset_for_new_task(
+                    task_id,
+                    mode_decision=mode_decision,
+                    run_id=run_id,
+                    schema_version=schema_version,
+                    resume_metadata=resume_metadata,
+                )
                 LOCAL_TASK.release_lock_on_finish = release_lock_on_finish
+                LOCAL_TASK.last_checkpoint_ref = checkpoint_ref or LOCAL_TASK.last_checkpoint_ref
                 LOCAL_TASK.append_log(f"[INFO] 运行模式: {selected.get('mode')} devices={selected.get('devices')}")
                 LOCAL_TASK.append_log(
                     f"[INFO] 模式决策: requested={mode_decision.get('requested_mode')} "
                     f"selected={mode_decision.get('selected_mode')} degraded={mode_decision.get('degraded')} "
-                    f"reason={mode_decision.get('reason') or '-'}"
+                    f"reason={mode_decision.get('reason') or '-'} code={mode_decision.get('code') or '-'}"
                 )
                 if resume_id:
                     LOCAL_TASK.append_log(f"[INFO] 正在尝试从状态 {resume_id} 继续迭代...")
 
                 ctx = mp.get_context("spawn")
                 q = ctx.Queue()
+                selected["run_id"] = run_id
+                selected["schema_version"] = schema_version
+                selected["mode_decision"] = mode_decision
                 proc = ctx.Process(
                     target=_ga_entry,
                     args=(task_id, algorithm, dataset, iterations, pc, pm, selected, q, resume_id),
@@ -1055,12 +1095,17 @@ def api_analysis_start():
                 start_consumer(LOCAL_TASK)
 
             return jsonify(
-                {
-                    "task_id": task_id,
-                    "status": "started",
-                    "mode_decision": mode_decision,
-                    "transport": transport_contract(),
-                }
+                _response_with_schema(
+                    {
+                        "task_id": task_id,
+                        "run_id": run_id,
+                        "status": "started",
+                        "mode_decision": mode_decision,
+                        "resume_metadata": resume_metadata,
+                        "transport": transport_contract(),
+                    },
+                    schema_version,
+                )
             )
 
         if resp.ok:
@@ -1069,21 +1114,26 @@ def api_analysis_start():
                 body.setdefault("transport", transport_contract())
                 body.setdefault("transport_meta", tmeta if base_url else {})
                 body.setdefault("transport_metrics", _transport_metric_summary())
-                _record_degrade_reason(body.get("mode_decision"))
-            return jsonify(body)
+                if body.get("mode_decision") is not None:
+                    body["mode_decision"] = normalize_mode_decision(body.get("mode_decision"))
+                    _record_degrade_reason(body.get("mode_decision"))
+            return jsonify(_response_with_schema(body if isinstance(body, dict) else {}, schema_version))
         try:
             body = resp.json()
         except Exception:
             body = {"raw": (resp.text or "")[:2000]}
         return jsonify(
-            {
+            _response_with_schema(
+                {
                 "error": "remote analysis start failed",
                 "code": classify_transport_error(status_code=resp.status_code, response_body=body),
                 "status_code": resp.status_code,
                 "body": body,
                 "transport_meta": tmeta if base_url else {},
                 "transport_metrics": _transport_metric_summary(),
-            }
+                },
+                schema_version,
+            )
         ), 502
     except Exception as exc:
         return jsonify({"error": f"proxy failed: {exc}", "code": "PROXY_FAILED", "server_id": server_id, "base_url": base_url}), 502
@@ -1093,6 +1143,7 @@ def api_analysis_start():
 def api_analysis_queue():
     """Proxy queue status from remote server_agent; includes server_id query param."""
     server_id = request.args.get("server_id") or request.args.get("server")
+    schema_version = resolve_schema_version({"schema_version": request.args.get("schema_version")})
     base_url = _resolve_server_base_url(server_id)
     if base_url is None and server_id and server_id != "local":
         return jsonify({"error": "unknown server_id or missing base_url", "code": "UNKNOWN_SERVER", "server_id": server_id}), 404
@@ -1118,22 +1169,25 @@ def api_analysis_queue():
                 if isinstance(body, dict):
                     body.setdefault("transport_meta", tmeta)
                     body.setdefault("transport_metrics", _transport_metric_summary())
-                return jsonify(body)
+                return jsonify(_response_with_schema(body if isinstance(body, dict) else {}, schema_version))
             try:
                 body = resp.json()
             except Exception:
                 body = {"raw": (resp.text or "")[:2000]}
             return jsonify(
-                {
+                _response_with_schema(
+                    {
                     "error": "remote analysis queue failed",
                     "code": classify_transport_error(status_code=resp.status_code, response_body=body),
                     "status_code": resp.status_code,
                     "body": body,
                     "transport_meta": tmeta,
                     "transport_metrics": _transport_metric_summary(),
-                }
+                    },
+                    schema_version,
+                )
             ), 502
-        return jsonify({"size": 0, "items": []})
+        return jsonify(_response_with_schema({"size": 0, "items": []}, schema_version))
     except Exception as exc:
         return jsonify({"error": f"proxy failed: {exc}", "code": "PROXY_FAILED", "server_id": server_id, "base_url": base_url}), 502
 
@@ -1142,6 +1196,7 @@ def api_analysis_queue():
 def api_analysis_status():
     """Proxy analysis status from remote server_agent; includes server_id query param."""
     server_id = request.args.get("server_id") or request.args.get("server")
+    schema_version = resolve_schema_version({"schema_version": request.args.get("schema_version")})
     base_url = _resolve_server_base_url(server_id)
     if base_url is None and server_id and server_id != "local":
         return jsonify({"error": "unknown server_id or missing base_url", "code": "UNKNOWN_SERVER", "server_id": server_id}), 404
@@ -1166,20 +1221,25 @@ def api_analysis_status():
         else:
             with LOCAL_TASK.lock:
                 return jsonify(
-                    {
+                    _response_with_schema(
+                        {
                         "task_id": LOCAL_TASK.task_id,
+                        "run_id": LOCAL_TASK.run_id,
                         "state": LOCAL_TASK.state,
                         "progress": LOCAL_TASK.progress,
                         "logs": list(LOCAL_TASK.logs),
                         "result": LOCAL_TASK.result,
                         "error": LOCAL_TASK.error,
-                        "mode_decision": LOCAL_TASK.mode_decision,
+                        "mode_decision": normalize_mode_decision(LOCAL_TASK.mode_decision),
+                        "resume_metadata": LOCAL_TASK.resume_metadata,
                         "lifecycle": {
                             "terminal_states": ["completed", "error", "cancelled"],
                             "is_terminal": LOCAL_TASK.state in ("completed", "error", "cancelled"),
                         },
                         "transport_metrics": _transport_metric_summary(),
-                    }
+                        },
+                        schema_version,
+                    )
                 )
 
         if resp.ok:
@@ -1187,20 +1247,25 @@ def api_analysis_status():
             if isinstance(body, dict):
                 body.setdefault("transport_meta", tmeta if base_url else {})
                 body.setdefault("transport_metrics", _transport_metric_summary())
-            return jsonify(body)
+            if isinstance(body, dict) and body.get("mode_decision") is not None:
+                body["mode_decision"] = normalize_mode_decision(body.get("mode_decision"))
+            return jsonify(_response_with_schema(body if isinstance(body, dict) else {}, schema_version))
         try:
             body = resp.json()
         except Exception:
             body = {"raw": (resp.text or "")[:2000]}
         return jsonify(
-            {
+            _response_with_schema(
+                {
                 "error": "remote analysis status failed",
                 "code": classify_transport_error(status_code=resp.status_code, response_body=body),
                 "status_code": resp.status_code,
                 "body": body,
                 "transport_meta": tmeta if base_url else {},
                 "transport_metrics": _transport_metric_summary(),
-            }
+                },
+                schema_version,
+            )
         ), 502
     except Exception as exc:
         return jsonify({"error": f"proxy failed: {exc}", "code": "PROXY_FAILED", "server_id": server_id, "base_url": base_url}), 502
@@ -1210,6 +1275,7 @@ def api_analysis_status():
 def api_analysis_stop():
     """Proxy analysis stop to remote server_agent; includes server_id."""
     payload = request.get_json(silent=True) or {}
+    schema_version = resolve_schema_version(payload)
     server_id = payload.get("server_id") or payload.get("server")
     base_url = _resolve_server_base_url(server_id)
     if base_url is None and server_id and server_id != "local":
@@ -1236,20 +1302,25 @@ def api_analysis_stop():
                 if isinstance(body, dict):
                     body.setdefault("transport_meta", tmeta)
                     body.setdefault("transport_metrics", _transport_metric_summary())
-                return jsonify(body)
+                    if body.get("mode_decision") is not None:
+                        body["mode_decision"] = normalize_mode_decision(body.get("mode_decision"))
+                return jsonify(_response_with_schema(body if isinstance(body, dict) else {}, schema_version))
             try:
                 body = resp.json()
             except Exception:
                 body = {"raw": (resp.text or "")[:2000]}
             return jsonify(
-                {
+                _response_with_schema(
+                    {
                     "error": "remote analysis stop failed",
                     "code": classify_transport_error(status_code=resp.status_code, response_body=body),
                     "status_code": resp.status_code,
                     "body": body,
                     "transport_meta": tmeta,
                     "transport_metrics": _transport_metric_summary(),
-                }
+                    },
+                    schema_version,
+                )
             ), 502
 
         # Local fallback stop
@@ -1257,11 +1328,16 @@ def api_analysis_stop():
             proc = LOCAL_TASK.process
             if LOCAL_TASK.state != "running" or not proc or not proc.is_alive():
                 return jsonify(
-                    {
+                    _response_with_schema(
+                        {
                         "status": LOCAL_TASK.state if LOCAL_TASK.state != "idle" else "idle",
                         "task_id": LOCAL_TASK.task_id,
-                        "mode_decision": LOCAL_TASK.mode_decision,
-                    }
+                        "run_id": LOCAL_TASK.run_id,
+                        "mode_decision": normalize_mode_decision(LOCAL_TASK.mode_decision),
+                        "resume_metadata": LOCAL_TASK.resume_metadata,
+                        },
+                        schema_version,
+                    )
                 )
             pid = proc.pid
             LOCAL_TASK.append_log("[WARN] stop requested, terminating task...")
@@ -1309,23 +1385,40 @@ def api_analysis_stop():
                 LOCAL_TASK.state = "cancelled"
                 LOCAL_TASK.progress = 0
                 LOCAL_TASK.error = "cancelled by user"
+                if LOCAL_TASK.task_id:
+                    LOCAL_TASK.last_checkpoint_ref = LOCAL_TASK.task_id
                 LOCAL_TASK.append_log("[INFO] task stopped.")
 
-        return jsonify({"status": "cancelled", "task_id": LOCAL_TASK.task_id, "mode_decision": LOCAL_TASK.mode_decision})
+        return jsonify(
+            _response_with_schema(
+                {
+                    "status": "cancelled",
+                    "task_id": LOCAL_TASK.task_id,
+                    "run_id": LOCAL_TASK.run_id,
+                    "mode_decision": normalize_mode_decision(LOCAL_TASK.mode_decision),
+                    "resume_metadata": LOCAL_TASK.resume_metadata,
+                },
+                schema_version,
+            )
+        )
     except Exception as exc:
         return jsonify({"error": f"proxy failed: {exc}", "code": "PROXY_FAILED", "server_id": server_id, "base_url": base_url}), 502
 
 
 @app.route("/api/transport/metrics", methods=["GET"])
 def api_transport_metrics():
+    schema_version = resolve_schema_version({"schema_version": request.args.get("schema_version")})
     with DEGRADE_REASON_LOCK:
         degrade_reasons = dict(DEGRADE_REASON_COUNTS)
     return jsonify(
-        {
+        _response_with_schema(
+            {
             "transport_metrics": _transport_metric_summary(),
             "degrade_reasons": degrade_reasons,
             "transport_contract": transport_contract(),
-        }
+            },
+            schema_version,
+        )
     )
 
 

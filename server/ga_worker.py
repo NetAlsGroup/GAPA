@@ -1117,8 +1117,10 @@ def ga_worker(
         try:
             db_manager.save_ga_state(task_id, algorithm, dataset, {
                 "last_result": result,
-                "timestamp": time.time()
-            })
+                "timestamp": time.time(),
+                "checkpoint_ref": task_id,
+                "mode_decision": selected.get("mode_decision"),
+            }, run_id=selected.get("run_id"), schema_version=str(selected.get("schema_version") or "v1"))
         except Exception as e:
             emit({"type": "log", "line": f"[WARN] 状态保存失败: {e}"})
 

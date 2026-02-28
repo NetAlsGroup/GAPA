@@ -18,7 +18,8 @@ Script-first minimal examples (no Web UI dependency).
 - `run_analysis_queue.py`
   - Start analysis with `queue_if_busy`
   - Poll `/api/analysis/status` and `/api/analysis/queue`
-  - Print `mode_decision` (`requested_mode/selected_mode/degraded/reason`)
+  - Print normalized `mode_decision` (`requested_mode/selected_mode/degraded/reason/code`)
+  - Supports `--checkpoint-ref` / `--retry-last` / `--schema-version`
   - Recognize terminal states: `completed/error/cancelled`
 
 ## Unstable Network Tips

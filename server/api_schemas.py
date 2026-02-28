@@ -149,3 +149,76 @@ def make_paginated_response(
         page=page,
         page_size=page_size,
     ).to_dict()
+
+
+DEFAULT_SCHEMA_VERSION = "v1"
+CURRENT_SCHEMA_VERSION = "v2"
+
+
+def resolve_schema_version(payload: Optional[Dict[str, Any]] = None) -> str:
+    if not isinstance(payload, dict):
+        return DEFAULT_SCHEMA_VERSION
+    raw = str(payload.get("schema_version") or DEFAULT_SCHEMA_VERSION).strip().lower()
+    if raw in ("v1", "1", "1.0"):
+        return "v1"
+    if raw in ("v2", "2", "2.0"):
+        return "v2"
+    return DEFAULT_SCHEMA_VERSION
+
+
+def mode_decision_code(reason: str, degraded: bool) -> str:
+    r = str(reason or "").lower()
+    if not degraded:
+        return ""
+    if "unsupported_mode" in r:
+        return "MODE_UNSUPPORTED"
+    if "fallback" in r or "->" in r:
+        return "MODE_FALLBACK"
+    if "busy" in r:
+        return "MODE_RESOURCE_BUSY"
+    return "MODE_DEGRADED"
+
+
+def normalize_mode_decision(mode_decision: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not mode_decision:
+        return {}
+    md = dict(mode_decision or {})
+    requested = str(md.get("requested_mode") or md.get("mode") or "S").upper()
+    selected = str(md.get("selected_mode") or md.get("mode") or requested).upper()
+    degraded = bool(md.get("degraded")) or requested != selected
+    reason = str(md.get("reason") or "").strip()
+    code = str(md.get("code") or mode_decision_code(reason, degraded))
+    devices = md.get("devices")
+    if not isinstance(devices, list):
+        devices = [] if devices is None else [devices]
+    out = {
+        "requested_mode": requested,
+        "selected_mode": selected,
+        "degraded": degraded,
+        "reason": reason,
+        "code": code,
+        "target": md.get("target") or "local",
+        "devices": devices,
+    }
+    if md.get("capability") is not None:
+        out["capability"] = md.get("capability")
+    if md.get("use_strategy_plan") is not None:
+        out["use_strategy_plan"] = bool(md.get("use_strategy_plan"))
+    return out
+
+
+def build_resume_metadata(
+    *,
+    run_id: str,
+    task_id: str,
+    schema_version: str,
+    mode_plan_snapshot: Optional[Dict[str, Any]] = None,
+    checkpoint_ref: Optional[str] = None,
+) -> Dict[str, Any]:
+    return {
+        "run_id": str(run_id),
+        "task_id": str(task_id),
+        "schema_version": str(schema_version or DEFAULT_SCHEMA_VERSION),
+        "mode_plan_snapshot": mode_plan_snapshot or {},
+        "checkpoint_ref": checkpoint_ref or "",
+    }

@@ -93,10 +93,21 @@ class DBManager:
                     task_id TEXT PRIMARY KEY,
                     algorithm TEXT,
                     dataset TEXT,
+                    run_id TEXT,
+                    schema_version TEXT,
                     state_json TEXT,
                     updated_at REAL
                 )
             """)
+            try:
+                cursor = self.conn.execute("PRAGMA table_info(ga_state)")
+                columns = [row[1] for row in cursor.fetchall()]
+                if "run_id" not in columns:
+                    self.conn.execute("ALTER TABLE ga_state ADD COLUMN run_id TEXT")
+                if "schema_version" not in columns:
+                    self.conn.execute("ALTER TABLE ga_state ADD COLUMN schema_version TEXT")
+            except Exception:
+                pass
 
     def _migrate_from_json(self):
         if not HISTORY_JSON.exists():
@@ -176,18 +187,54 @@ class DBManager:
             placeholders = ",".join("?" * len(ids))
             self.conn.execute(f"DELETE FROM history WHERE id IN ({placeholders})", ids)
 
-    def save_ga_state(self, task_id: str, algorithm: str, dataset: str, state: Dict[str, Any]):
+    def save_ga_state(
+        self,
+        task_id: str,
+        algorithm: str,
+        dataset: str,
+        state: Dict[str, Any],
+        *,
+        run_id: Optional[str] = None,
+        schema_version: str = "v1",
+    ):
         state_json = json.dumps(state, ensure_ascii=False)
         with self.lock_for_write():
             self.conn.execute("""
-                INSERT OR REPLACE INTO ga_state (task_id, algorithm, dataset, state_json, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, (task_id, algorithm, dataset, state_json, time.time()))
+                INSERT OR REPLACE INTO ga_state (task_id, algorithm, dataset, run_id, schema_version, state_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (task_id, algorithm, dataset, run_id or task_id, schema_version or "v1", state_json, time.time()))
 
     def get_ga_state(self, task_id: str) -> Optional[Dict[str, Any]]:
-        cursor = self.conn.execute("SELECT state_json FROM ga_state WHERE task_id = ?", (task_id,))
+        cursor = self.conn.execute("SELECT state_json, run_id, schema_version FROM ga_state WHERE task_id = ?", (task_id,))
         row = cursor.fetchone()
-        return json.loads(row["state_json"]) if row else None
+        if not row:
+            return None
+        state = json.loads(row["state_json"])
+        if isinstance(state, dict):
+            state.setdefault("run_id", row["run_id"])
+            state.setdefault("schema_version", row["schema_version"] or "v1")
+        return state
+
+    def get_latest_ga_state(self, algorithm: str, dataset: str) -> Optional[Dict[str, Any]]:
+        cursor = self.conn.execute(
+            """
+            SELECT task_id, state_json, run_id, schema_version
+            FROM ga_state
+            WHERE algorithm = ? AND dataset = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (algorithm, dataset),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        state = json.loads(row["state_json"])
+        if isinstance(state, dict):
+            state.setdefault("task_id", row["task_id"])
+            state.setdefault("run_id", row["run_id"])
+            state.setdefault("schema_version", row["schema_version"] or "v1")
+        return state
 
     def lock_for_write(self):
         # sqlite3 handle its own locking but we can use threading.Lock for extra safety in multi-threaded Flask

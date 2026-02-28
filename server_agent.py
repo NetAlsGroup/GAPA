@@ -32,6 +32,14 @@ from server.ga_worker import ga_worker, select_run_mode
 from server.mode_runtime import build_mode_decision, detect_capability, transport_contract
 from server.resource_lock import LOCK_MANAGER
 from server.task_queue import TaskQueueManager
+from server.db_manager import db_manager
+from server.api_schemas import (
+    CURRENT_SCHEMA_VERSION,
+    DEFAULT_SCHEMA_VERSION,
+    build_resume_metadata,
+    normalize_mode_decision,
+    resolve_schema_version,
+)
 
 
 
@@ -201,13 +209,20 @@ def _ga_entry(
     mutate_rate: float,
     selected: Dict[str, Any],
     q: Any,
+    resume_id: str | None = None,
 ) -> None:
     if os.name == "posix":
         try:
             os.setsid()
         except Exception:
             pass
-    ga_worker(task_id, algorithm, dataset, iterations, crossover_rate, mutate_rate, selected, q)
+    resume_state = None
+    if resume_id:
+        try:
+            resume_state = db_manager.get_ga_state(resume_id)
+        except Exception:
+            resume_state = None
+    ga_worker(task_id, algorithm, dataset, iterations, crossover_rate, mutate_rate, selected, q, resume_state=resume_state)
 
 
 def _resolve_selected(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -380,10 +395,20 @@ def _start_task_locked(
     mutate_rate: float,
     selected: Dict[str, Any],
     mode_decision: Dict[str, Any],
+    schema_version: str,
+    run_id: str,
+    resume_metadata: Dict[str, Any],
     release_lock_on_finish: bool,
+    resume_id: str = "",
     queued_owner: str = "",
 ) -> None:
-    TASK.reset_for_new_task(task_id, mode_decision=mode_decision)
+    TASK.reset_for_new_task(
+        task_id,
+        mode_decision=mode_decision,
+        run_id=run_id,
+        schema_version=schema_version,
+        resume_metadata=resume_metadata,
+    )
     TASK.release_lock_on_finish = release_lock_on_finish
     mode = selected.get("mode")
     devices = selected.get("devices")
@@ -394,7 +419,7 @@ def _start_task_locked(
         TASK.append_log(
             f"[INFO] 模式决策: requested={mode_decision.get('requested_mode')} "
             f"selected={mode_decision.get('selected_mode')} degraded={mode_decision.get('degraded')} "
-            f"reason={mode_decision.get('reason') or '-'}"
+            f"reason={mode_decision.get('reason') or '-'} code={mode_decision.get('code') or '-'}"
         )
     if selection_note:
         TASK.append_log(f"[INFO] 设备选择: {selection_note}")
@@ -403,7 +428,7 @@ def _start_task_locked(
     q = ctx.Queue()
     proc = ctx.Process(
         target=_ga_entry,
-        args=(task_id, algorithm, dataset, iterations, crossover_rate, mutate_rate, selected, q),
+        args=(task_id, algorithm, dataset, iterations, crossover_rate, mutate_rate, selected, q, resume_id),
     )
     TASK.queue = q
     TASK.process = proc
@@ -420,6 +445,9 @@ def _try_dispatch_next_task() -> None:
         if nxt is None:
             return
         payload = nxt.payload
+        schema_version = resolve_schema_version(payload)
+        run_id = str(payload.get("run_id") or nxt.task_id)
+        resume_id = str(payload.get("resume_id") or payload.get("checkpoint_ref") or "")
         selected = _resolve_selected(payload)
         capability = detect_capability(target="local", resource_snapshot=resources_payload(), remote_reachable=True)
         requested_mode = payload.get("mode")
@@ -432,6 +460,17 @@ def _try_dispatch_next_task() -> None:
             reason=str(selected.get("selection_note") or ""),
             use_strategy_plan=payload.get("use_strategy_plan"),
         )
+        mode_decision = normalize_mode_decision(mode_decision)
+        resume_metadata = build_resume_metadata(
+            run_id=run_id,
+            task_id=nxt.task_id,
+            schema_version=schema_version,
+            mode_plan_snapshot=mode_decision,
+            checkpoint_ref=resume_id,
+        )
+        selected["run_id"] = run_id
+        selected["schema_version"] = schema_version
+        selected["mode_decision"] = mode_decision
         _start_task_locked(
             task_id=nxt.task_id,
             algorithm=str(payload.get("algorithm") or "ga"),
@@ -441,6 +480,10 @@ def _try_dispatch_next_task() -> None:
             mutate_rate=float(payload.get("mutate_rate") or payload.get("pm") or 0.2),
             selected=selected,
             mode_decision=mode_decision,
+            schema_version=schema_version,
+            run_id=run_id,
+            resume_metadata=resume_metadata,
+            resume_id=resume_id,
             release_lock_on_finish=bool(payload.get("release_lock_on_finish", True)),
             queued_owner=nxt.owner,
         )
@@ -448,11 +491,15 @@ def _try_dispatch_next_task() -> None:
 
 @app.post("/api/analysis/start")
 def api_analysis_start(payload: Dict[str, Any]) -> Dict[str, Any]:
+    schema_version = resolve_schema_version(payload)
     algorithm = str(payload.get("algorithm") or "ga")
     dataset = str(payload.get("dataset") or "")
     iterations = int(payload.get("iterations") or payload.get("max_generation") or 20)
     crossover_rate = float(payload.get("crossover_rate") or payload.get("pc") or 0.8)
     mutate_rate = float(payload.get("mutate_rate") or payload.get("pm") or 0.2)
+    run_id = str(payload.get("run_id") or uuid.uuid4())
+    retry_last = bool(payload.get("retry_last", False))
+    resume_id = str(payload.get("resume_id") or payload.get("checkpoint_ref") or "")
     selected = _resolve_selected(payload)
     capability = detect_capability(target="local", resource_snapshot=resources_payload(), remote_reachable=True)
     mode_decision = build_mode_decision(
@@ -464,28 +511,54 @@ def api_analysis_start(payload: Dict[str, Any]) -> Dict[str, Any]:
         reason=str(selected.get("selection_note") or ""),
         use_strategy_plan=payload.get("use_strategy_plan"),
     )
+    mode_decision = normalize_mode_decision(mode_decision)
     release_lock_on_finish = bool(payload.get("release_lock_on_finish", True))
     queue_if_busy = bool(payload.get("queue_if_busy", False))
     owner = str(payload.get("owner") or "anonymous")
     priority = int(payload.get("priority") or 0)
 
     with TASK.lock:
+        if retry_last and not resume_id:
+            resume_id = str(TASK.last_checkpoint_ref or "")
         if TASK.state == "running":
             if not queue_if_busy:
                 raise HTTPException(status_code=409, detail={"code": "TASK_BUSY", "message": "A task is already running"})
             task_id = str(uuid.uuid4())
+            payload["schema_version"] = schema_version
+            payload["run_id"] = run_id
+            payload["checkpoint_ref"] = resume_id
             with QUEUE_LOCK:
                 ok, info = QUEUE_MANAGER.enqueue(task_id=task_id, payload=payload, owner=owner, priority=priority)
             if not ok:
                 raise HTTPException(status_code=429, detail={"code": "QUEUE_LIMIT", "message": info})
             return {
+                "schema_version": schema_version,
+                "schema_current": CURRENT_SCHEMA_VERSION,
                 "task_id": task_id,
+                "run_id": run_id,
                 "status": "queued",
                 "mode_decision": mode_decision,
+                "resume_metadata": build_resume_metadata(
+                    run_id=run_id,
+                    task_id=task_id,
+                    schema_version=schema_version,
+                    mode_plan_snapshot=mode_decision,
+                    checkpoint_ref=resume_id,
+                ),
                 "transport": transport_contract(),
                 **info,
             }
         task_id = str(uuid.uuid4())
+        resume_metadata = build_resume_metadata(
+            run_id=run_id,
+            task_id=task_id,
+            schema_version=schema_version,
+            mode_plan_snapshot=mode_decision,
+            checkpoint_ref=resume_id,
+        )
+        selected["run_id"] = run_id
+        selected["schema_version"] = schema_version
+        selected["mode_decision"] = mode_decision
         _start_task_locked(
             task_id=task_id,
             algorithm=algorithm,
@@ -495,15 +568,23 @@ def api_analysis_start(payload: Dict[str, Any]) -> Dict[str, Any]:
             mutate_rate=mutate_rate,
             selected=selected,
             mode_decision=mode_decision,
+            schema_version=schema_version,
+            run_id=run_id,
+            resume_metadata=resume_metadata,
+            resume_id=resume_id,
             release_lock_on_finish=release_lock_on_finish,
             queued_owner=owner,
         )
 
     return {
+        "schema_version": schema_version,
+        "schema_current": CURRENT_SCHEMA_VERSION,
         "task_id": task_id,
+        "run_id": run_id,
         "status": "started",
         "owner": owner,
         "mode_decision": mode_decision,
+        "resume_metadata": resume_metadata,
         "transport": transport_contract(),
     }
 
@@ -524,14 +605,18 @@ def api_analysis_status() -> Dict[str, Any]:
         with QUEUE_LOCK:
             queue_size = QUEUE_MANAGER.size()
         return {
+            "schema_version": TASK.schema_version or DEFAULT_SCHEMA_VERSION,
+            "schema_current": CURRENT_SCHEMA_VERSION,
             "task_id": TASK.task_id,
+            "run_id": TASK.run_id,
             "state": TASK.state,
             "progress": TASK.progress,
             "logs": list(TASK.logs),
             "result": TASK.result,
             "error": TASK.error,
             "queued": queue_size,
-            "mode_decision": TASK.mode_decision,
+            "mode_decision": normalize_mode_decision(TASK.mode_decision),
+            "resume_metadata": TASK.resume_metadata,
             "lifecycle": {
                 "terminal_states": ["completed", "error", "cancelled"],
                 "is_terminal": TASK.state in ("completed", "error", "cancelled"),
@@ -543,7 +628,12 @@ def api_analysis_status() -> Dict[str, Any]:
 def api_analysis_queue() -> Dict[str, Any]:
     with QUEUE_LOCK:
         items = QUEUE_MANAGER.list_items()
-    return {"size": len(items), "items": items}
+    return {
+        "schema_version": TASK.schema_version or DEFAULT_SCHEMA_VERSION,
+        "schema_current": CURRENT_SCHEMA_VERSION,
+        "size": len(items),
+        "items": items,
+    }
 
 @app.post("/api/analysis/stop")
 def api_analysis_stop() -> Dict[str, Any]:
@@ -551,9 +641,13 @@ def api_analysis_stop() -> Dict[str, Any]:
         proc = TASK.process
         if TASK.state != "running" or not proc or not proc.is_alive():
             return {
+                "schema_version": TASK.schema_version or DEFAULT_SCHEMA_VERSION,
+                "schema_current": CURRENT_SCHEMA_VERSION,
                 "status": TASK.state if TASK.state != "idle" else "idle",
                 "task_id": TASK.task_id,
-                "mode_decision": TASK.mode_decision,
+                "run_id": TASK.run_id,
+                "mode_decision": normalize_mode_decision(TASK.mode_decision),
+                "resume_metadata": TASK.resume_metadata,
             }
 
         pid = proc.pid
@@ -602,10 +696,20 @@ def api_analysis_stop() -> Dict[str, Any]:
             TASK.state = "cancelled"
             TASK.progress = 0
             TASK.error = "cancelled by user"
+            if TASK.task_id:
+                TASK.last_checkpoint_ref = TASK.task_id
             TASK.append_log("[INFO] task stopped.")
     _try_dispatch_next_task()
 
-    return {"status": "cancelled", "task_id": TASK.task_id, "mode_decision": TASK.mode_decision}
+    return {
+        "schema_version": TASK.schema_version or DEFAULT_SCHEMA_VERSION,
+        "schema_current": CURRENT_SCHEMA_VERSION,
+        "status": "cancelled",
+        "task_id": TASK.task_id,
+        "run_id": TASK.run_id,
+        "mode_decision": normalize_mode_decision(TASK.mode_decision),
+        "resume_metadata": TASK.resume_metadata,
+    }
 
 @app.post("/api/fitness/batch")
 async def api_fitness_batch(req: Request) -> Response:

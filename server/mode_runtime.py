@@ -123,6 +123,7 @@ def build_mode_decision(
         "selected_mode": selected,
         "degraded": degraded,
         "reason": final_reason,
+        "code": "MODE_DEGRADED" if degraded else "",
         "target": target,
         "devices": devs,
         "capability": capability,

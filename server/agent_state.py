@@ -10,25 +10,40 @@ class TaskState:
     def __init__(self):
         self.lock = threading.Lock()
         self.task_id: Optional[str] = None
+        self.run_id: Optional[str] = None
+        self.schema_version: str = "v1"
         self.state: str = "idle"  # idle | running | completed | error | cancelled
         self.progress: int = 0
         self.logs: List[str] = []
         self.result: Optional[Dict[str, Any]] = None
         self.error: Optional[str] = None
         self.mode_decision: Optional[Dict[str, Any]] = None
+        self.resume_metadata: Optional[Dict[str, Any]] = None
+        self.last_checkpoint_ref: Optional[str] = None
         self.process: Optional[mp.Process] = None
         self.queue: Any = None
         self.consumer: Optional[threading.Thread] = None
         self.release_lock_on_finish: bool = False
 
-    def reset_for_new_task(self, task_id: str, mode_decision: Optional[Dict[str, Any]] = None) -> None:
+    def reset_for_new_task(
+        self,
+        task_id: str,
+        mode_decision: Optional[Dict[str, Any]] = None,
+        *,
+        run_id: Optional[str] = None,
+        schema_version: str = "v1",
+        resume_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         self.task_id = task_id
+        self.run_id = run_id or task_id
+        self.schema_version = schema_version or "v1"
         self.state = "running"
         self.progress = 0
         self.logs = []
         self.result = None
         self.error = None
         self.mode_decision = mode_decision
+        self.resume_metadata = resume_metadata
         self.process = None
         self.queue = None
         self.consumer = None
@@ -76,6 +91,8 @@ def start_consumer(task: TaskState, on_finish: Optional[Callable[[], None]] = No
                 else:
                     task.state = "error"
                     task.error = task.error or "worker exited without result"
+            if task.task_id:
+                task.last_checkpoint_ref = task.task_id
             release_lock = task.release_lock_on_finish and task.state in ("completed", "error", "cancelled")
 
         if release_lock:
