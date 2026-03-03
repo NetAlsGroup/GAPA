@@ -32,6 +32,11 @@ class TaskQueueManager:
         self._last_dispatched_owner: Optional[str] = None
         self._storage = storage
         self._terminal_filter = terminal_filter
+        self._recovery_metrics: Dict[str, int] = {
+            "recovered": 0,
+            "skipped_terminal": 0,
+            "skipped_duplicate": 0,
+        }
         self._recover_from_storage()
 
     def _recover_from_storage(self) -> None:
@@ -45,17 +50,29 @@ class TaskQueueManager:
             return
         all_ids = [str(r.get("task_id") or "") for r in records if isinstance(r, dict)]
         terminal = set(self._terminal_filter(all_ids) if self._terminal_filter else [])
+        seen: set[str] = set()
         for rec in records:
             if not isinstance(rec, dict):
                 continue
             task_id = str(rec.get("task_id") or "")
             if not task_id or task_id in terminal:
+                if task_id in terminal:
+                    self._recovery_metrics["skipped_terminal"] += 1
                 try:
                     if self._storage is not None and task_id:
                         self._storage.delete_queue_task(task_id)
                 except Exception:
                     pass
                 continue
+            if task_id in seen:
+                self._recovery_metrics["skipped_duplicate"] += 1
+                try:
+                    if self._storage is not None:
+                        self._storage.delete_queue_task(task_id)
+                except Exception:
+                    pass
+                continue
+            seen.add(task_id)
             self._items.append(
                 QueuedTask(
                     task_id=task_id,
@@ -66,6 +83,7 @@ class TaskQueueManager:
                     retry_count=int(rec.get("retry_count") or 0),
                 )
             )
+            self._recovery_metrics["recovered"] += 1
         self._items.sort(key=lambda x: (-x.priority, x.created_at))
 
     def _persist_upsert(self, item: QueuedTask) -> None:
@@ -113,6 +131,24 @@ class TaskQueueManager:
     def enqueue(self, task_id: str, payload: Dict[str, Any], owner: str, priority: int) -> Tuple[bool, Dict[str, Any]]:
         owner = str(owner or "anonymous")
         priority = int(priority)
+        existing = next((i for i in self._items if i.task_id == task_id), None)
+        if existing is not None:
+            existing.owner = owner
+            existing.priority = priority
+            existing.payload = dict(payload)
+            self._items.sort(key=lambda x: (-x.priority, x.created_at))
+            self._persist_upsert(existing)
+            pos = next((idx for idx, x in enumerate(self._items, start=1) if x.task_id == task_id), len(self._items))
+            return True, {
+                "task_id": task_id,
+                "owner": owner,
+                "priority": priority,
+                "position": pos,
+                "queued": len(self._items),
+                "status": "queued",
+                "error_code": "",
+                "deduped": True,
+            }
         if len(self._items) >= self.max_total:
             return False, {"error": "queue full", "error_code": "QUEUE_FULL", "max_total": self.max_total}
         owner_count = sum(1 for i in self._items if i.owner == owner)
@@ -137,7 +173,7 @@ class TaskQueueManager:
         if queued is not None:
             self._persist_upsert(queued)
         pos = next((idx for idx, x in enumerate(self._items, start=1) if x.task_id == task_id), len(self._items))
-        return True, {"task_id": task_id, "owner": owner, "priority": priority, "position": pos, "queued": len(self._items), "status": "queued", "error_code": ""}
+        return True, {"task_id": task_id, "owner": owner, "priority": priority, "position": pos, "queued": len(self._items), "status": "queued", "error_code": "", "deduped": False}
 
     def pop_next(self) -> Optional[QueuedTask]:
         if not self._items:
@@ -163,3 +199,6 @@ class TaskQueueManager:
         self._persist_upsert(item)
         pos = next((idx for idx, x in enumerate(self._items, start=1) if x.task_id == item.task_id), len(self._items))
         return True, {"task_id": item.task_id, "position": pos, "retry_count": item.retry_count, "reason": reason, "status": "queued", "error_code": ""}
+
+    def recovery_stats(self) -> Dict[str, int]:
+        return dict(self._recovery_metrics)
