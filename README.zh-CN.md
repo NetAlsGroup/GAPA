@@ -87,10 +87,11 @@ uvicorn server_agent:app --host 0.0.0.0 --port 7777
 - 语言切换仅影响 UI 文案，不改变 API 契约、脚本示例行为和运行时请求参数。
 
 性能基线与回归门禁：
-- 生成性能基线：`python examples/run_perf_baseline.py --profile small`。
+- 生成性能基线（默认 synthetic）：`python examples/run_perf_baseline.py --profile small --source synthetic`。
+- 基于最小真实运行链路生成基线（live）：`python examples/run_perf_baseline.py --profile small --source live --live-samples 48`。
 - 重新采集当前指标并执行门禁对比：
   - `python tests/perf_regression_gate.py --baseline <baseline.json> --current <current.json> --output <gate.json>`
-- 门禁覆盖 `S/SM/M/MNM` 的吞吐下降、时延上升、恢复时延上升和远程失败率漂移。
+- 门禁覆盖 mode 集合一致性（缺失/额外 mode 必须失败）以及 `S/SM/M/MNM` 的吞吐下降、时延上升、恢复时延上升和远程失败率漂移。
 
 ## 项目结构
 

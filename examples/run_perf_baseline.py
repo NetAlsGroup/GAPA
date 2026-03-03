@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
@@ -68,11 +69,73 @@ def _build_metrics(*, repeats: int, work_units: int, seed: int) -> Dict[str, Dic
     return out
 
 
+def _build_live_metrics(*, samples: int, seed: int) -> Dict[str, Dict[str, float]]:
+    repo_root = _repo_root()
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+
+    from server.mode_runtime import build_mode_decision, choose_mode
+    from server.task_queue import TaskQueueManager
+
+    random.seed(seed)
+    mode_capability = {
+        "S": {"gpu": {"count": 0}},
+        "SM": {"gpu": {"count": 1}},
+        "M": {"gpu": {"count": 2}},
+        "MNM": {"gpu": {"count": 2}},
+    }
+    out: Dict[str, Dict[str, float]] = {}
+    for mode, conf in MODE_FACTORS.items():
+        q = TaskQueueManager(max_total=max(16, samples + 2), max_per_owner=max(4, samples + 2))
+        t0 = perf_counter()
+        failed_ops = 0
+        for i in range(samples):
+            task_id = f"live-{mode}-{i}"
+            cap = dict(mode_capability.get(mode) or {"gpu": {"count": 0}})
+            selected, degraded, reason = choose_mode(mode, cap, allow_mnm=(mode == "MNM"))
+            _ = build_mode_decision(
+                requested_mode=mode,
+                selected_mode=selected,
+                devices=[0] if selected in ("SM", "M", "MNM") else [],
+                target="local",
+                capability=cap,
+                reason=reason,
+                use_strategy_plan=False,
+            )
+            ok, _info = q.enqueue(task_id, {"mode": mode, "idx": i}, owner="perf-live", priority=(i % 3))
+            popped = q.pop_next()
+            if not ok or popped is None or degraded:
+                failed_ops += 1
+                continue
+            if i % max(1, samples // 8) == 0:
+                q.requeue(popped, reason="live-benchmark-recovery")
+                q.pop_next()
+
+        elapsed_s = perf_counter() - t0
+        base_units = float(samples)
+        speedup = float(conf["speedup"])
+        overhead_s = float(conf["overhead_ms"]) / 1000.0
+        effective_s = max(1e-9, (elapsed_s / speedup) + overhead_s)
+        throughput = base_units / effective_s
+        latency_ms = effective_s * 1000.0 / max(1, samples)
+        avg_recovery_ms = max(0.5, latency_ms * (0.08 + 0.02 * (1.0 / max(1e-9, speedup))))
+        remote_failure_rate = float(failed_ops) / max(1, samples)
+        out[mode] = {
+            "throughput": round(throughput, 6),
+            "latency_ms": round(latency_ms, 6),
+            "avg_recovery_ms": round(avg_recovery_ms, 6),
+            "remote_failure_rate": round(remote_failure_rate, 6),
+        }
+    return out
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate benchmark baseline JSON for S/SM/M/MNM")
+    parser.add_argument("--source", default="synthetic", choices=["synthetic", "live"])
     parser.add_argument("--profile", default="small", choices=["small", "medium", "stress"])
     parser.add_argument("--repeats", type=int, default=None)
     parser.add_argument("--work-units", type=int, default=None)
+    parser.add_argument("--live-samples", type=int, default=None, help="Sample count for --source live")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--profiles-config",
@@ -94,17 +157,23 @@ def main() -> None:
     profile_cfg = profiles.get(args.profile) or {}
     repeats = int(args.repeats or profile_cfg.get("repeats") or 8)
     work_units = int(args.work_units or profile_cfg.get("work_units") or 12000)
+    live_samples = int(args.live_samples or (repeats * 6))
 
-    metrics = _build_metrics(repeats=repeats, work_units=work_units, seed=int(args.seed))
+    if args.source == "live":
+        metrics = _build_live_metrics(samples=live_samples, seed=int(args.seed))
+    else:
+        metrics = _build_metrics(repeats=repeats, work_units=work_units, seed=int(args.seed))
 
     payload = {
         "build_ref": args.build_ref,
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "source": args.source,
         "profile": args.profile,
         "benchmark_dataset_and_params": {
-            "dataset": "synthetic_cpu_workload",
+            "dataset": "live_runtime_min_path" if args.source == "live" else "synthetic_cpu_workload",
             "repeats": repeats,
             "work_units": work_units,
+            "live_samples": live_samples,
             "seed": int(args.seed),
         },
         "thresholds": thresholds,
@@ -115,7 +184,7 @@ def main() -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     print(str(out_path))
-    print(f"profile={args.profile} repeats={repeats} work_units={work_units}")
+    print(f"source={args.source} profile={args.profile} repeats={repeats} work_units={work_units} live_samples={live_samples}")
 
 
 if __name__ == "__main__":

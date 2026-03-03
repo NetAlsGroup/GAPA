@@ -53,6 +53,56 @@ class DeviceWorker:
     weight: float = 1.0 # Computation weight (default 1.0)
 
 
+@dataclass(frozen=True)
+class MNMSchedulerConfig:
+    # Weight allocation knobs
+    min_weight: float = 1e-4
+    fresh_local_boost: float = 1.10
+    perf_reference_ms: float = 120.0
+    perf_boost_min: float = 0.4
+    perf_boost_max: float = 2.0
+    failure_penalty_alpha: float = 0.35
+    cpu_locality_boost: float = 1.08
+    allocation_epsilon: float = 1e-9
+
+    # Comm-guard knobs
+    guard_enabled: bool = True
+    guard_max_ratio: float = 1.5
+    guard_min_calls: int = 8
+    guard_cooldown_iters: int = 5
+
+    @classmethod
+    def from_env(cls) -> "MNMSchedulerConfig":
+        return cls(
+            guard_enabled=bool(int(os.getenv("GAPA_MNM_COMM_GUARD", "1") or 1)),
+            guard_max_ratio=float(os.getenv("GAPA_MNM_COMM_MAX_RATIO", "1.5") or 1.5),
+            guard_min_calls=int(os.getenv("GAPA_MNM_COMM_MIN_CALLS", "8") or 8),
+            guard_cooldown_iters=int(os.getenv("GAPA_MNM_COMM_COOLDOWN_ITERS", "5") or 5),
+        )
+
+    def snapshot(self) -> Dict[str, Any]:
+        return {
+            "min_weight": float(self.min_weight),
+            "fresh_local_boost": float(self.fresh_local_boost),
+            "perf_reference_ms": float(self.perf_reference_ms),
+            "perf_boost_min": float(self.perf_boost_min),
+            "perf_boost_max": float(self.perf_boost_max),
+            "failure_penalty_alpha": float(self.failure_penalty_alpha),
+            "cpu_locality_boost": float(self.cpu_locality_boost),
+            "allocation_epsilon": float(self.allocation_epsilon),
+            "guard_enabled": bool(self.guard_enabled),
+            "guard_max_ratio": float(self.guard_max_ratio),
+            "guard_min_calls": int(self.guard_min_calls),
+            "guard_cooldown_iters": int(self.guard_cooldown_iters),
+        }
+
+
+@dataclass
+class DispatchAssignment:
+    index: int
+    worker: DeviceWorker
+    chunk: Any
+
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent
 
@@ -446,8 +496,6 @@ class AdaptiveWorkerPool:
         )
 
 
-from dataclasses import dataclass
-
 @dataclass
 class DetailedCallResult:
     """Result of a single remote fitness call with timing breakdown."""
@@ -527,10 +575,11 @@ class DistributedEvaluator(nn.Module):
         self._per_iter_stats: List[Dict[str, Any]] = []
         self._rr_cursor = 0
         self._forward_calls = 0
-        self._guard_enabled = bool(int(os.getenv("GAPA_MNM_COMM_GUARD", "1") or 1))
-        self._guard_max_ratio = float(os.getenv("GAPA_MNM_COMM_MAX_RATIO", "1.5") or 1.5)
-        self._guard_min_calls = int(os.getenv("GAPA_MNM_COMM_MIN_CALLS", "8") or 8)
-        self._guard_cooldown_iters = int(os.getenv("GAPA_MNM_COMM_COOLDOWN_ITERS", "5") or 5)
+        self._scheduler_config = MNMSchedulerConfig.from_env()
+        self._guard_enabled = bool(self._scheduler_config.guard_enabled)
+        self._guard_max_ratio = float(self._scheduler_config.guard_max_ratio)
+        self._guard_min_calls = int(self._scheduler_config.guard_min_calls)
+        self._guard_cooldown_iters = int(self._scheduler_config.guard_cooldown_iters)
         self._force_local_until = -1
         self._guard_reason: Optional[str] = None
         self._recovery_events: List[float] = []
@@ -583,23 +632,27 @@ class DistributedEvaluator(nn.Module):
 
     def _dynamic_weight(self, dw: "DeviceWorker") -> float:
         """Adaptive worker score based on historical latency and failure ratio."""
+        cfg = self._scheduler_config
         wid = f"{dw.server_id}:{dw.device}"
         ws = self._per_worker_stats.get(wid) or {}
-        base = max(1e-4, float(dw.weight))
+        base = max(float(cfg.min_weight), float(dw.weight))
         calls = int(ws.get("success_calls") or 0)
         failures = int(ws.get("failure_calls") or 0)
         if calls <= 0:
             # Prefer local worker for CPU-bound fallback and fresh nodes equally.
-            return base * (1.10 if dw.is_local else 1.0)
+            return base * (float(cfg.fresh_local_boost) if dw.is_local else 1.0)
         avg_ms = float(ws.get("total_ms") or 0.0) / max(1, calls)
         # Lower latency should get larger chunk share.
-        perf_boost = max(0.4, min(2.0, 120.0 / max(1e-6, avg_ms)))
-        fail_penalty = 1.0 / (1.0 + 0.35 * failures)
-        locality_boost = 1.08 if dw.is_local and self._is_cpu_algorithm else 1.0
+        perf_boost = max(
+            float(cfg.perf_boost_min),
+            min(float(cfg.perf_boost_max), float(cfg.perf_reference_ms) / max(1e-6, avg_ms)),
+        )
+        fail_penalty = 1.0 / (1.0 + float(cfg.failure_penalty_alpha) * failures)
+        locality_boost = float(cfg.cpu_locality_boost) if dw.is_local and self._is_cpu_algorithm else 1.0
         return base * perf_boost * fail_penalty * locality_boost
 
     @staticmethod
-    def _allocate_sizes(total_items: int, weights: List[float]) -> List[int]:
+    def _allocate_sizes(total_items: int, weights: List[float], *, min_weight: float = 1e-9) -> List[int]:
         """Allocate chunk sizes proportionally with deterministic remainder distribution."""
         if total_items <= 0 or not weights:
             return []
@@ -611,7 +664,7 @@ class DistributedEvaluator(nn.Module):
                 sizes[ranked[i]] = 1
             return sizes
 
-        w = [max(1e-9, float(x)) for x in weights]
+        w = [max(float(min_weight), float(x)) for x in weights]
         s = sum(w) or 1.0
         raw = [total_items * x / s for x in w]
         sizes = [int(x) for x in raw]
@@ -628,6 +681,206 @@ class DistributedEvaluator(nn.Module):
                 if sizes[idx] > 0:
                     sizes[idx] -= 1
         return sizes
+
+    def _build_distributed_context(self) -> Dict[str, Any]:
+        context: Dict[str, Any] = {}
+        base = self._base
+        if hasattr(base, "get_distributed_context"):
+            try:
+                ctx = base.get_distributed_context()
+                if isinstance(ctx, dict):
+                    context.update(ctx)
+            except Exception:
+                pass
+        if hasattr(base, "genes_index") and "genes_index" not in context:
+            genes_index = getattr(base, "genes_index", None)
+            if genes_index is not None:
+                context["genes_index"] = genes_index
+        return context
+
+    def _plan_dispatch(self, population: Any, total_items: int) -> List[DispatchAssignment]:
+        torch, _nn = _require_torch()
+        device_workers = self._build_device_workers()
+
+        if not getattr(self, "_logged", False) and device_workers:
+            worker_desc = [f"{dw.server_id}:{dw.device}" for dw in device_workers]
+            print(f"[INFO] Distributed fitness: {len(device_workers)} workers: {', '.join(worker_desc)}")
+            self._logged = True
+
+        if not device_workers:
+            if self._current_iter == 0:
+                print("[WARN] No device workers available, falling back to local computation")
+            self._last_allocation = []
+            return []
+
+        if len(device_workers) > total_items:
+            device_workers = device_workers[:total_items]
+
+        if len(device_workers) > 1:
+            shift = self._rr_cursor % len(device_workers)
+            if shift:
+                device_workers = device_workers[shift:] + device_workers[:shift]
+            self._rr_cursor = (self._rr_cursor + 1) % len(device_workers)
+
+        weights = [self._dynamic_weight(dw) for dw in device_workers]
+        sizes = self._allocate_sizes(
+            total_items,
+            weights,
+            min_weight=float(self._scheduler_config.allocation_epsilon),
+        )
+        if sum(sizes) != total_items:
+            sizes = [total_items] + [0] * (len(sizes) - 1)
+
+        self._last_allocation = [
+            {
+                "worker": f"{dw.server_id}:{dw.device}",
+                "weight": float(weights[idx]),
+                "chunk_size": int(sizes[idx]),
+            }
+            for idx, dw in enumerate(device_workers)
+        ]
+
+        active_plan = [
+            (dw, int(sizes[idx]))
+            for idx, dw in enumerate(device_workers)
+            if int(sizes[idx]) > 0
+        ]
+        if not active_plan:
+            return []
+
+        split_sizes = [size for _dw, size in active_plan]
+        chunks = list(torch.split(population, split_sizes, dim=0))
+        assignments: List[DispatchAssignment] = []
+        for idx, ((dw, _size), chunk) in enumerate(zip(active_plan, chunks)):
+            assignments.append(
+                DispatchAssignment(
+                    index=idx,
+                    worker=dw,
+                    chunk=chunk,
+                )
+            )
+        return assignments
+
+    def _dispatch_assignments(
+        self,
+        assignments: List[DispatchAssignment],
+        *,
+        population_device: Any,
+        context: Dict[str, Any],
+    ) -> Tuple[List[Any], List[DetailedCallResult], float]:
+        torch, _nn = _require_torch()
+        from concurrent.futures import Future, ThreadPoolExecutor
+
+        def _remote_call(idx: int, dw: DeviceWorker, pop_cpu: Any) -> Tuple[int, DetailedCallResult]:
+            temp_worker = Worker(server_id=dw.server_id, base_url=dw.base_url)
+            result = self._pool.remote_fitness(
+                temp_worker,
+                algorithm=self.algorithm,
+                dataset=self.dataset,
+                population_cpu=pop_cpu,
+                device=dw.device,
+                extra_context=context,
+            )
+            return idx, result
+
+        fits: List[Any] = [None] * len(assignments)
+        iter_calls: List[DetailedCallResult] = []
+        futures: List[Tuple[Future, int, DeviceWorker, Any]] = []
+        t_wall_start = time.perf_counter()
+
+        with ThreadPoolExecutor(max_workers=max(1, len(assignments))) as executor:
+            for assignment in assignments:
+                idx = int(assignment.index)
+                dw = assignment.worker
+                pop_chunk = assignment.chunk
+                try:
+                    pop_cpu = pop_chunk.detach().to("cpu")
+                    if dw.is_local:
+                        t0 = time.perf_counter()
+                        fit_local = self._base(pop_chunk)
+                        compute_ms = (time.perf_counter() - t0) * 1000.0
+                        result = DetailedCallResult(
+                            fitness=fit_local.detach().to("cpu") if isinstance(fit_local, torch.Tensor) else fit_local,
+                            worker_id=f"local:{dw.device}",
+                            serialize_ms=0.0,
+                            network_ms=0.0,
+                            compute_ms=compute_ms,
+                            deserialize_ms=0.0,
+                            total_ms=compute_ms,
+                            payload_bytes=0,
+                            chunk_size=int(pop_chunk.shape[0]),
+                        )
+                        self._detailed_calls.append(result)
+                        iter_calls.append(result)
+                        self._comm_total_ms += result.total_ms
+                        self._comm_calls += 1
+                        self._update_worker_stats(dw, result)
+                        fit_cpu = result.fitness
+                        if not isinstance(fit_cpu, torch.Tensor):
+                            fit_cpu = torch.tensor(fit_cpu)
+                        fits[idx] = fit_cpu.to(population_device)
+                    else:
+                        future = executor.submit(_remote_call, idx, dw, pop_cpu)
+                        futures.append((future, idx, dw, pop_chunk))
+                except Exception as exc:
+                    print(f"[WARN] Device {dw.server_id}:{dw.device} prep failed: {exc}, falling back to local")
+                    self._record_worker_failure(dw)
+                    fits[idx] = self._base(pop_chunk)
+
+            for future, stored_idx, dw, pop_chunk in futures:
+                try:
+                    idx, result = future.result()
+                    self._detailed_calls.append(result)
+                    iter_calls.append(result)
+                    self._comm_total_ms += result.total_ms
+                    self._comm_calls += 1
+                    self._update_worker_stats(dw, result)
+                    fit_cpu = result.fitness
+                    if not isinstance(fit_cpu, torch.Tensor):
+                        fit_cpu = torch.tensor(fit_cpu)
+                    fits[idx] = fit_cpu.to(population_device)
+                except Exception as exc:
+                    print(f"[WARN] Device {dw.server_id}:{dw.device} failed: {exc}, falling back to local")
+                    self._recovery_events.append(time.perf_counter())
+                    self._record_worker_failure(dw)
+                    fits[stored_idx] = self._base(pop_chunk)
+
+        iter_wall_ms = (time.perf_counter() - t_wall_start) * 1000.0
+        return fits, iter_calls, iter_wall_ms
+
+    def _record_iteration_stats(self, *, iter_tick: int, iter_calls: List[DetailedCallResult], iter_wall_ms: float) -> None:
+        self._comm_wall_clock_ms += iter_wall_ms
+        if not iter_calls:
+            return
+
+        iter_cumulative = sum(c.total_ms for c in iter_calls)
+        iter_compute = sum(c.compute_ms for c in iter_calls)
+        iter_overhead = sum((c.serialize_ms + c.network_ms + c.deserialize_ms) for c in iter_calls)
+        self._per_iter_stats.append(
+            {
+                "iter": iter_tick,
+                "total_ms": iter_cumulative,
+                "wall_ms": iter_wall_ms,
+                "workers": [c.worker_id for c in iter_calls],
+                "calls": len(iter_calls),
+                "compute_ms": iter_compute,
+                "overhead_ms": iter_overhead,
+            }
+        )
+
+        if (
+            self._guard_enabled
+            and len(iter_calls) >= self._guard_min_calls
+            and iter_compute > 0.0
+        ):
+            ratio = iter_overhead / max(1e-6, iter_compute)
+            if ratio > self._guard_max_ratio:
+                self._force_local_until = iter_tick + self._guard_cooldown_iters
+                self._guard_reason = (
+                    f"iter={iter_tick} overhead/compute={ratio:.2f} "
+                    f"> threshold={self._guard_max_ratio:.2f}"
+                )
+                print(f"[WARN] MNM comm-guard triggered: {self._guard_reason}")
 
     # ---- attribute forwarding for controller.setup() mutations ----
     def __getattr__(self, name: str) -> Any:  # pragma: no cover (delegation)
@@ -672,181 +925,16 @@ class DistributedEvaluator(nn.Module):
                 print("[WARN] MNM comm-guard active: temporary fallback to local evaluator")
             return self._base(population)
 
-        # Build DeviceWorkers from all servers' locked devices
-        device_workers = self._build_device_workers()
-        
-        # Log worker distribution on first call
-        if not getattr(self, "_logged", False) and device_workers:
-            worker_desc = [f"{dw.server_id}:{dw.device}" for dw in device_workers]
-            print(f"[INFO] Distributed fitness: {len(device_workers)} workers: {', '.join(worker_desc)}")
-            self._logged = True
-        
-        # If no device workers, fall back to local
-        if not device_workers:
-            if self._current_iter == 0:
-                print("[WARN] No device workers available, falling back to local computation")
+        assignments = self._plan_dispatch(population, n)
+        if not assignments:
             return self._base(population)
-        
-        # Limit workers to population size
-        if len(device_workers) > n:
-            device_workers = device_workers[:n]
 
-        # Fairness: rotate worker starting position per forward call.
-        if len(device_workers) > 1:
-            shift = self._rr_cursor % len(device_workers)
-            if shift:
-                device_workers = device_workers[shift:] + device_workers[:shift]
-            self._rr_cursor = (self._rr_cursor + 1) % len(device_workers)
-
-        # Split population by adaptive weights (latency/failure aware).
-        weights = [self._dynamic_weight(dw) for dw in device_workers]
-        sizes = self._allocate_sizes(n, weights)
-        if sum(sizes) != n:
-            sizes = [n] + [0] * (len(sizes) - 1)
-        self._last_allocation = [
-            {
-                "worker": f"{dw.server_id}:{dw.device}",
-                "weight": float(weights[idx]),
-                "chunk_size": int(sizes[idx]),
-            }
-            for idx, dw in enumerate(device_workers)
-        ]
-
-        chunks = [c for c in torch.split(population, sizes, dim=0) if int(c.shape[0]) > 0]
-        fits: List[torch.Tensor] = [None] * len(chunks)  # Pre-allocate to preserve order
-        iter_calls: List[DetailedCallResult] = []
-        
-        # Pre-build context ONCE (not per-worker)
-        current_context = {}
-        base = self._base
-        if hasattr(base, "get_distributed_context"):
-            try:
-                ctx = base.get_distributed_context()
-                if isinstance(ctx, dict):
-                    current_context.update(ctx)
-            except Exception:
-                pass
-        if hasattr(base, "genes_index") and "genes_index" not in current_context:
-            gi = getattr(base, "genes_index", None)
-            if gi is not None:
-                current_context["genes_index"] = gi
-        
-        # Parallel dispatch using ThreadPoolExecutor
-        # Now that server uses run_in_executor, we can dispatch ALL GPUs in parallel
-        from concurrent.futures import ThreadPoolExecutor, Future
-        
-        def _remote_call(idx: int, dw: "DeviceWorker", pop_cpu: torch.Tensor) -> Tuple[int, "DetailedCallResult"]:
-            temp_worker = Worker(server_id=dw.server_id, base_url=dw.base_url)
-            result = self._pool.remote_fitness(
-                temp_worker,
-                algorithm=self.algorithm,
-                dataset=self.dataset,
-                population_cpu=pop_cpu,
-                device=dw.device,
-                extra_context=current_context,
-            )
-            return idx, result
-        
-        futures: List[Tuple[Future, int, "DeviceWorker", torch.Tensor]] = []
-        # Track wall clock time for parallel dispatch
-        t_wall_start = time.perf_counter()
-        
-        with ThreadPoolExecutor(max_workers=len(device_workers)) as executor:
-            for idx, (dw, pop_chunk) in enumerate(zip(device_workers[:len(chunks)], chunks)):
-                try:
-                    pop_cpu = pop_chunk.detach().to("cpu")
-                    
-                    if dw.is_local:
-                        # Local computation (synchronous, fast)
-                        t0 = time.perf_counter()
-                        fit_local = self._base(pop_chunk)
-                        compute_ms = (time.perf_counter() - t0) * 1000.0
-                        
-                        result = DetailedCallResult(
-                            fitness=fit_local.detach().to("cpu") if isinstance(fit_local, torch.Tensor) else fit_local,
-                            worker_id=f"local:{dw.device}",
-                            serialize_ms=0,
-                            network_ms=0,
-                            compute_ms=compute_ms,
-                            deserialize_ms=0,
-                            total_ms=compute_ms,
-                            payload_bytes=0,
-                            chunk_size=int(pop_chunk.shape[0]),
-                        )
-                        # Process local result immediately
-                        self._detailed_calls.append(result)
-                        iter_calls.append(result)
-                        self._comm_total_ms += result.total_ms
-                        self._comm_calls += 1
-                        self._update_worker_stats(dw, result)
-                        
-                        fit_cpu = result.fitness
-                        if not isinstance(fit_cpu, torch.Tensor):
-                            fit_cpu = torch.tensor(fit_cpu)
-                        fits[idx] = fit_cpu.to(population.device)
-                    else:
-                        # Remote computation - dispatch in parallel
-                        future = executor.submit(_remote_call, idx, dw, pop_cpu)
-                        futures.append((future, idx, dw, pop_chunk))
-                except Exception as e:
-                    print(f"[WARN] Device {dw.server_id}:{dw.device} prep failed: {e}, falling back to local")
-                    self._record_worker_failure(dw)
-                    fits[idx] = self._base(pop_chunk)
-            
-            # Wait for all remote futures
-            for future, stored_idx, dw, pop_chunk in futures:
-                try:
-                    idx, result = future.result()
-                    self._detailed_calls.append(result)
-                    iter_calls.append(result)
-                    self._comm_total_ms += result.total_ms
-                    self._comm_calls += 1
-                    self._update_worker_stats(dw, result)
-                    
-                    fit_cpu = result.fitness
-                    if not isinstance(fit_cpu, torch.Tensor):
-                        fit_cpu = torch.tensor(fit_cpu)
-                    fits[idx] = fit_cpu.to(population.device)
-                except Exception as e:
-                    print(f"[WARN] Device {dw.server_id}:{dw.device} failed: {e}, falling back to local")
-                    self._recovery_events.append(time.perf_counter())
-                    self._record_worker_failure(dw)
-                    fits[stored_idx] = self._base(pop_chunk)
-        
-        # Update wall clock time
-        iter_wall_ms = (time.perf_counter() - t_wall_start) * 1000.0
-        self._comm_wall_clock_ms += iter_wall_ms
-
-        # Record per-iteration stats
-        if iter_calls:
-            iter_cumulative = sum(c.total_ms for c in iter_calls)
-            iter_compute = sum(c.compute_ms for c in iter_calls)
-            iter_overhead = sum((c.serialize_ms + c.network_ms + c.deserialize_ms) for c in iter_calls)
-            self._per_iter_stats.append({
-                "iter": iter_tick,
-                "total_ms": iter_cumulative,  # Cumulative
-                "wall_ms": iter_wall_ms,      # Wall clock
-                "workers": [c.worker_id for c in iter_calls],
-                "calls": len(iter_calls),
-                "compute_ms": iter_compute,
-                "overhead_ms": iter_overhead,
-            })
-
-            # Communication guard: if overhead dominates compute, temporarily fallback.
-            if (
-                self._guard_enabled
-                and len(iter_calls) >= self._guard_min_calls
-                and iter_compute > 0.0
-            ):
-                ratio = iter_overhead / max(1e-6, iter_compute)
-                if ratio > self._guard_max_ratio:
-                    self._force_local_until = iter_tick + self._guard_cooldown_iters
-                    self._guard_reason = (
-                        f"iter={iter_tick} overhead/compute={ratio:.2f} "
-                        f"> threshold={self._guard_max_ratio:.2f}"
-                    )
-                    print(f"[WARN] MNM comm-guard triggered: {self._guard_reason}")
-
+        fits, iter_calls, iter_wall_ms = self._dispatch_assignments(
+            assignments,
+            population_device=population.device,
+            context=self._build_distributed_context(),
+        )
+        self._record_iteration_stats(iter_tick=iter_tick, iter_calls=iter_calls, iter_wall_ms=iter_wall_ms)
         return torch.cat(fits, dim=0)
 
     def comm_stats(self) -> Dict[str, Any]:
@@ -866,7 +954,12 @@ class DistributedEvaluator(nn.Module):
     def detailed_stats(self) -> Dict[str, Any]:
         """Return comprehensive communication statistics with full breakdown."""
         if not self._detailed_calls:
-            return {"type": "http_detailed", "total_comm_ms": 0.0}
+            return {
+                "type": "http_detailed",
+                "total_comm_ms": 0.0,
+                "scheduler_config": self._scheduler_config.snapshot(),
+                "utilization": {"allocation": self._last_allocation},
+            }
         
         # Aggregate phase totals
         total_serialize = sum(c.serialize_ms for c in self._detailed_calls)
@@ -919,6 +1012,7 @@ class DistributedEvaluator(nn.Module):
             "total_bytes": total_bytes,
             "calls": n,
             "avg_ms": avg_total,
+            "scheduler_config": self._scheduler_config.snapshot(),
             "per_worker": per_worker,
             "utilization": {
                 "allocation": self._last_allocation,

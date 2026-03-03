@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
+import logging
 import time
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -37,14 +40,36 @@ class TaskQueueManager:
             "skipped_terminal": 0,
             "skipped_duplicate": 0,
         }
+        self._persist_error_counts: Dict[str, int] = {"save": 0, "delete": 0, "recover": 0}
+        self._persist_error_events: List[Dict[str, str]] = []
         self._recover_from_storage()
+
+    def _record_persist_error(self, *, op: str, task_id: str, exc: Exception) -> None:
+        if op in self._persist_error_counts:
+            self._persist_error_counts[op] += 1
+        event = {
+            "task_id": str(task_id or ""),
+            "op": str(op),
+            "error_type": exc.__class__.__name__,
+        }
+        self._persist_error_events.append(event)
+        if len(self._persist_error_events) > 32:
+            self._persist_error_events = self._persist_error_events[-32:]
+        LOGGER.error(
+            "queue_persist_error op=%s task_id=%s error_type=%s detail=%s",
+            event["op"],
+            event["task_id"] or "-",
+            event["error_type"],
+            str(exc),
+        )
 
     def _recover_from_storage(self) -> None:
         if self._storage is None:
             return
         try:
             records = self._storage.list_queue_tasks()
-        except Exception:
+        except Exception as exc:
+            self._record_persist_error(op="recover", task_id="", exc=exc)
             return
         if not isinstance(records, list):
             return
@@ -61,16 +86,16 @@ class TaskQueueManager:
                 try:
                     if self._storage is not None and task_id:
                         self._storage.delete_queue_task(task_id)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._record_persist_error(op="recover", task_id=task_id, exc=exc)
                 continue
             if task_id in seen:
                 self._recovery_metrics["skipped_duplicate"] += 1
                 try:
                     if self._storage is not None:
                         self._storage.delete_queue_task(task_id)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    self._record_persist_error(op="recover", task_id=task_id, exc=exc)
                 continue
             seen.add(task_id)
             self._items.append(
@@ -98,16 +123,16 @@ class TaskQueueManager:
                 payload=item.payload,
                 retry_count=item.retry_count,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            self._record_persist_error(op="save", task_id=item.task_id, exc=exc)
 
     def _persist_delete(self, task_id: str) -> None:
         if self._storage is None:
             return
         try:
             self._storage.delete_queue_task(task_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            self._record_persist_error(op="delete", task_id=task_id, exc=exc)
 
     def size(self) -> int:
         return len(self._items)
@@ -202,3 +227,9 @@ class TaskQueueManager:
 
     def recovery_stats(self) -> Dict[str, int]:
         return dict(self._recovery_metrics)
+
+    def persistence_observability(self) -> Dict[str, Any]:
+        return {
+            "error_counts": dict(self._persist_error_counts),
+            "recent_errors": list(self._persist_error_events),
+        }
