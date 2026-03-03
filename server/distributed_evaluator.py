@@ -583,6 +583,7 @@ class DistributedEvaluator(nn.Module):
         self._force_local_until = -1
         self._guard_reason: Optional[str] = None
         self._recovery_events: List[float] = []
+        self._recovery_latency_ms: List[float] = []
         self._last_allocation: List[Dict[str, Any]] = []
     
     def _build_device_workers(self) -> List[DeviceWorker]:
@@ -825,7 +826,10 @@ class DistributedEvaluator(nn.Module):
                 except Exception as exc:
                     print(f"[WARN] Device {dw.server_id}:{dw.device} prep failed: {exc}, falling back to local")
                     self._record_worker_failure(dw)
+                    t_recover = time.perf_counter()
                     fits[idx] = self._base(pop_chunk)
+                    self._recovery_events.append(time.perf_counter())
+                    self._recovery_latency_ms.append((time.perf_counter() - t_recover) * 1000.0)
 
             for future, stored_idx, dw, pop_chunk in futures:
                 try:
@@ -841,9 +845,11 @@ class DistributedEvaluator(nn.Module):
                     fits[idx] = fit_cpu.to(population_device)
                 except Exception as exc:
                     print(f"[WARN] Device {dw.server_id}:{dw.device} failed: {exc}, falling back to local")
-                    self._recovery_events.append(time.perf_counter())
                     self._record_worker_failure(dw)
+                    t_recover = time.perf_counter()
                     fits[stored_idx] = self._base(pop_chunk)
+                    self._recovery_events.append(time.perf_counter())
+                    self._recovery_latency_ms.append((time.perf_counter() - t_recover) * 1000.0)
 
         iter_wall_ms = (time.perf_counter() - t_wall_start) * 1000.0
         return fits, iter_calls, iter_wall_ms
@@ -959,6 +965,11 @@ class DistributedEvaluator(nn.Module):
                 "total_comm_ms": 0.0,
                 "scheduler_config": self._scheduler_config.snapshot(),
                 "utilization": {"allocation": self._last_allocation},
+                "recovery": {
+                    "events": len(self._recovery_events),
+                    "last_recovery_ts": self._recovery_events[-1] if self._recovery_events else None,
+                    "latency_ms": {"p50": 0.0, "p95": 0.0, "max": 0.0},
+                },
             }
         
         # Aggregate phase totals
@@ -991,6 +1002,17 @@ class DistributedEvaluator(nn.Module):
         # Wall clock and parallel efficiency
         wall_clock_ms = self._comm_wall_clock_ms
         efficiency = (total_comm / wall_clock_ms) if wall_clock_ms > 0 else 1.0
+        recover_lat = sorted(float(x) for x in self._recovery_latency_ms if float(x) >= 0.0)
+        if recover_lat:
+            p50_idx = min(len(recover_lat) - 1, int(round(0.50 * (len(recover_lat) - 1))))
+            p95_idx = min(len(recover_lat) - 1, int(round(0.95 * (len(recover_lat) - 1))))
+            recovery_dist = {
+                "p50": round(recover_lat[p50_idx], 6),
+                "p95": round(recover_lat[p95_idx], 6),
+                "max": round(recover_lat[-1], 6),
+            }
+        else:
+            recovery_dist = {"p50": 0.0, "p95": 0.0, "max": 0.0}
         
         return {
             "type": "http_detailed",
@@ -1022,5 +1044,6 @@ class DistributedEvaluator(nn.Module):
             "recovery": {
                 "events": len(self._recovery_events),
                 "last_recovery_ts": self._recovery_events[-1] if self._recovery_events else None,
+                "latency_ms": recovery_dist,
             },
         }
