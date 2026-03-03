@@ -534,6 +534,7 @@ class DistributedEvaluator(nn.Module):
         self._force_local_until = -1
         self._guard_reason: Optional[str] = None
         self._recovery_events: List[float] = []
+        self._last_allocation: List[Dict[str, Any]] = []
     
     def _build_device_workers(self) -> List[DeviceWorker]:
         """Build DeviceWorkers from all servers' locked devices."""
@@ -558,16 +559,75 @@ class DistributedEvaluator(nn.Module):
             self._per_worker_stats[wid] = {
                 "total_ms": 0.0, "calls": 0, "serialize_ms": 0.0,
                 "network_ms": 0.0, "compute_ms": 0.0, "deserialize_ms": 0.0,
-                "total_bytes": 0
+                "total_bytes": 0, "success_calls": 0, "failure_calls": 0
             }
         ws = self._per_worker_stats[wid]
         ws["total_ms"] += result.total_ms
         ws["calls"] += 1
+        ws["success_calls"] += 1
         ws["serialize_ms"] += result.serialize_ms
         ws["network_ms"] += result.network_ms
         ws["compute_ms"] += result.compute_ms
         ws["deserialize_ms"] += result.deserialize_ms
         ws["total_bytes"] += result.payload_bytes
+
+    def _record_worker_failure(self, dw: "DeviceWorker") -> None:
+        wid = f"{dw.server_id}:{dw.device}"
+        if wid not in self._per_worker_stats:
+            self._per_worker_stats[wid] = {
+                "total_ms": 0.0, "calls": 0, "serialize_ms": 0.0,
+                "network_ms": 0.0, "compute_ms": 0.0, "deserialize_ms": 0.0,
+                "total_bytes": 0, "success_calls": 0, "failure_calls": 0
+            }
+        self._per_worker_stats[wid]["failure_calls"] += 1
+
+    def _dynamic_weight(self, dw: "DeviceWorker") -> float:
+        """Adaptive worker score based on historical latency and failure ratio."""
+        wid = f"{dw.server_id}:{dw.device}"
+        ws = self._per_worker_stats.get(wid) or {}
+        base = max(1e-4, float(dw.weight))
+        calls = int(ws.get("success_calls") or 0)
+        failures = int(ws.get("failure_calls") or 0)
+        if calls <= 0:
+            # Prefer local worker for CPU-bound fallback and fresh nodes equally.
+            return base * (1.10 if dw.is_local else 1.0)
+        avg_ms = float(ws.get("total_ms") or 0.0) / max(1, calls)
+        # Lower latency should get larger chunk share.
+        perf_boost = max(0.4, min(2.0, 120.0 / max(1e-6, avg_ms)))
+        fail_penalty = 1.0 / (1.0 + 0.35 * failures)
+        locality_boost = 1.08 if dw.is_local and self._is_cpu_algorithm else 1.0
+        return base * perf_boost * fail_penalty * locality_boost
+
+    @staticmethod
+    def _allocate_sizes(total_items: int, weights: List[float]) -> List[int]:
+        """Allocate chunk sizes proportionally with deterministic remainder distribution."""
+        if total_items <= 0 or not weights:
+            return []
+        n = len(weights)
+        if total_items <= n:
+            ranked = sorted(range(n), key=lambda i: weights[i], reverse=True)
+            sizes = [0] * n
+            for i in range(total_items):
+                sizes[ranked[i]] = 1
+            return sizes
+
+        w = [max(1e-9, float(x)) for x in weights]
+        s = sum(w) or 1.0
+        raw = [total_items * x / s for x in w]
+        sizes = [int(x) for x in raw]
+        assigned = sum(sizes)
+        remainder = total_items - assigned
+        if remainder > 0:
+            order = sorted(range(n), key=lambda i: (raw[i] - sizes[i]), reverse=True)
+            for i in range(remainder):
+                sizes[order[i % n]] += 1
+        elif remainder < 0:
+            order = sorted(range(n), key=lambda i: (raw[i] - sizes[i]))
+            for i in range(abs(remainder)):
+                idx = order[i % n]
+                if sizes[idx] > 0:
+                    sizes[idx] -= 1
+        return sizes
 
     # ---- attribute forwarding for controller.setup() mutations ----
     def __getattr__(self, name: str) -> Any:  # pragma: no cover (delegation)
@@ -638,28 +698,19 @@ class DistributedEvaluator(nn.Module):
                 device_workers = device_workers[shift:] + device_workers[:shift]
             self._rr_cursor = (self._rr_cursor + 1) % len(device_workers)
 
-        # Split population by worker weights (equal by default)
-        weights = [max(1e-6, dw.weight) for dw in device_workers]
-        total = sum(weights) or 1.0
-        sizes = [max(1, int(n * (w / total))) for w in weights]
-        
-        # Distribute remaining items
-        remainder = n - sum(sizes)
-        if remainder > 0:
-            for i in range(remainder):
-                sizes[i % len(sizes)] += 1
-        
-        # Trim if overshot
-        overshoot = sum(sizes) - n
-        if overshoot > 0:
-            for i in range(overshoot):
-                idx = len(sizes) - 1 - (i % len(sizes))
-                if sizes[idx] > 1:
-                    sizes[idx] -= 1
-        
-        # Final guard
+        # Split population by adaptive weights (latency/failure aware).
+        weights = [self._dynamic_weight(dw) for dw in device_workers]
+        sizes = self._allocate_sizes(n, weights)
         if sum(sizes) != n:
             sizes = [n] + [0] * (len(sizes) - 1)
+        self._last_allocation = [
+            {
+                "worker": f"{dw.server_id}:{dw.device}",
+                "weight": float(weights[idx]),
+                "chunk_size": int(sizes[idx]),
+            }
+            for idx, dw in enumerate(device_workers)
+        ]
 
         chunks = [c for c in torch.split(population, sizes, dim=0) if int(c.shape[0]) > 0]
         fits: List[torch.Tensor] = [None] * len(chunks)  # Pre-allocate to preserve order
@@ -739,6 +790,7 @@ class DistributedEvaluator(nn.Module):
                         futures.append((future, idx, dw, pop_chunk))
                 except Exception as e:
                     print(f"[WARN] Device {dw.server_id}:{dw.device} prep failed: {e}, falling back to local")
+                    self._record_worker_failure(dw)
                     fits[idx] = self._base(pop_chunk)
             
             # Wait for all remote futures
@@ -758,6 +810,7 @@ class DistributedEvaluator(nn.Module):
                 except Exception as e:
                     print(f"[WARN] Device {dw.server_id}:{dw.device} failed: {e}, falling back to local")
                     self._recovery_events.append(time.perf_counter())
+                    self._record_worker_failure(dw)
                     fits[stored_idx] = self._base(pop_chunk)
         
         # Update wall clock time
@@ -867,6 +920,9 @@ class DistributedEvaluator(nn.Module):
             "calls": n,
             "avg_ms": avg_total,
             "per_worker": per_worker,
+            "utilization": {
+                "allocation": self._last_allocation,
+            },
             "per_iteration": self._per_iter_stats,
             "transport": self._pool.transport_metrics(),
             "recovery": {
