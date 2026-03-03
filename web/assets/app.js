@@ -31,6 +31,344 @@ const app = createApp({
 const appVm = app.mount("#app");
 installApiClient({ retries: 2, timeoutMs: 12000 });
 
+const LANG_STORAGE_KEY = "gapa_lang";
+const DEFAULT_LANG = "zh-CN";
+const SUPPORTED_LANGS = new Set(["zh-CN", "en"]);
+const TITLE_BY_LANG = {
+  "zh-CN": "GAPA Console · 资源监控与算法控制台",
+  en: "GAPA Console · Resource Monitor and Algorithm Console",
+};
+const PHRASE_PAIRS = [
+  ["资源监控与算法控制台", "Resource Monitor and Algorithm Console"],
+  ["集群状态良好", "Cluster healthy"],
+  ["语言", "Language"],
+  ["系统导航", "System Navigation"],
+  ["资源池监控", "Resource Monitor"],
+  ["算法训练与执行", "Algorithm Run"],
+  ["节点配置", "Node Config"],
+  ["任务日志历史", "Task History"],
+  ["资源实时概览", "Real-time Resource Overview"],
+  ["锁定空闲资源", "Lock Idle Resources"],
+  ["性能评估向导", "Performance Evaluation Wizard"],
+  ["正在扫描集群资源...", "Scanning cluster resources..."],
+  ["资源锁定管理器", "Resource Lock Manager"],
+  ["释放所有", "Release All"],
+  ["锁定历史日志", "Lock History"],
+  ["暂无操作日志。", "No operation logs."],
+  ["算法运行控制台", "Algorithm Runtime Console"],
+  ["配置参数并启动并行加速任务", "Configure parameters and start accelerated run"],
+  ["模型算法", "Algorithm"],
+  ["数据集", "Dataset"],
+  ["目标服务器", "Target Server"],
+  ["加速模式", "Acceleration Mode"],
+  ["AUTO (智能选择)", "AUTO (Adaptive)"],
+  ["显卡选择 (多选)", "GPU Selection (Multi)"],
+  ["显卡选择", "GPU Selection"],
+  ["迭代次数", "Iterations"],
+  ["交叉率", "Crossover Rate"],
+  ["变异率", "Mutation Rate"],
+  ["提交运行任务", "Submit Run"],
+  ["停止", "Stop"],
+  ["运行状态", "Run State"],
+  ["任务 ID", "Task ID"],
+  ["最佳适应度", "Best Fitness"],
+  ["实时进度", "Progress"],
+  ["网络延迟/通信", "Network Latency / Comm"],
+  ["资源绑定状态", "Resource Binding Status"],
+  ["未锁定时将默认使用 CPU 运行", "Defaults to CPU when unlocked"],
+  ["未锁定", "Unlocked"],
+  ["实时执行日志", "Runtime Logs"],
+  ["等待提交任务...", "Waiting for task submission..."],
+  ["适应度收敛曲线", "Fitness Convergence"],
+  ["等待数据分析...", "Waiting for analysis..."],
+  ["集群节点管理", "Cluster Node Management"],
+  ["+ 添加计算节点", "+ Add Compute Node"],
+  ["管理本地及远程服务器资源，配置节点连接参数。", "Manage local and remote resources and node connectivity."],
+  ["服务器名称 / ID", "Server Name / ID"],
+  ["IP 地址", "IP Address"],
+  ["类型", "Type"],
+  ["操作", "Actions"],
+  ["正在加载节点列表...", "Loading node list..."],
+  ["任务历史归档", "Task History Archive"],
+  ["全选", "Select All"],
+  ["删除选中", "Delete Selected"],
+  ["时间倒序 ▼", "Newest First ▼"],
+  ["全部清空", "Clear All"],
+  ["历史执行记录及日志详情", "Execution History and Logs"],
+  ["请从左侧选择一条执行记录。", "Select a record from the left."],
+  ["添加服务器节点", "Add Server Node"],
+  ["用户名", "Username"],
+  ["密码", "Password"],
+  ["取消", "Cancel"],
+  ["确认添加", "Add Node"],
+  ["服务器性能测试评估", "Server Performance Evaluation"],
+  ["评估模式", "Evaluation Mode"],
+  ["分析执行", "Analysis Run"],
+  ["请选择适合场景的评估方案：", "Choose an evaluation workflow:"],
+  ["单服务器性能评估", "Single Server Evaluation"],
+  ["针对单台机器进行 Dry-Run 预热及资源静态分析。", "Dry-run warmup and static analysis on one server."],
+  ["集群分布式策略评估", "Distributed Cluster Evaluation"],
+  ["对比多台服务器的延迟与吞吐，自动推荐最优加速方案。", "Compare latency and throughput across servers and auto-recommend best acceleration."],
+  ["下一步", "Next"],
+  ["选择目标服务器", "Select Target Server"],
+  ["选择要进行性能评估的服务器", "Select a server for evaluation"],
+  ["集群分布式评估配置", "Distributed Evaluation Settings"],
+  ["配置多服务器性能评估参数", "Configure multi-server evaluation parameters"],
+  ["启用分布式汇总分析", "Enable distributed aggregate analysis"],
+  ["聚合多节点资源进行综合评估", "Aggregate multi-node resources for evaluation"],
+  ["评估目的", "Evaluation Goal"],
+  ["资源汇总与负载均衡建议", "Resource aggregation and load-balancing suggestion"],
+  ["资源汇总与负载均衡", "Resource aggregation and load balancing"],
+  ["服务器间性能对比", "Inter-server performance comparison"],
+  ["选择参与评估的节点", "Select nodes for evaluation"],
+  ["上一步", "Previous"],
+  ["算法配置", "Algorithm Settings"],
+  ["实时监控 (无负载测试)", "Real-time monitor (no load test)"],
+  ["预热轮次", "Warmup Iterations"],
+  ["TPE 采样数", "TPE Trials"],
+  ["TPE 预热轮次", "TPE Warmup"],
+  ["GPU 负载阈值", "GPU Busy Threshold"],
+  ["最小可用显存", "Min Free GPU Memory"],
+  ["开始评估分析", "Start Evaluation"],
+  ["采纳评估策略", "Apply Evaluation Strategy"],
+  ["当前任务摘要", "Current Task Summary"],
+  ["模式：", "Mode: "],
+  ["多服务器", "Multi-server"],
+  ["单服务器", "Single-server"],
+  ["分布式", "Distributed"],
+  ["对比", "Compare"],
+  ["未选择", "Not selected"],
+  ["已选", "selected"],
+  ["节点：", "Node: "],
+  ["算法：", "Algorithm: "],
+  ["数据集：", "Dataset: "],
+  ["预热轮次：", "Warmup: "],
+  ["评估日志输出", "Evaluation Logs"],
+  ["等待开始...", "Waiting to start..."],
+  ["资源锁定配置", "Resource Lock Settings"],
+  ["锁定策略", "Lock Strategy"],
+  ["自动选择 (推荐)", "Auto (Recommended)"],
+  ["手动指定", "Manual"],
+  ["锁定服务器范围", "Lock Scope"],
+  ["锁定时长", "Lock Duration"],
+  ["手动预热轮次", "Manual Warmup"],
+  ["手动设备绑定", "Manual Device Binding"],
+  ["显存预留", "Reserved GPU Memory"],
+  ["强制释放", "Force Release"],
+  ["应用锁定", "Apply Lock"],
+  ["本机", "Local"],
+  ["本地节点", "Local Node"],
+  ["远程节点", "Remote Node"],
+  ["删除", "Delete"],
+  ["在线", "Online"],
+  ["未知", "Unknown"],
+  ["所有服务器", "All Servers"],
+  ["默认（所有服务器）", "Default (All Servers)"],
+  ["默认（使用资源评估结果）", "Default (Use evaluation result)"],
+  ["MNM（多机适应度加速）", "MNM (Distributed Fitness Acceleration)"],
+  ["S（单卡）", "S (Single GPU)"],
+  ["SM（单卡加速）", "SM (Single GPU Accelerated)"],
+  ["M（多卡）", "M (Multi-GPU)"],
+  ["未找到可用服务器", "No available servers"],
+  ["无 GPU", "No GPU"],
+  ["暂无活动锁定任务", "No active lock tasks"],
+  ["锁定状态获取失败", "Failed to fetch lock status"],
+  ["仅监控资源", "Monitor Resources Only"],
+  ["(该算法暂无数据集清单)", "(No datasets available for this algorithm)"],
+  ["连接失败或无响应", "Connection failed or no response"],
+  ["获取资源失败", "Failed to fetch resources"],
+  ["评估任务准备中...", "Preparing evaluation..."],
+  ["等待操作", "Waiting operation"],
+  ["评估参数", "Evaluation parameters"],
+  ["未选择多服务器，已回退单服务器评估。", "No multi-server selected, fell back to single-server evaluation."],
+  ["未选择数据集，跳过 Warmup。", "No dataset selected, skip warmup."],
+  ["开始静态资源分析", "Start static resource analysis"],
+  ["开始算法分析", "Start algorithm analysis"],
+  ["算法分析中...", "Analyzing algorithm..."],
+  ["结果", "result"],
+  ["失败", "failed"],
+  ["调用异常", "call exception"],
+  ["调用失败", "call failed"],
+  ["估计耗时", "Estimated time"],
+  ["原因", "Reason"],
+  ["静态候选", "Static candidates"],
+  ["当前策略", "Current strategy"],
+  ["等待数据...", "Waiting for data..."],
+  ["说明：静态计划为各服务器 StrategyPlan 合并；若开启 Warmup，将使用真实分布式 RPC 进行算法评估。", "Note: static plans merge per-server StrategyPlan; warmup uses real distributed RPC evaluation."],
+  ["分布式资源汇总（多机多卡）", "Distributed Resource Summary (Multi-node Multi-GPU)"],
+  ["最佳多GPU选择", "Best multi-GPU selection"],
+  ["多机最佳方案对比", "Best Plan Comparison (Multi-node)"],
+  ["评估启动失败", "Evaluation start failed"],
+  ["最新优先 ▼", "Newest First ▼"],
+  ["最早优先 ▲", "Oldest First ▲"],
+  ["暂无历史记录。", "No history records."],
+  ["节点:", "Node:"],
+  ["状态:", "State:"],
+  ["适应度:", "Fitness:"],
+  ["通讯:", "Comm:"],
+  ["继续迭代", "Continue Iteration"],
+  ["历史已清空。", "History cleared."],
+  ["已删除选中历史。", "Deleted selected history."],
+  ["指标曲线：", "Metric Curves: "],
+  ["指标曲线", "Metric Curves"],
+  ["是否针对", "Continue iteration for"],
+  ["继续迭代？", "continue iteration?"],
+  ["已加载历史状态", "Loaded history state"],
+  ["准备继续迭代...", "ready to continue..."],
+  ["未选中多卡，已切换为 S。", "No multi-GPU selected, switched to S."],
+  ["等待任务…", "Waiting for task..."],
+  ["分布式锁定已启用", "Distributed lock enabled"],
+  ["远程服务器：", "Remote servers: "],
+  ["锁定中...", "Locking..."],
+  ["释放中...", "Releasing..."],
+  ["已有资源锁定在运行，请先释放锁定。", "A resource lock is active. Please release it first."],
+  ["分布式评估未返回可锁定的设备。", "Distributed evaluation returned no lockable devices."],
+  ["资源锁定失败", "Resource lock failed"],
+  ["已应用分布式锁定策略", "Applied distributed lock strategy"],
+  ["评估结果未包含可用设备，无法锁定。", "Evaluation result has no lockable devices."],
+  ["已应用锁定策略", "Applied lock strategy"],
+  ["请选择至少一张显卡", "Select at least one GPU"],
+  ["开始锁定资源", "Start resource locking"],
+  ["锁定失败", "Lock failed"],
+  ["锁定完成", "Lock completed"],
+  ["释放失败", "Release failed"],
+  ["已释放资源锁定", "Resource lock released"],
+  ["暂无锁定操作。", "No lock operations."],
+  ["已添加该服务器", "Server already added"],
+  ["请填写IP地址", "Please enter IP address"],
+  ["启用", "enabled"],
+  ["禁用", "disabled"],
+  ["处理中...", "Processing..."],
+  ["策略", "strategy"],
+  ["当前策略：以 StrategyPlan 为准", "Current strategy: using StrategyPlan"],
+  ["按 Worker 分解", "Per Worker Breakdown"],
+  ["通信统计", "Communication Stats"],
+  ["次调用", "calls"],
+  ["序列化", "Serialize"],
+  ["网络传输", "Network"],
+  ["远程计算", "Remote Compute"],
+  ["反序列化", "Deserialize"],
+  ["总数据量", "Total Data"],
+  ["平均延迟", "Average Latency"],
+  ["运行中", "Running"],
+  ["空闲", "Idle"],
+  ["运行中", "running"],
+  ["空闲", "idle"],
+  ["启动中", "starting"],
+  ["已完成", "completed"],
+  ["已取消", "cancelled"],
+  ["错误", "error"],
+];
+
+function _escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function _normalizeLang(input) {
+  const lang = String(input || "").trim();
+  if (SUPPORTED_LANGS.has(lang)) return lang;
+  if (lang.toLowerCase().startsWith("en")) return "en";
+  return DEFAULT_LANG;
+}
+
+const _zhToEnRules = PHRASE_PAIRS
+  .slice()
+  .sort((a, b) => b[0].length - a[0].length)
+  .map(([zh, en]) => [new RegExp(_escapeRegExp(zh), "g"), en]);
+const _enToZhRules = PHRASE_PAIRS
+  .slice()
+  .sort((a, b) => b[1].length - a[1].length)
+  .map(([zh, en]) => [new RegExp(_escapeRegExp(en), "g"), zh]);
+
+let currentLang = (() => {
+  try {
+    return _normalizeLang(localStorage.getItem(LANG_STORAGE_KEY));
+  } catch (e) {
+    return DEFAULT_LANG;
+  }
+})();
+
+function translateText(text, targetLang = currentLang) {
+  if (text == null) return "";
+  let out = String(text);
+  const rules = targetLang === "en" ? _zhToEnRules : _enToZhRules;
+  rules.forEach(([pattern, value]) => {
+    out = out.replace(pattern, value);
+  });
+  return out;
+}
+
+function localizeHtml(html) {
+  return translateText(html, currentLang);
+}
+
+function localizeTitle() {
+  const fallback = TITLE_BY_LANG[currentLang] || TITLE_BY_LANG[DEFAULT_LANG];
+  const current = document.title || TITLE_BY_LANG[DEFAULT_LANG];
+  document.title = translateText(current || fallback, currentLang) || fallback;
+}
+
+function localizeElementTree(root) {
+  if (!root) return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node || !node.nodeValue || !node.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
+      const parent = node.parentElement;
+      if (!parent) return NodeFilter.FILTER_REJECT;
+      const tag = parent.tagName;
+      if (tag === "SCRIPT" || tag === "STYLE") return NodeFilter.FILTER_REJECT;
+      return NodeFilter.FILTER_ACCEPT;
+    },
+  });
+  let node;
+  while ((node = walker.nextNode())) {
+    const translated = translateText(node.nodeValue, currentLang);
+    if (translated !== node.nodeValue) {
+      node.nodeValue = translated;
+    }
+  }
+  const attrSelector = "[placeholder],[title],[aria-label]";
+  root.querySelectorAll?.(attrSelector).forEach((el) => {
+    ["placeholder", "title", "aria-label"].forEach((attr) => {
+      const raw = el.getAttribute(attr);
+      if (raw == null || raw === "") return;
+      const translated = translateText(raw, currentLang);
+      if (translated !== raw) el.setAttribute(attr, translated);
+    });
+  });
+}
+
+let _localizeTimer = null;
+function scheduleLocalize(root = document.body) {
+  if (_localizeTimer) clearTimeout(_localizeTimer);
+  _localizeTimer = setTimeout(() => {
+    _localizeTimer = null;
+    localizeElementTree(root || document.body);
+  }, 0);
+}
+
+function applyLanguage(lang, persist = true) {
+  const normalized = _normalizeLang(lang);
+  currentLang = normalized;
+  document.documentElement.setAttribute("lang", normalized);
+  if (persist) {
+    try {
+      localStorage.setItem(LANG_STORAGE_KEY, normalized);
+    } catch (e) { }
+  }
+  const langSelect = document.getElementById("global-lang");
+  if (langSelect && langSelect.value !== normalized) {
+    langSelect.value = normalized;
+  }
+  localizeTitle();
+  localizeElementTree(document.body);
+}
+
+const _nativeAlert = window.alert.bind(window);
+const _nativeConfirm = window.confirm.bind(window);
+window.alert = (msg) => _nativeAlert(translateText(msg, currentLang));
+window.confirm = (msg) => _nativeConfirm(translateText(msg, currentLang));
+
 const cardsDiv = document.getElementById("cards");
 const serverSelect = document.getElementById("select-server");
 const serverSelectMulti = document.getElementById("select-server-multi");
@@ -87,6 +425,7 @@ const lockLogBox = document.getElementById("lock-log");
 const btnLockStatus = document.getElementById("btn-lock-status");
 const btnLockReleaseNow = document.getElementById("btn-lock-release-now");
 const btnLockLogClear = document.getElementById("btn-lock-log-clear");
+const globalLang = document.getElementById("global-lang");
 
 const sources = [{ id: "local", base: "", label: "本机", expanded: true, meta: { type: "local" } }];
 const snapshots = new Map();
@@ -167,13 +506,14 @@ function pct(val) {
 function log(line) {
   if (!logBox) return;
   const ts = new Date().toLocaleTimeString();
-  const text = `[${ts}] ${line}`;
+  const localized = translateText(line, currentLang);
+  const text = `[${ts}] ${localized}`;
   const div = document.createElement("div");
   div.className = "terminal-line info";
-  const upper = String(line || "").toUpperCase();
-  if (upper.includes("ERROR") || upper.includes("失败")) div.className = "terminal-line error";
-  else if (upper.includes("WARN") || upper.includes("警告")) div.className = "terminal-line warn";
-  if (logBox.textContent.trim().includes("等待操作")) logBox.innerHTML = "";
+  const upper = String(localized || "").toUpperCase();
+  if (upper.includes("ERROR") || upper.includes("FAILED") || upper.includes("失败")) div.className = "terminal-line error";
+  else if (upper.includes("WARN") || upper.includes("WARNING") || upper.includes("警告")) div.className = "terminal-line warn";
+  if (logBox.textContent.trim().includes(translateText("等待操作", currentLang))) logBox.innerHTML = "";
   div.textContent = text;
   logBox.appendChild(div);
   logBox.scrollTop = logBox.scrollHeight;
@@ -181,8 +521,10 @@ function log(line) {
 function lockLog(line) {
   if (!lockLogBox) return;
   const ts = new Date().toLocaleTimeString();
-  const next = `[${ts}] ${line}\n`;
-  if (lockLogBox.textContent.trim() === "暂无锁定操作。") lockLogBox.textContent = "";
+  const next = `[${ts}] ${translateText(line, currentLang)}\n`;
+  const emptyZh = "暂无锁定操作。";
+  const emptyEn = translateText(emptyZh, "en");
+  if ([emptyZh, emptyEn].includes(lockLogBox.textContent.trim())) lockLogBox.textContent = "";
   lockLogBox.textContent += next;
   lockLogBox.scrollTop = lockLogBox.scrollHeight;
 }
@@ -199,7 +541,7 @@ function setButtonLoading(btn, loading = true, loadingText = "处理中...") {
     btn._originalText = btn.textContent;
     btn._originalDisabled = btn.disabled;
     btn.disabled = true;
-    btn.innerHTML = `<span class="spinner"></span> ${loadingText}`;
+    btn.innerHTML = `<span class="spinner"></span> ${translateText(loadingText, currentLang)}`;
     btn.classList.add("btn-loading");
   } else {
     btn.disabled = btn._originalDisabled || false;
@@ -331,11 +673,11 @@ function updateEvalSummary() {
   const algo = algoSelect?.value || "-";
   const dataset = evalDataset?.value || "-";
   const warm = warmupInput?.value || "0";
-  if (summaryMode) summaryMode.textContent = mode;
-  if (summaryServer) summaryServer.textContent = serverText;
-  if (summaryAlgo) summaryAlgo.textContent = algo;
-  if (summaryDataset) summaryDataset.textContent = dataset;
-  if (summaryWarmup) summaryWarmup.textContent = warm;
+  if (summaryMode) summaryMode.textContent = `${translateText("模式：", currentLang)}${translateText(mode, currentLang)}`;
+  if (summaryServer) summaryServer.textContent = `${translateText("节点：", currentLang)}${translateText(serverText, currentLang)}`;
+  if (summaryAlgo) summaryAlgo.textContent = `${translateText("算法：", currentLang)}${algo}`;
+  if (summaryDataset) summaryDataset.textContent = `${translateText("数据集：", currentLang)}${dataset}`;
+  if (summaryWarmup) summaryWarmup.textContent = `${translateText("预热轮次：", currentLang)}${warm}`;
 }
 
 function openLockModal() {
@@ -382,6 +724,11 @@ document.getElementById("btn-clear-log").addEventListener("click", () => {
 btnLockLogClear?.addEventListener("click", () => {
   if (lockLogBox) lockLogBox.textContent = "";
 });
+globalLang?.addEventListener("change", (event) => {
+  const next = event?.target?.value || DEFAULT_LANG;
+  applyLanguage(next, true);
+});
+applyLanguage(currentLang, false);
 
 function updateServerSelect() {
   const current = serverSelect.value;
@@ -2656,6 +3003,11 @@ window.updateProgressWithAnimation = function (progressEl, percent) {
 // Add dynamic glow to newly created cards (for history items, etc.)
 const cardObserver = new MutationObserver((mutations) => {
   mutations.forEach(mutation => {
+    if (mutation.type === "characterData") {
+      const parent = mutation.target?.parentElement || document.body;
+      scheduleLocalize(parent);
+      return;
+    }
     mutation.addedNodes.forEach(node => {
       if (node.nodeType === 1) { // Element node
         if (node.classList?.contains('card')) {
@@ -2664,10 +3016,11 @@ const cardObserver = new MutationObserver((mutations) => {
         node.querySelectorAll?.('.card, .stat').forEach(el => {
           el.classList.add('glow-effect');
         });
+        scheduleLocalize(node);
       }
     });
   });
 });
 
 // Start observing for dynamically added cards
-cardObserver.observe(document.body, { childList: true, subtree: true });
+cardObserver.observe(document.body, { childList: true, subtree: true, characterData: true });

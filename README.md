@@ -156,6 +156,9 @@ Web console modularization:
   - `web/assets/api-client.js` (API timeout/retry wrapper)
   - `web/assets/ui-state.js` (shared UI state store)
   - `web/assets/ui-render.js` (mode/degrade render helpers)
+- Global UI i18n switch (`zh-CN` / `en`) is available in the dashboard header.
+- Selected language is persisted in `localStorage` key `gapa_lang` and restored on refresh.
+- Language switch only changes UI copy; API contract, CLI/examples behavior, and runtime payloads stay unchanged.
 
 <h3>Project Layout</h3>
 

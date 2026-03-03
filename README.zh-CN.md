@@ -82,6 +82,9 @@ uvicorn server_agent:app --host 0.0.0.0 --port 7777
   - `web/assets/api-client.js`（统一超时/重试）
   - `web/assets/ui-state.js`（共享状态存储）
   - `web/assets/ui-render.js`（模式/降级信息渲染）
+- 控制台 Header 新增全局语言切换（`zh-CN` / `en`）。
+- 语言选择会持久化到 `localStorage` 的 `gapa_lang`，刷新页面后保持上次选择。
+- 语言切换仅影响 UI 文案，不改变 API 契约、脚本示例行为和运行时请求参数。
 
 ## 项目结构
 
