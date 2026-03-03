@@ -160,6 +160,12 @@ Web console modularization:
 - Selected language is persisted in `localStorage` key `gapa_lang` and restored on refresh.
 - Language switch only changes UI copy; API contract, CLI/examples behavior, and runtime payloads stay unchanged.
 
+Performance baseline and regression gate:
+- Generate baseline metrics: `python examples/run_perf_baseline.py --profile small`.
+- Re-run current metrics and compare with gate thresholds:
+  - `python tests/perf_regression_gate.py --baseline <baseline.json> --current <current.json> --output <gate.json>`
+- Gate checks include throughput drop, latency increase, recovery latency increase, and remote failure rate delta for `S/SM/M/MNM`.
+
 <h3>Project Layout</h3>
 
 ```text

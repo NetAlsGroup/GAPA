@@ -86,6 +86,12 @@ uvicorn server_agent:app --host 0.0.0.0 --port 7777
 - 语言选择会持久化到 `localStorage` 的 `gapa_lang`，刷新页面后保持上次选择。
 - 语言切换仅影响 UI 文案，不改变 API 契约、脚本示例行为和运行时请求参数。
 
+性能基线与回归门禁：
+- 生成性能基线：`python examples/run_perf_baseline.py --profile small`。
+- 重新采集当前指标并执行门禁对比：
+  - `python tests/perf_regression_gate.py --baseline <baseline.json> --current <current.json> --output <gate.json>`
+- 门禁覆盖 `S/SM/M/MNM` 的吞吐下降、时延上升、恢复时延上升和远程失败率漂移。
+
 ## 项目结构
 
 ```text
