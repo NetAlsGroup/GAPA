@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 from typing import Any, Dict, List, Optional, Callable
+from .api_schemas import is_terminal_task_state, normalize_task_state
 
 import multiprocessing as mp
 
@@ -79,7 +80,7 @@ def start_consumer(task: TaskState, on_finish: Optional[Callable[[], None]] = No
                     elif evt.get("type") == "result":
                         task.result = evt.get("result")
                     elif evt.get("type") == "state":
-                        task.state = evt.get("state") or task.state
+                        task.state = normalize_task_state(evt.get("state") or task.state)
                         task.error = evt.get("error")
             if not alive and (q.empty() if hasattr(q, "empty") else True):
                 break
@@ -93,13 +94,22 @@ def start_consumer(task: TaskState, on_finish: Optional[Callable[[], None]] = No
                     task.error = task.error or "worker exited without result"
             if task.task_id:
                 task.last_checkpoint_ref = task.task_id
-            release_lock = task.release_lock_on_finish and task.state in ("completed", "error", "cancelled")
+            release_lock = task.release_lock_on_finish and is_terminal_task_state(task.state)
+            terminal_task_id = str(task.task_id or "") if is_terminal_task_state(task.state) else ""
+            terminal_state = str(task.state or "")
 
         if release_lock:
             try:
                 from server.resource_lock import LOCK_MANAGER
 
                 LOCK_MANAGER.release(reason="task_done")
+            except Exception:
+                pass
+        if terminal_task_id:
+            try:
+                from server.db_manager import db_manager
+
+                db_manager.save_task_terminal(task_id=terminal_task_id, state=terminal_state)
             except Exception:
                 pass
         if on_finish:

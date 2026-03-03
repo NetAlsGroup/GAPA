@@ -17,6 +17,7 @@ class TaskStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     ERROR = "error"
+    CANCELLED = "cancelled"
     TIMEOUT = "timeout"
 
 
@@ -153,6 +154,14 @@ def make_paginated_response(
 
 DEFAULT_SCHEMA_VERSION = "v1"
 CURRENT_SCHEMA_VERSION = "v2"
+TERMINAL_TASK_STATES = ("completed", "error", "cancelled")
+LEGACY_STATE_MAP = {
+    "空闲": "idle",
+    "已部署": "idle",
+    "运行中": "running",
+    "已暂停": "cancelled",
+    "已终止": "cancelled",
+}
 
 
 def resolve_schema_version(payload: Optional[Dict[str, Any]] = None) -> str:
@@ -166,16 +175,39 @@ def resolve_schema_version(payload: Optional[Dict[str, Any]] = None) -> str:
     return DEFAULT_SCHEMA_VERSION
 
 
+def normalize_task_state(value: Any) -> str:
+    if isinstance(value, TaskStatus):
+        return str(value.value)
+    raw = str(value or "").strip().lower()
+    if raw in (
+        TaskStatus.IDLE.value,
+        TaskStatus.RUNNING.value,
+        TaskStatus.COMPLETED.value,
+        TaskStatus.ERROR.value,
+        TaskStatus.CANCELLED.value,
+    ):
+        return raw
+    if raw in ("timeout", TaskStatus.TIMEOUT.value):
+        return TaskStatus.ERROR.value
+    if str(value or "") in LEGACY_STATE_MAP:
+        return LEGACY_STATE_MAP[str(value or "")]
+    return TaskStatus.IDLE.value
+
+
+def is_terminal_task_state(value: Any) -> bool:
+    return normalize_task_state(value) in TERMINAL_TASK_STATES
+
+
 def mode_decision_code(reason: str, degraded: bool) -> str:
     r = str(reason or "").lower()
-    if not degraded:
-        return ""
     if "unsupported_mode" in r:
         return "MODE_UNSUPPORTED"
+    if "resource_busy" in r or "busy" in r:
+        return "MODE_RESOURCE_BUSY"
     if "fallback" in r or "->" in r:
         return "MODE_FALLBACK"
-    if "busy" in r:
-        return "MODE_RESOURCE_BUSY"
+    if not degraded:
+        return ""
     return "MODE_DEGRADED"
 
 
@@ -187,7 +219,7 @@ def normalize_mode_decision(mode_decision: Optional[Dict[str, Any]]) -> Dict[str
     selected = str(md.get("selected_mode") or md.get("mode") or requested).upper()
     degraded = bool(md.get("degraded")) or requested != selected
     reason = str(md.get("reason") or "").strip()
-    code = str(md.get("code") or mode_decision_code(reason, degraded))
+    code = mode_decision_code(reason, degraded)
     devices = md.get("devices")
     if not isinstance(devices, list):
         devices = [] if devices is None else [devices]

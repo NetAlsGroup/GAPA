@@ -3,6 +3,7 @@ from __future__ import annotations
 import platform
 import time
 from typing import Any, Dict, List, Optional, Tuple
+from .api_schemas import mode_decision_code
 
 try:
     import requests  # type: ignore
@@ -123,7 +124,7 @@ def build_mode_decision(
         "selected_mode": selected,
         "degraded": degraded,
         "reason": final_reason,
-        "code": "MODE_DEGRADED" if degraded else "",
+        "code": mode_decision_code(final_reason, degraded),
         "target": target,
         "devices": devs,
         "capability": capability,
