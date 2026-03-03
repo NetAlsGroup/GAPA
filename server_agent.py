@@ -36,9 +36,16 @@ from server.db_manager import db_manager
 from server.api_schemas import (
     CURRENT_SCHEMA_VERSION,
     DEFAULT_SCHEMA_VERSION,
+    TERMINAL_TASK_STATES,
     build_resume_metadata,
+    is_terminal_task_state,
     normalize_mode_decision,
     resolve_schema_version,
+)
+from server.shared_runtime import (
+    run_ga_warmup_local as run_ga_warmup_local_shared,
+    summarize_warmup_result,
+    terminate_process_tree,
 )
 
 
@@ -93,113 +100,26 @@ STRATEGY_PROGRESS: Dict[str, Dict[str, Any]] = {}
 QUEUE_MANAGER = TaskQueueManager(
     max_total=int(os.getenv("GAPA_QUEUE_MAX_TOTAL", "16") or 16),
     max_per_owner=int(os.getenv("GAPA_QUEUE_MAX_PER_OWNER", "2") or 2),
+    storage=db_manager,
+    terminal_filter=lambda ids: db_manager.get_terminal_task_ids(ids),
 )
 QUEUE_LOCK = threading.Lock()
 
 
 def _summarize_warmup_result(result: dict | None) -> dict:
-    if not isinstance(result, dict):
-        return {"summary": {}, "per_iter_ms": []}
-    timing = result.get("timing") or {}
-    summary = {
-        "iter_seconds": timing.get("iter_seconds"),
-        "iter_avg_ms": timing.get("iter_avg_ms"),
-        "throughput_ips": timing.get("throughput_ips"),
-        "iterations": (result.get("hyperparams") or {}).get("iterations"),
-        "pop_size": (result.get("hyperparams") or {}).get("pop_size"),
-        "mode": (result.get("selected") or {}).get("mode"),
-        "devices": (result.get("selected") or {}).get("devices"),
-        "remote_servers": (result.get("selected") or {}).get("remote_servers"),
-    }
-    points = result.get("points") or []
-    per_iter_ms = []
-    last = None
-    for item in points:
-        elapsed = item.get("elapsed_s")
-        if elapsed is None:
-            continue
-        if last is not None:
-            per_iter_ms.append((float(elapsed) - float(last)) * 1000.0)
-        last = float(elapsed)
-    return {"summary": summary, "per_iter_ms": per_iter_ms}
+    return summarize_warmup_result(result)
 
 
 def _run_ga_warmup_local(payload: Dict[str, Any]) -> Dict[str, Any] | tuple[Dict[str, Any], int]:
-    algorithm = str(payload.get("algorithm") or "")
-    dataset = str(payload.get("dataset") or "")
-    if not algorithm or not dataset:
-        return {"error": "algorithm and dataset are required"}, 400
-    iterations = int(payload.get("iterations") or payload.get("warmup_iters") or 2)
-    crossover_rate = float(payload.get("crossover_rate") or payload.get("pc") or 0.8)
-    mutate_rate = float(payload.get("mutate_rate") or payload.get("pm") or 0.2)
-    selected = select_run_mode(payload.get("mode"), payload.get("devices"))
-    remote_servers = payload.get("remote_servers") or payload.get("allowed_server_ids")
-    if remote_servers is not None:
-        selected["remote_servers"] = remote_servers
-    timeout_s = float(payload.get("timeout_s", 180) or 180)
-
-    with TASK.lock:
-        if TASK.state == "running":
-            return {"error": "Agent is busy running a GA task"}, 409
-
-    task_id = str(uuid.uuid4())
-    ctx = mp.get_context("spawn")
-    q = ctx.Queue()
-    proc = ctx.Process(
-        target=_ga_entry,
-        args=(task_id, algorithm, dataset, iterations, crossover_rate, mutate_rate, selected, q),
+    return run_ga_warmup_local_shared(
+        payload=payload,
+        task=TASK,
+        task_lock=TASK.lock,
+        busy_message="Agent is busy running a GA task",
+        ga_entry=_ga_entry,
+        select_run_mode=select_run_mode,
+        require_algorithm_dataset=True,
     )
-    proc.start()
-
-    logs = []
-    result = None
-    state = "running"
-    error = None
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        try:
-            evt = q.get(timeout=0.2)
-        except Exception:
-            if not proc.is_alive():
-                break
-            continue
-        if not isinstance(evt, dict):
-            continue
-        etype = evt.get("type")
-        if etype == "log":
-            logs.append(evt.get("line"))
-        elif etype == "result":
-            result = evt.get("result")
-        elif etype == "state":
-            state = evt.get("state") or state
-            error = evt.get("error") or error
-        if state in ("completed", "error") and result is not None:
-            break
-
-    if proc.is_alive():
-        try:
-            proc.terminate()
-            proc.join(timeout=1.0)
-        except Exception:
-            pass
-        state = "timeout"
-        error = error or "warmup timeout"
-    else:
-        try:
-            proc.join(timeout=0.2)
-        except Exception:
-            pass
-
-    summary = _summarize_warmup_result(result)
-    return {
-        "task_id": task_id,
-        "state": state,
-        "summary": summary["summary"],
-        "per_iter_ms": summary["per_iter_ms"],
-        "comm": (result or {}).get("comm"),
-        "logs": logs[-200:],
-        "error": error,
-    }
 def _ga_entry(
     task_id: str,
     algorithm: str,
@@ -644,8 +564,8 @@ def api_analysis_status() -> Dict[str, Any]:
             "mode_decision": normalize_mode_decision(TASK.mode_decision),
             "resume_metadata": TASK.resume_metadata,
             "lifecycle": {
-                "terminal_states": ["completed", "error", "cancelled"],
-                "is_terminal": TASK.state in ("completed", "error", "cancelled"),
+                "terminal_states": list(TERMINAL_TASK_STATES),
+                "is_terminal": is_terminal_task_state(TASK.state),
             },
         }
 
@@ -681,41 +601,14 @@ def api_analysis_stop() -> Dict[str, Any]:
 
     # terminate outside lock
     try:
-        def kill_process_tree(pid: int, sig: int = signal.SIGTERM):
-            try:
-                import psutil
-                parent = psutil.Process(pid)
-                children = parent.children(recursive=True)
-                for child in children:
-                    try:
-                        child.send_signal(sig)
-                    except psutil.NoSuchProcess:
-                        pass
-                parent.send_signal(sig)
-            except Exception:
-                # Fallback if psutil fails or pid is gone
-                if os.name == "posix":
-                    try:
-                        os.killpg(pid, sig)
-                    except Exception:
-                        try:
-                            os.kill(pid, sig)
-                        except Exception:
-                            pass
-                else:
-                    try:
-                        proc.terminate() if sig == signal.SIGTERM else proc.kill()
-                    except Exception:
-                        pass
-
         if pid:
-            kill_process_tree(pid, signal.SIGTERM)
+            terminate_process_tree(proc, pid, signal.SIGTERM)
         
         proc.join(timeout=2.0)
         if proc.is_alive():
             print(f"[WARN] Process {pid} still alive after SIGTERM, sending SIGKILL...")
             if pid:
-                kill_process_tree(pid, signal.SIGKILL)
+                terminate_process_tree(proc, pid, signal.SIGKILL)
             proc.join(timeout=1.0)
     finally:
         with TASK.lock:
@@ -725,6 +618,10 @@ def api_analysis_stop() -> Dict[str, Any]:
             if TASK.task_id:
                 TASK.last_checkpoint_ref = TASK.task_id
             TASK.append_log("[INFO] task stopped.")
+        try:
+            db_manager.save_task_terminal(task_id=str(TASK.task_id or ""), state="cancelled")
+        except Exception:
+            pass
     _try_dispatch_next_task()
 
     return {

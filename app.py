@@ -39,11 +39,19 @@ from server.api_schemas import (
     DEFAULT_SCHEMA_VERSION,
     ErrorResponse,
     HTTPStatus,
+    TERMINAL_TASK_STATES,
     build_resume_metadata,
+    is_terminal_task_state,
     make_error_response,
     make_paginated_response,
+    normalize_task_state,
     normalize_mode_decision,
     resolve_schema_version,
+)
+from server.shared_runtime import (
+    run_ga_warmup_local as run_ga_warmup_local_shared,
+    summarize_warmup_result,
+    terminate_process_tree,
 )
 
 import threading
@@ -172,30 +180,7 @@ def _resolve_server_base_url(server_id: str | None) -> str | None:
 
 
 def _summarize_warmup_result(result: dict | None) -> dict:
-    if not isinstance(result, dict):
-        return {"summary": {}, "per_iter_ms": []}
-    timing = result.get("timing") or {}
-    summary = {
-        "iter_seconds": timing.get("iter_seconds"),
-        "iter_avg_ms": timing.get("iter_avg_ms"),
-        "throughput_ips": timing.get("throughput_ips"),
-        "iterations": (result.get("hyperparams") or {}).get("iterations"),
-        "pop_size": (result.get("hyperparams") or {}).get("pop_size"),
-        "mode": (result.get("selected") or {}).get("mode"),
-        "devices": (result.get("selected") or {}).get("devices"),
-        "remote_servers": (result.get("selected") or {}).get("remote_servers"),
-    }
-    points = result.get("points") or []
-    per_iter_ms = []
-    last = None
-    for item in points:
-        elapsed = item.get("elapsed_s")
-        if elapsed is None:
-            continue
-        if last is not None:
-            per_iter_ms.append((float(elapsed) - float(last)) * 1000.0)
-        last = float(elapsed)
-    return {"summary": summary, "per_iter_ms": per_iter_ms}
+    return summarize_warmup_result(result)
 
 
 def _ga_entry(
@@ -231,82 +216,15 @@ def _ga_entry(
 
 
 def _run_ga_warmup_local(payload: dict) -> dict:
-    import uuid
-
-    algorithm = str(payload.get("algorithm") or "")
-    dataset = str(payload.get("dataset") or "")
-    iterations = int(payload.get("iterations") or payload.get("warmup_iters") or 2)
-    pc = float(payload.get("crossover_rate") or payload.get("pc") or 0.8)
-    pm = float(payload.get("mutate_rate") or payload.get("pm") or 0.2)
-    selected = select_run_mode(payload.get("mode"), payload.get("devices"))
-    remote_servers = payload.get("remote_servers") or payload.get("allowed_server_ids")
-    if remote_servers is not None:
-        selected["remote_servers"] = remote_servers
-    timeout_s = float(payload.get("timeout_s", 180) or 180)
-
-    with LOCAL_TASK.lock:
-        if LOCAL_TASK.state == "running":
-            return {"error": "A task is already running"}, 409
-
-    task_id = str(uuid.uuid4())
-    ctx = mp.get_context("spawn")
-    q = ctx.Queue()
-    proc = ctx.Process(
-        target=_ga_entry,
-        args=(task_id, algorithm, dataset, iterations, pc, pm, selected, q),
+    return run_ga_warmup_local_shared(
+        payload=payload,
+        task=LOCAL_TASK,
+        task_lock=LOCAL_TASK.lock,
+        busy_message="A task is already running",
+        ga_entry=_ga_entry,
+        select_run_mode=select_run_mode,
+        require_algorithm_dataset=False,
     )
-    proc.start()
-
-    logs = []
-    result = None
-    state = "running"
-    error = None
-    deadline = time.time() + timeout_s
-
-    while time.time() < deadline:
-        try:
-            evt = q.get(timeout=0.2)
-        except Exception:
-            if not proc.is_alive():
-                break
-            continue
-        if not isinstance(evt, dict):
-            continue
-        etype = evt.get("type")
-        if etype == "log":
-            logs.append(evt.get("line"))
-        elif etype == "result":
-            result = evt.get("result")
-        elif etype == "state":
-            state = evt.get("state") or state
-            error = evt.get("error") or error
-        if state in ("completed", "error") and result is not None:
-            break
-
-    if proc.is_alive():
-        try:
-            proc.terminate()
-            proc.join(timeout=1.0)
-        except Exception:
-            pass
-        state = "timeout"
-        error = error or "warmup timeout"
-    else:
-        try:
-            proc.join(timeout=0.2)
-        except Exception:
-            pass
-
-    summary = _summarize_warmup_result(result)
-    return {
-        "task_id": task_id,
-        "state": state,
-        "summary": summary["summary"],
-        "per_iter_ms": summary["per_iter_ms"],
-        "comm": (result or {}).get("comm"),
-        "logs": logs[-200:],
-        "error": error,
-    }
 
 
 LOCAL_TASK = TaskState()
@@ -949,7 +867,13 @@ def api_v1_history():
 
 @app.route("/api/state")
 def api_state():
-    return jsonify(store.state)
+    legacy = dict(store.state or {})
+    canonical = normalize_task_state(legacy.get("status"))
+    legacy.setdefault("status", legacy.get("status") or "空闲")
+    legacy["state"] = canonical
+    legacy["terminal_states"] = list(TERMINAL_TASK_STATES)
+    legacy["is_terminal"] = is_terminal_task_state(canonical)
+    return jsonify(legacy)
 
 
 @app.route("/api/observer", methods=["GET", "POST"])
@@ -1248,8 +1172,8 @@ def api_analysis_status():
                         "mode_decision": normalize_mode_decision(LOCAL_TASK.mode_decision),
                         "resume_metadata": LOCAL_TASK.resume_metadata,
                         "lifecycle": {
-                            "terminal_states": ["completed", "error", "cancelled"],
-                            "is_terminal": LOCAL_TASK.state in ("completed", "error", "cancelled"),
+                            "terminal_states": list(TERMINAL_TASK_STATES),
+                            "is_terminal": is_terminal_task_state(LOCAL_TASK.state),
                         },
                         "transport_metrics": _transport_metric_summary(),
                         },
@@ -1359,41 +1283,14 @@ def api_analysis_stop():
 
         # terminate outside lock
         try:
-            def kill_process_tree(pid: int, sig: int = signal.SIGTERM):
-                try:
-                    import psutil
-                    parent = psutil.Process(pid)
-                    children = parent.children(recursive=True)
-                    for child in children:
-                        try:
-                            child.send_signal(sig)
-                        except psutil.NoSuchProcess:
-                            pass
-                    parent.send_signal(sig)
-                except Exception:
-                    # Fallback if psutil fails or pid is gone
-                    if os.name == "posix":
-                        try:
-                            os.killpg(pid, sig)
-                        except Exception:
-                            try:
-                                os.kill(pid, sig)
-                            except Exception:
-                                pass
-                    else:
-                        try:
-                            proc.terminate() if sig == signal.SIGTERM else proc.kill()
-                        except Exception:
-                            pass
-
             if pid:
-                kill_process_tree(pid, signal.SIGTERM)
+                terminate_process_tree(proc, pid, signal.SIGTERM)
             
             proc.join(timeout=2.0)
             if proc.is_alive():
                 print(f"[WARN] Process {pid} still alive after SIGTERM, sending SIGKILL...")
                 if pid:
-                    kill_process_tree(pid, signal.SIGKILL)
+                    terminate_process_tree(proc, pid, signal.SIGKILL)
                 proc.join(timeout=1.0)
         finally:
             with LOCAL_TASK.lock:
@@ -1403,6 +1300,10 @@ def api_analysis_stop():
                 if LOCAL_TASK.task_id:
                     LOCAL_TASK.last_checkpoint_ref = LOCAL_TASK.task_id
                 LOCAL_TASK.append_log("[INFO] task stopped.")
+            try:
+                db_manager.save_task_terminal(task_id=str(LOCAL_TASK.task_id or ""), state="cancelled")
+            except Exception:
+                pass
 
         return jsonify(
             _response_with_schema(
