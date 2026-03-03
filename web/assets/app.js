@@ -1,3 +1,7 @@
+import { installApiClient } from "./api-client.js";
+import { setModeDecision, setRunState } from "./ui-state.js";
+import { renderModeDecisionLine } from "./ui-render.js";
+
 const { createApp } = Vue;
 const app = createApp({
   data() {
@@ -25,6 +29,7 @@ const app = createApp({
   },
 });
 const appVm = app.mount("#app");
+installApiClient({ retries: 2, timeoutMs: 12000 });
 
 const cardsDiv = document.getElementById("cards");
 const serverSelect = document.getElementById("select-server");
@@ -2097,9 +2102,8 @@ async function startRun(opts = {}) {
   appendRunLog([`[INFO] task started: ${data.task_id}`]);
   if (data.mode_decision) {
     const md = data.mode_decision;
-    appendRunLog([
-      `[INFO] mode decision: requested=${md.requested_mode} selected=${md.selected_mode} degraded=${md.degraded} reason=${md.reason || "-"} code=${md.code || "-"}`,
-    ]);
+    setModeDecision(md);
+    appendRunLog([renderModeDecisionLine(md)]);
   }
   if (data.resume_metadata) {
     appendRunLog([`[INFO] resume metadata: checkpoint_ref=${data.resume_metadata.checkpoint_ref || "-"} run_id=${data.resume_metadata.run_id || "-"}`]);
@@ -2139,12 +2143,12 @@ async function pollRunStatus(server_id) {
   if (!resp.ok) return;
   const st = await resp.json();
   runState.textContent = st.state || "unknown";
+  setRunState({ status: st.state || "unknown", taskId: st.task_id || "" });
   if (st.mode_decision) {
     const md = st.mode_decision;
+    setModeDecision(md);
     if (st.state === "running" && lastLogCount === 0) {
-      appendRunLog([
-        `[INFO] mode decision: requested=${md.requested_mode} selected=${md.selected_mode} degraded=${md.degraded} reason=${md.reason || "-"} code=${md.code || "-"}`,
-      ]);
+      appendRunLog([renderModeDecisionLine(md)]);
     }
   }
   if (st.resume_metadata && st.state === "running" && lastLogCount === 0) {
