@@ -99,6 +99,28 @@ class DBManager:
                     updated_at REAL
                 )
             """)
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS queue_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    owner TEXT,
+                    priority INTEGER,
+                    created_at REAL,
+                    payload_json TEXT,
+                    retry_count INTEGER,
+                    updated_at REAL
+                )
+                """
+            )
+            self.conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS task_terminal (
+                    task_id TEXT PRIMARY KEY,
+                    state TEXT,
+                    updated_at REAL
+                )
+                """
+            )
             try:
                 cursor = self.conn.execute("PRAGMA table_info(ga_state)")
                 columns = [row[1] for row in cursor.fetchall()]
@@ -239,5 +261,83 @@ class DBManager:
     def lock_for_write(self):
         # sqlite3 handle its own locking but we can use threading.Lock for extra safety in multi-threaded Flask
         return self._lock
+
+    def save_queue_task(
+        self,
+        *,
+        task_id: str,
+        owner: str,
+        priority: int,
+        created_at: float,
+        payload: Dict[str, Any],
+        retry_count: int = 0,
+    ) -> None:
+        payload_json = json.dumps(payload or {}, ensure_ascii=False)
+        with self.lock_for_write():
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO queue_tasks (
+                    task_id, owner, priority, created_at, payload_json, retry_count, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(task_id),
+                    str(owner or "anonymous"),
+                    int(priority),
+                    float(created_at),
+                    payload_json,
+                    int(retry_count or 0),
+                    time.time(),
+                ),
+            )
+
+    def delete_queue_task(self, task_id: str) -> None:
+        with self.lock_for_write():
+            self.conn.execute("DELETE FROM queue_tasks WHERE task_id = ?", (str(task_id),))
+
+    def list_queue_tasks(self) -> List[Dict[str, Any]]:
+        cursor = self.conn.execute(
+            """
+            SELECT task_id, owner, priority, created_at, payload_json, retry_count
+            FROM queue_tasks
+            ORDER BY priority DESC, created_at ASC
+            """
+        )
+        rows = cursor.fetchall()
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(row["payload_json"] or "{}")
+            out.append(
+                {
+                    "task_id": row["task_id"],
+                    "owner": row["owner"],
+                    "priority": int(row["priority"] or 0),
+                    "created_at": float(row["created_at"] or 0.0),
+                    "payload": payload if isinstance(payload, dict) else {},
+                    "retry_count": int(row["retry_count"] or 0),
+                }
+            )
+        return out
+
+    def save_task_terminal(self, *, task_id: str, state: str) -> None:
+        with self.lock_for_write():
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO task_terminal (task_id, state, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (str(task_id), str(state), time.time()),
+            )
+
+    def get_terminal_task_ids(self, task_ids: Optional[List[str]] = None) -> List[str]:
+        if not task_ids:
+            cursor = self.conn.execute("SELECT task_id FROM task_terminal")
+            return [row["task_id"] for row in cursor.fetchall()]
+        placeholders = ",".join(["?"] * len(task_ids))
+        cursor = self.conn.execute(
+            f"SELECT task_id FROM task_terminal WHERE task_id IN ({placeholders})",
+            [str(t) for t in task_ids],
+        )
+        return [row["task_id"] for row in cursor.fetchall()]
 
 db_manager = DBManager()

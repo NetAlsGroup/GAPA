@@ -144,6 +144,18 @@ For unstable networks or partially offline nodes:
 Recovery-first workflow (schema-compatible):
 - `POST /api/analysis/start` accepts `schema_version` (`v1` default, `v2` extended), `checkpoint_ref`, and `retry_last`.
 - `start/status/stop` return `schema_version`, `run_id`, `resume_metadata`, and normalized `mode_decision` (`degraded/reason/code`).
+- Legacy `/api/state` now keeps backward-compatible `status` while adding canonical `state` + `is_terminal`.
+
+Queue durability and restart recovery:
+- Busy-path queued tasks are persisted (`task_id/owner/priority/payload/retry_count/created_at`).
+- Server restart restores pending queue items and skips known terminal tasks.
+- Queue responses include consistent `position/status/error_code` fields.
+
+Web console modularization:
+- `web/assets/app.js` now consumes modular helpers:
+  - `web/assets/api-client.js` (API timeout/retry wrapper)
+  - `web/assets/ui-state.js` (shared UI state store)
+  - `web/assets/ui-render.js` (mode/degrade render helpers)
 
 <h3>Project Layout</h3>
 
@@ -165,6 +177,7 @@ GAPA/
 ├── server/                   # Runtime modules
 │   ├── distributed_evaluator.py
 │   ├── resource_lock.py
+│   ├── shared_runtime.py
 │   ├── task_queue.py
 │   └── algorithm_registry.py
 ├── autoadapt/                # StrategyPlan and adaptive routing

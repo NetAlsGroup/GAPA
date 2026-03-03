@@ -70,6 +70,18 @@ uvicorn server_agent:app --host 0.0.0.0 --port 7777
 恢复优先流程（兼容 schema 版本）：
 - `POST /api/analysis/start` 支持 `schema_version`（默认 `v1`，扩展为 `v2`）、`checkpoint_ref`、`retry_last`。
 - `start/status/stop` 统一返回 `schema_version`、`run_id`、`resume_metadata` 与标准化 `mode_decision`（`degraded/reason/code`）。
+- legacy `/api/state` 保留旧 `status` 字段，同时新增规范化 `state` 与 `is_terminal`。
+
+队列持久化与重启恢复：
+- Busy 场景进入队列的任务会持久化（`task_id/owner/priority/payload/retry_count/created_at`）。
+- 服务重启会恢复待执行队列，并跳过已知终态任务，避免重复回放。
+- 队列响应统一包含 `position/status/error_code` 字段。
+
+前端控制台模块化：
+- `web/assets/app.js` 已改为依赖模块化助手：
+  - `web/assets/api-client.js`（统一超时/重试）
+  - `web/assets/ui-state.js`（共享状态存储）
+  - `web/assets/ui-render.js`（模式/降级信息渲染）
 
 ## 项目结构
 
