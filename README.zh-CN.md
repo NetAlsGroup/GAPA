@@ -89,9 +89,19 @@ uvicorn server_agent:app --host 0.0.0.0 --port 7777
 性能基线与回归门禁：
 - 生成性能基线（默认 synthetic）：`python examples/run_perf_baseline.py --profile small --source synthetic`。
 - 基于最小真实运行链路生成基线（live）：`python examples/run_perf_baseline.py --profile small --source live --live-samples 48`。
+- 生成发布级基线（含真实算法路径采样）：`python examples/run_perf_baseline.py --profile release_small --source real --real-dataset ForestFire_n500 --real-generations 1 --real-pop-size 12 --real-runs 2`。
 - 重新采集当前指标并执行门禁对比：
   - `python tests/perf_regression_gate.py --baseline <baseline.json> --current <current.json> --output <gate.json>`
 - 门禁覆盖 mode 集合一致性（缺失/额外 mode 必须失败）以及 `S/SM/M/MNM` 的吞吐下降、时延上升、恢复时延上升和远程失败率漂移。
+- 基线输出新增可追溯字段：`host_facts`、`config_snapshot`，以及 `source=real` 时的 `real_workload_meta`。
+
+长稳与混沌稳定性验证：
+- 执行确定性 soak+chaos 验证：`python tests/soak_chaos_stability.py --iterations 80 --output .multi-agents/qa/qa-soak-and-chaos-stability-hardening-iteration-14.json`。
+- 发布前继续执行跨平台 P0 门禁：`python .multi-agents/scripts/run_cross_platform_mode_gate.py`。
+
+发布候选（RC）交付包：
+- RC 清单、发布说明、回滚手册和推广候选集中在 `docs/` 目录。
+- 建议从 `docs/RC_CHECKLIST_ITERATION_15.md` 开始，并结合 `.multi-agents/qa/qa-release-candidate-closure-and-promotion-iteration-15.json` 校验证据。
 
 ## 项目结构
 

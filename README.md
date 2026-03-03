@@ -163,9 +163,19 @@ Web console modularization:
 Performance baseline and regression gate:
 - Generate baseline metrics (synthetic, default): `python examples/run_perf_baseline.py --profile small --source synthetic`.
 - Generate baseline metrics from a minimal live runtime path: `python examples/run_perf_baseline.py --profile small --source live --live-samples 48`.
+- Generate release-grade baseline with real algorithm path sample: `python examples/run_perf_baseline.py --profile release_small --source real --real-dataset ForestFire_n500 --real-generations 1 --real-pop-size 12 --real-runs 2`.
 - Re-run current metrics and compare with gate thresholds:
   - `python tests/perf_regression_gate.py --baseline <baseline.json> --current <current.json> --output <gate.json>`
 - Gate checks include mode-set consistency (`missing/extra` mode must fail), throughput drop, latency increase, recovery latency increase, and remote failure rate delta for `S/SM/M/MNM`.
+- Baseline output now includes additive `host_facts`, `config_snapshot`, and (for `source=real`) `real_workload_meta`.
+
+Soak and chaos stability validation:
+- Run deterministic soak+chaos harness: `python tests/soak_chaos_stability.py --iterations 80 --output .multi-agents/qa/qa-soak-and-chaos-stability-hardening-iteration-14.json`.
+- Keep release gate: `python .multi-agents/scripts/run_cross_platform_mode_gate.py`.
+
+Release-candidate operations package:
+- RC checklist, release notes, rollback runbook and promotion candidates are consolidated under `docs/`.
+- Start from `docs/RC_CHECKLIST_ITERATION_15.md` and validate against `.multi-agents/qa/qa-release-candidate-closure-and-promotion-iteration-15.json`.
 
 <h3>Project Layout</h3>
 

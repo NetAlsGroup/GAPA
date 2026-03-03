@@ -39,3 +39,13 @@ Script-first minimal examples (no Web UI dependency).
 ## Trend summary only
 - `run_trends.py`
   - Aggregate `results/run_reports.jsonl`
+
+## Benchmark and release validation
+- `run_perf_baseline.py`
+  - Synthetic baseline: `python examples/run_perf_baseline.py --profile small --source synthetic`
+  - Live minimal path: `python examples/run_perf_baseline.py --profile small --source live --live-samples 48`
+  - Real workload sample: `python examples/run_perf_baseline.py --profile release_small --source real --real-dataset ForestFire_n500 --real-generations 1 --real-pop-size 12 --real-runs 2`
+
+## Soak and chaos harness
+- Deterministic stability harness (test-side utility):
+  - `python tests/soak_chaos_stability.py --iterations 80 --output .multi-agents/qa/qa-soak-and-chaos-stability-hardening-iteration-14.json`
