@@ -1439,6 +1439,7 @@ function toggle(id) {
   if (s) s.expanded = !s.expanded;
   render();
 }
+window.toggle = toggle;
 
 async function refreshAll() {
   try {
