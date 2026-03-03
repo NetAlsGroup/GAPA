@@ -28,6 +28,7 @@ from server.agent_state import TaskState, start_consumer
 from server.ga_worker import ga_worker, select_run_mode
 from server.mode_runtime import (
     build_mode_decision,
+    choose_mode,
     classify_transport_error,
     detect_capability,
     request_with_retry,
@@ -1025,6 +1026,20 @@ def api_analysis_start():
             release_lock_on_finish = bool(payload.get("release_lock_on_finish", True))
             capability = detect_capability(target="local", resource_snapshot=current_resource_snapshot(), remote_reachable=True)
             mode_reason = ""
+            allow_mnm = bool(remote_servers)
+
+            # Sanitize selected mode against capability/downgrade chain before lock policy.
+            resolved_mode, resolved_degraded, resolved_reason = choose_mode(
+                selected.get("mode"),
+                capability,
+                allow_mnm=allow_mnm,
+            )
+            if str(selected.get("mode") or "").upper() != resolved_mode:
+                selected = select_run_mode(resolved_mode, selected.get("devices"))
+                if remote_servers is not None:
+                    selected["remote_servers"] = remote_servers
+            if resolved_degraded and resolved_reason:
+                mode_reason = resolved_reason
 
             # If no resource lock is active, force CPU execution.
             try:
@@ -1033,7 +1048,7 @@ def api_analysis_start():
                 lock_active = False
             if not lock_active and (selected.get("mode") or "").upper() not in ("MNM",):
                 selected = select_run_mode("CPU", None)
-                mode_reason = "no_active_lock->CPU"
+                mode_reason = (f"{mode_reason} | " if mode_reason else "") + "no_active_lock->CPU"
 
             mode_decision = build_mode_decision(
                 requested_mode=payload.get("mode"),
@@ -1536,6 +1551,7 @@ def api_resource_lock_renew():
         return jsonify({"error": "unknown server", "scope": scope}), 404
 
     results = {}
+    release_results = {}
     for s in targets:
         sid = s.get("id")
         if sid == "local":
@@ -1570,7 +1586,66 @@ def api_resource_lock_renew():
             )
         except Exception as exc:
             results[sid] = {"error": str(exc), "code": classify_transport_error(exc=exc)}
-    return jsonify({"scope": scope, "results": results, "transport_metrics": _transport_metric_summary()})
+
+    def _is_renew_failed(item: dict | None) -> bool:
+        if not isinstance(item, dict):
+            return True
+        if item.get("error"):
+            return True
+        note = str(item.get("note") or "").strip().lower()
+        if note in ("lock_id_mismatch", "owner_mismatch", "not_active"):
+            return True
+        return False
+
+    failed_servers = [sid for sid, item in results.items() if _is_renew_failed(item)]
+    if failed_servers:
+        for s in targets:
+            sid = s.get("id")
+            if sid not in failed_servers:
+                continue
+            if sid == "local":
+                try:
+                    release_results[sid] = LOCK_MANAGER.release(reason="renew_failed")
+                except Exception as exc:
+                    release_results[sid] = {"error": str(exc)}
+                continue
+            base_url = _resolve_server_base_url(sid)
+            if not base_url:
+                release_results[sid] = {"error": "missing base_url"}
+                continue
+            try:
+                resp, tmeta = _proxy_resource_lock(base_url, "/api/resource_lock/release", None)
+                release_results[sid] = (
+                    resp.json()
+                    if resp.ok
+                    else {
+                        "error": f"HTTP {resp.status_code}",
+                        "code": classify_transport_error(status_code=resp.status_code),
+                        "transport_meta": tmeta,
+                        "body": resp.text[:500],
+                    }
+                )
+            except Exception as exc:
+                release_results[sid] = {"error": str(exc), "code": classify_transport_error(exc=exc)}
+        return jsonify(
+            {
+                "scope": scope,
+                "results": results,
+                "release_results": release_results,
+                "code": "MNM_LOCK_RENEW_FAILED",
+                "reason": f"renew_failed_on={','.join(failed_servers)}",
+                "transport_metrics": _transport_metric_summary(),
+            }
+        )
+    return jsonify(
+        {
+            "scope": scope,
+            "results": results,
+            "code": "",
+            "reason": "",
+            "transport_metrics": _transport_metric_summary(),
+        }
+    )
 
 
 @app.route("/api/resource_lock/release", methods=["POST"])

@@ -29,7 +29,7 @@ from server.agent_state import TaskState, start_consumer
 from server.fitness_protocol import dumps as fitness_dumps, loads as fitness_loads
 from server.fitness_worker import compute_fitness_batch
 from server.ga_worker import ga_worker, select_run_mode
-from server.mode_runtime import build_mode_decision, detect_capability, transport_contract
+from server.mode_runtime import build_mode_decision, choose_mode, detect_capability, transport_contract
 from server.resource_lock import LOCK_MANAGER
 from server.task_queue import TaskQueueManager
 from server.db_manager import db_manager
@@ -232,6 +232,11 @@ def _resolve_selected(payload: Dict[str, Any]) -> Dict[str, Any]:
     auto_select = bool(payload.get("auto_select_devices", True))
     use_strategy_plan = bool(payload.get("use_strategy_plan", True))
     note = ""
+    try:
+        capability = detect_capability(target="local", resource_snapshot=resources_payload(), remote_reachable=True)
+    except Exception:
+        capability = detect_capability(target="local", resource_snapshot={}, remote_reachable=True)
+    allow_mnm = bool(payload.get("remote_servers") or payload.get("allowed_server_ids"))
 
     def _normalize_devices(val: Any) -> List[int]:
         out: List[int] = []
@@ -254,10 +259,31 @@ def _resolve_selected(payload: Dict[str, Any]) -> Dict[str, Any]:
         return uniq
 
     req_devs = _normalize_devices(requested_devices)
+
+    def _finalize_selected(selected: Dict[str, Any]) -> Dict[str, Any]:
+        current_mode = str(selected.get("mode") or requested_mode).upper()
+        normalized_mode, normalized_degraded, normalized_reason = choose_mode(
+            current_mode,
+            capability,
+            allow_mnm=allow_mnm,
+        )
+        if current_mode != normalized_mode:
+            selected = select_run_mode(normalized_mode, selected.get("devices"))
+            if allow_mnm:
+                remote_servers = payload.get("remote_servers") or payload.get("allowed_server_ids")
+                if remote_servers is not None:
+                    selected["remote_servers"] = remote_servers
+        existing_note = str(selected.get("selection_note") or "").strip()
+        if normalized_degraded and normalized_reason:
+            selected["selection_note"] = (
+                f"{existing_note}; {normalized_reason}" if existing_note else normalized_reason
+            )
+        return selected
+
     if req_devs:
         selected = select_run_mode(requested_mode, req_devs)
         selected["selection_note"] = "manual devices"
-        return selected
+        return _finalize_selected(selected)
 
     # No manual devices: StrategyPlan first, then lock + resource snapshot fallback.
     if auto_select and requested_mode in ("M", "SM"):
@@ -299,14 +325,14 @@ def _resolve_selected(payload: Dict[str, Any]) -> Dict[str, Any]:
                     if len(plan_devices) >= 2:
                         selected = select_run_mode("M", plan_devices)
                         selected["selection_note"] = f"strategy_plan backend=multi-gpu devices={plan_devices}"
-                        return selected
+                        return _finalize_selected(selected)
                     if len(plan_devices) == 1:
                         selected = select_run_mode("SM", plan_devices)
                         selected["selection_note"] = f"strategy_plan fallback M->SM devices={plan_devices}"
-                        return selected
+                        return _finalize_selected(selected)
                     selected = select_run_mode("S", [])
                     selected["selection_note"] = "strategy_plan fallback M->S (no usable planned devices)"
-                    return selected
+                    return _finalize_selected(selected)
 
                 if plan_backend == "cuda":
                     if len(plan_devices) >= 1:
@@ -317,15 +343,15 @@ def _resolve_selected(payload: Dict[str, Any]) -> Dict[str, Any]:
                         else:
                             selected = select_run_mode("SM", dev)
                             selected["selection_note"] = f"strategy_plan backend=cuda device={dev[0]}"
-                        return selected
+                        return _finalize_selected(selected)
                     selected = select_run_mode("S", [])
                     selected["selection_note"] = "strategy_plan fallback to S (cuda backend without usable device)"
-                    return selected
+                    return _finalize_selected(selected)
 
                 if plan_backend == "cpu":
                     selected = select_run_mode("S", [])
                     selected["selection_note"] = "strategy_plan chose cpu; fallback to S"
-                    return selected
+                    return _finalize_selected(selected)
             except Exception as exc:
                 note = f"strategy_plan failed: {exc}"
 
@@ -377,12 +403,12 @@ def _resolve_selected(payload: Dict[str, Any]) -> Dict[str, Any]:
                 selected = select_run_mode("S", [])
                 note = f"{note + '; ' if note else ''}adaptive fallback SM->S (no healthy GPU candidates)"
         selected["selection_note"] = note
-        return selected
+        return _finalize_selected(selected)
 
     # Legacy/default path
     selected = select_run_mode(requested_mode, requested_devices)
     selected["selection_note"] = "default selection"
-    return selected
+    return _finalize_selected(selected)
 
 
 def _start_task_locked(

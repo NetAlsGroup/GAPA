@@ -19,7 +19,7 @@ __pycache__/
 /tmp_test.py
 /results/
 
-# Agent SKILL
+# Private expert knowledge (do not open-source)
 /.multi-agents
 
 /tests/
