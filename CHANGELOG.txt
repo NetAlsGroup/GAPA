@@ -1,6 +1,25 @@
 GAPA Changelog
 ==============
 
+2026-03
+-------
+- Iteration 01: Refactored cross-platform mode runtime selection with deterministic degrade chain and explicit reason/code exposure.
+- Iteration 02: Hardened adaptive distributed reliability with retry/timeout behavior and transport diagnostics improvements.
+- Iteration 03: Completed state recovery and contract hardening for restart-safe lifecycle transitions.
+- Iteration 04: Modularized control-plane runtime and extracted shared execution logic between app and server agent.
+- Iteration 05: Unified state/mode decision contract schemas and normalized terminal-state compatibility handling.
+- Iteration 06: Modularized web console runtime client/state/render layers and improved API client structure.
+- Iteration 07: Added queue durability and startup recovery behavior with persistence-aware task restore flow.
+- Iteration 08: Delivered web global i18n switch and synchronized README/README.zh-CN runtime usage docs.
+- Iteration 09: Added restart-recovery E2E and deterministic chaos-hardening checks for failure-path stability.
+- Iteration 10: Built performance baseline and regression gate pipeline for S/SM/M/MNM with repeatable artifacts.
+- Iteration 11: Optimized MNM scheduling and utilization via weighted allocation and fallback-aware evidence output.
+- Iteration 12: Hardened regression gate mode-set checks and refactored MNM forward path observability.
+- Iteration 13: Produced release-grade benchmark reports with synthetic/live/real source coverage.
+- Iteration 14: Completed soak and chaos stability hardening with bounded recovery latency distribution evidence.
+- Iteration 15: Finalized RC closure package (checklist, rollback runbook, release notes, promotion candidates).
+- Iteration 16: Optimized MNM communication algorithm with framed payload compatibility, dispatch rebalance, and P0 QA gate pass.
+
 2026-02
 -------
 - Added script-first remote execution flow for s/sm/m via Workflow(..., remote_server=...).

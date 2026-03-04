@@ -122,43 +122,12 @@ Useful environment variables:
 
 - `GAPA_MNM_MAX_WORKERS` (default: `4`)
 - `GAPA_MNM_REFRESH_S` (default: `2.0`)
-
-<h3>Runtime Contract (Cross-Platform)</h3>
-
-`/api/analysis/start` and `/api/analysis/status` expose a unified `mode_decision` object:
-
-- `requested_mode`
-- `selected_mode`
-- `degraded`
-- `reason`
-- `target`
-- `devices`
-
-When fallback happens, it follows `MNM -> M -> SM -> S` (or prefix of this chain) and `reason` is always returned.
-Terminal runtime states are `completed`, `error`, and `cancelled`.
-
-For unstable networks or partially offline nodes:
-- The orchestrator now applies retry + timeout + structured error code on `analysis/*` and `resource_lock*`.
-- Export diagnostics from `GET /api/transport/metrics` (failure rate, retries, degrade reasons, average recovery latency).
-
-Recovery-first workflow (schema-compatible):
-- `POST /api/analysis/start` accepts `schema_version` (`v1` default, `v2` extended), `checkpoint_ref`, and `retry_last`.
-- `start/status/stop` return `schema_version`, `run_id`, `resume_metadata`, and normalized `mode_decision` (`degraded/reason/code`).
-- Legacy `/api/state` now keeps backward-compatible `status` while adding canonical `state` + `is_terminal`.
-
-Queue durability and restart recovery:
-- Busy-path queued tasks are persisted (`task_id/owner/priority/payload/retry_count/created_at`).
-- Server restart restores pending queue items and skips known terminal tasks.
-- Queue responses include consistent `position/status/error_code` fields.
-
-Web console modularization:
-- `web/assets/app.js` now consumes modular helpers:
-  - `web/assets/api-client.js` (API timeout/retry wrapper)
-  - `web/assets/ui-state.js` (shared UI state store)
-  - `web/assets/ui-render.js` (mode/degrade render helpers)
-- Global UI i18n switch (`zh-CN` / `en`) is available in the dashboard header.
-- Selected language is persisted in `localStorage` key `gapa_lang` and restored on refresh.
-- Language switch only changes UI copy; API contract, CLI/examples behavior, and runtime payloads stay unchanged.
+- `GAPA_MNM_MIN_CHUNK_SIZE` (default: `6`, merge tiny chunks to reduce communication-bound dispatch)
+- `GAPA_MNM_COMM_WINDOW_ITERS` (default: `3`, comm-guard evaluates overhead/compute by sliding window)
+- `GAPA_MNM_FP16_MIN_ROWS` (default: `24`, only large chunks are transported in FP16)
+- `GAPA_RPC_COMPRESS_MIN_BYTES` (default: `2048`, below this threshold payload keeps uncompressed frame)
+- `GAPA_RPC_COMPRESS_MIN_SAVING` (default: `0.05`, only compress when saving ratio is large enough)
+- `GAPA_RPC_TORCH_LEGACY_SERIALIZATION` (default: `1`, keep legacy torch serialization path for RPC compatibility/speed)
 
 Performance baseline and regression gate:
 - Generate baseline metrics (synthetic, default): `python examples/run_perf_baseline.py --profile small --source synthetic`.
@@ -172,6 +141,10 @@ Performance baseline and regression gate:
 Soak and chaos stability validation:
 - Run deterministic soak+chaos harness: `python tests/soak_chaos_stability.py --iterations 80 --output .multi-agents/qa/qa-soak-and-chaos-stability-hardening-iteration-14.json`.
 - Keep release gate: `python .multi-agents/scripts/run_cross_platform_mode_gate.py`.
+
+MNM communication optimization validation (iteration-16):
+- Generate before/after communication report: `python tests/mnm_comm_iteration16_report.py --output .multi-agents/qa/mnm-communication-optimization-iteration-16.json`.
+- QA template result: `.multi-agents/qa/qa-mnm-communication-algorithm-optimization-iteration-16.json`.
 
 Release-candidate operations package:
 - RC checklist, release notes, rollback runbook and promotion candidates are consolidated under `docs/`.

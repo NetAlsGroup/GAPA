@@ -49,42 +49,16 @@ uvicorn server_agent:app --host 0.0.0.0 --port 7777
 - `servers.json`：远程服务器列表与地址
 - `algorithms.json`：通用/自定义算法统一注册入口
 
-## 运行时契约（跨平台）
+常用环境变量：
 
-`/api/analysis/start` 与 `/api/analysis/status` 统一返回 `mode_decision`：
-
-- `requested_mode`
-- `selected_mode`
-- `degraded`
-- `reason`
-- `target`
-- `devices`
-
-当请求模式不可用时，严格按 `MNM -> M -> SM -> S`（或其前缀）降级，并返回可追踪 `reason`。
-任务终态统一为：`completed`、`error`、`cancelled`。
-
-针对网络抖动或部分节点离线：
-- `analysis/*` 与 `resource_lock*` 已统一接入重试、超时与结构化错误码。
-- 可通过 `GET /api/transport/metrics` 导出诊断指标（失败率、重试次数、降级原因、平均恢复时长）。
-
-恢复优先流程（兼容 schema 版本）：
-- `POST /api/analysis/start` 支持 `schema_version`（默认 `v1`，扩展为 `v2`）、`checkpoint_ref`、`retry_last`。
-- `start/status/stop` 统一返回 `schema_version`、`run_id`、`resume_metadata` 与标准化 `mode_decision`（`degraded/reason/code`）。
-- legacy `/api/state` 保留旧 `status` 字段，同时新增规范化 `state` 与 `is_terminal`。
-
-队列持久化与重启恢复：
-- Busy 场景进入队列的任务会持久化（`task_id/owner/priority/payload/retry_count/created_at`）。
-- 服务重启会恢复待执行队列，并跳过已知终态任务，避免重复回放。
-- 队列响应统一包含 `position/status/error_code` 字段。
-
-前端控制台模块化：
-- `web/assets/app.js` 已改为依赖模块化助手：
-  - `web/assets/api-client.js`（统一超时/重试）
-  - `web/assets/ui-state.js`（共享状态存储）
-  - `web/assets/ui-render.js`（模式/降级信息渲染）
-- 控制台 Header 新增全局语言切换（`zh-CN` / `en`）。
-- 语言选择会持久化到 `localStorage` 的 `gapa_lang`，刷新页面后保持上次选择。
-- 语言切换仅影响 UI 文案，不改变 API 契约、脚本示例行为和运行时请求参数。
+- `GAPA_MNM_MAX_WORKERS`（默认 `4`）
+- `GAPA_MNM_REFRESH_S`（默认 `2.0`）
+- `GAPA_MNM_MIN_CHUNK_SIZE`（默认 `6`，合并过小分片，减少通信主导调度）
+- `GAPA_MNM_COMM_WINDOW_ITERS`（默认 `3`，comm-guard 按滑动窗口评估 overhead/compute）
+- `GAPA_MNM_FP16_MIN_ROWS`（默认 `24`，仅大分片使用 FP16 传输）
+- `GAPA_RPC_COMPRESS_MIN_BYTES`（默认 `2048`，低于阈值不压缩，仅走带版本头帧）
+- `GAPA_RPC_COMPRESS_MIN_SAVING`（默认 `0.05`，压缩收益不足则保留原始帧）
+- `GAPA_RPC_TORCH_LEGACY_SERIALIZATION`（默认 `1`，RPC 维持 legacy torch 序列化路径）
 
 性能基线与回归门禁：
 - 生成性能基线（默认 synthetic）：`python examples/run_perf_baseline.py --profile small --source synthetic`。
@@ -98,6 +72,10 @@ uvicorn server_agent:app --host 0.0.0.0 --port 7777
 长稳与混沌稳定性验证：
 - 执行确定性 soak+chaos 验证：`python tests/soak_chaos_stability.py --iterations 80 --output .multi-agents/qa/qa-soak-and-chaos-stability-hardening-iteration-14.json`。
 - 发布前继续执行跨平台 P0 门禁：`python .multi-agents/scripts/run_cross_platform_mode_gate.py`。
+
+MNM 通信优化验证（iteration-16）：
+- 生成通信前后对比报告：`python tests/mnm_comm_iteration16_report.py --output .multi-agents/qa/mnm-communication-optimization-iteration-16.json`。
+- QA 模板结果：`.multi-agents/qa/qa-mnm-communication-algorithm-optimization-iteration-16.json`。
 
 发布候选（RC）交付包：
 - RC 清单、发布说明、回滚手册和推广候选集中在 `docs/` 目录。

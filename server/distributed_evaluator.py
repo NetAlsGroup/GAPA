@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections import deque
 import json
 import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 
 try:
@@ -36,6 +37,20 @@ def _require_torch():
     return torch, nn
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)) or default)
+    except Exception:
+        return int(default)
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)) or default)
+    except Exception:
+        return float(default)
+
+
 
 @dataclass(frozen=True)
 class Worker:
@@ -64,20 +79,24 @@ class MNMSchedulerConfig:
     failure_penalty_alpha: float = 0.35
     cpu_locality_boost: float = 1.08
     allocation_epsilon: float = 1e-9
+    min_chunk_size: int = 6
 
     # Comm-guard knobs
     guard_enabled: bool = True
     guard_max_ratio: float = 1.5
     guard_min_calls: int = 8
     guard_cooldown_iters: int = 5
+    guard_window_iters: int = 3
 
     @classmethod
     def from_env(cls) -> "MNMSchedulerConfig":
         return cls(
-            guard_enabled=bool(int(os.getenv("GAPA_MNM_COMM_GUARD", "1") or 1)),
-            guard_max_ratio=float(os.getenv("GAPA_MNM_COMM_MAX_RATIO", "1.5") or 1.5),
-            guard_min_calls=int(os.getenv("GAPA_MNM_COMM_MIN_CALLS", "8") or 8),
-            guard_cooldown_iters=int(os.getenv("GAPA_MNM_COMM_COOLDOWN_ITERS", "5") or 5),
+            min_chunk_size=max(1, _env_int("GAPA_MNM_MIN_CHUNK_SIZE", 6)),
+            guard_enabled=bool(_env_int("GAPA_MNM_COMM_GUARD", 1)),
+            guard_max_ratio=_env_float("GAPA_MNM_COMM_MAX_RATIO", 1.5),
+            guard_min_calls=max(1, _env_int("GAPA_MNM_COMM_MIN_CALLS", 8)),
+            guard_cooldown_iters=max(1, _env_int("GAPA_MNM_COMM_COOLDOWN_ITERS", 5)),
+            guard_window_iters=max(1, _env_int("GAPA_MNM_COMM_WINDOW_ITERS", 3)),
         )
 
     def snapshot(self) -> Dict[str, Any]:
@@ -90,10 +109,12 @@ class MNMSchedulerConfig:
             "failure_penalty_alpha": float(self.failure_penalty_alpha),
             "cpu_locality_boost": float(self.cpu_locality_boost),
             "allocation_epsilon": float(self.allocation_epsilon),
+            "min_chunk_size": int(self.min_chunk_size),
             "guard_enabled": bool(self.guard_enabled),
             "guard_max_ratio": float(self.guard_max_ratio),
             "guard_min_calls": int(self.guard_min_calls),
             "guard_cooldown_iters": int(self.guard_cooldown_iters),
+            "guard_window_iters": int(self.guard_window_iters),
         }
 
 
@@ -424,11 +445,18 @@ class AdaptiveWorkerPool:
         """Execute remote fitness and return detailed timing breakdown."""
         # Phase 1: Serialize
         t_serialize_start = time.perf_counter()
-        
-        # Optimize: Cast float32 to float16 (half) for transport to reduce size by 50%
-        # The worker will cast it back to float32.
+
+        chunk_rows = int(population_cpu.shape[0]) if hasattr(population_cpu, "shape") else 0
+        half_min_rows = max(1, _env_int("GAPA_MNM_FP16_MIN_ROWS", 24))
+
+        # For larger chunks, cast float32 -> float16 to reduce transport bytes.
+        # Small chunks keep float32 to avoid extra cast overhead.
         pop_payload = population_cpu
-        if hasattr(pop_payload, "dtype") and pop_payload.dtype == torch.float32:
+        if (
+            chunk_rows >= half_min_rows
+            and hasattr(pop_payload, "dtype")
+            and pop_payload.dtype == torch.float32
+        ):
             pop_payload = pop_payload.half()
             
         payload_data = {"algorithm": algorithm, "dataset": dataset, "population": pop_payload}
@@ -492,7 +520,7 @@ class AdaptiveWorkerPool:
             deserialize_ms=deserialize_ms,
             total_ms=total_ms,
             payload_bytes=payload_bytes,
-            chunk_size=int(population_cpu.shape[0]) if hasattr(population_cpu, 'shape') else 0,
+            chunk_size=chunk_rows,
         )
 
 
@@ -580,8 +608,10 @@ class DistributedEvaluator(nn.Module):
         self._guard_max_ratio = float(self._scheduler_config.guard_max_ratio)
         self._guard_min_calls = int(self._scheduler_config.guard_min_calls)
         self._guard_cooldown_iters = int(self._scheduler_config.guard_cooldown_iters)
+        self._guard_window_iters = int(self._scheduler_config.guard_window_iters)
         self._force_local_until = -1
         self._guard_reason: Optional[str] = None
+        self._guard_window: Deque[Dict[str, float]] = deque(maxlen=max(1, self._guard_window_iters))
         self._recovery_events: List[float] = []
         self._recovery_latency_ms: List[float] = []
         self._last_allocation: List[Dict[str, Any]] = []
@@ -683,6 +713,34 @@ class DistributedEvaluator(nn.Module):
                     sizes[idx] -= 1
         return sizes
 
+    @staticmethod
+    def _rebalance_small_chunks(
+        sizes: List[int],
+        weights: List[float],
+        *,
+        min_chunk_size: int,
+    ) -> List[int]:
+        """Merge tiny chunks to avoid communication-bound dispatch plans."""
+        if min_chunk_size <= 1 or not sizes:
+            return list(sizes)
+
+        out = [max(0, int(x)) for x in sizes]
+        while True:
+            positive = [i for i, x in enumerate(out) if x > 0]
+            if len(positive) <= 1:
+                break
+            tiny = [i for i in positive if out[i] < min_chunk_size]
+            if not tiny:
+                break
+            src = sorted(tiny, key=lambda i: (out[i], weights[i], i))[0]
+            candidates = [i for i in positive if i != src]
+            if not candidates:
+                break
+            dst = sorted(candidates, key=lambda i: (weights[i], out[i], -i), reverse=True)[0]
+            out[dst] += out[src]
+            out[src] = 0
+        return out
+
     def _build_distributed_context(self) -> Dict[str, Any]:
         context: Dict[str, Any] = {}
         base = self._base
@@ -729,14 +787,21 @@ class DistributedEvaluator(nn.Module):
             weights,
             min_weight=float(self._scheduler_config.allocation_epsilon),
         )
+        sizes = self._rebalance_small_chunks(
+            sizes,
+            weights,
+            min_chunk_size=int(self._scheduler_config.min_chunk_size),
+        )
         if sum(sizes) != total_items:
             sizes = [total_items] + [0] * (len(sizes) - 1)
 
+        active_workers = sum(1 for sz in sizes if int(sz) > 0)
         self._last_allocation = [
             {
                 "worker": f"{dw.server_id}:{dw.device}",
                 "weight": float(weights[idx]),
                 "chunk_size": int(sizes[idx]),
+                "active_workers": int(active_workers),
             }
             for idx, dw in enumerate(device_workers)
         ]
@@ -772,7 +837,8 @@ class DistributedEvaluator(nn.Module):
         torch, _nn = _require_torch()
         from concurrent.futures import Future, ThreadPoolExecutor
 
-        def _remote_call(idx: int, dw: DeviceWorker, pop_cpu: Any) -> Tuple[int, DetailedCallResult]:
+        def _remote_call(idx: int, dw: DeviceWorker, pop_chunk: Any) -> Tuple[int, DetailedCallResult]:
+            pop_cpu = pop_chunk.detach().to("cpu")
             temp_worker = Worker(server_id=dw.server_id, base_url=dw.base_url)
             result = self._pool.remote_fitness(
                 temp_worker,
@@ -795,7 +861,6 @@ class DistributedEvaluator(nn.Module):
                 dw = assignment.worker
                 pop_chunk = assignment.chunk
                 try:
-                    pop_cpu = pop_chunk.detach().to("cpu")
                     if dw.is_local:
                         t0 = time.perf_counter()
                         fit_local = self._base(pop_chunk)
@@ -821,7 +886,7 @@ class DistributedEvaluator(nn.Module):
                             fit_cpu = torch.tensor(fit_cpu)
                         fits[idx] = fit_cpu.to(population_device)
                     else:
-                        future = executor.submit(_remote_call, idx, dw, pop_cpu)
+                        future = executor.submit(_remote_call, idx, dw, pop_chunk)
                         futures.append((future, idx, dw, pop_chunk))
                 except Exception as exc:
                     print(f"[WARN] Device {dw.server_id}:{dw.device} prep failed: {exc}, falling back to local")
@@ -873,17 +938,30 @@ class DistributedEvaluator(nn.Module):
                 "overhead_ms": iter_overhead,
             }
         )
+        self._guard_window.append(
+            {
+                "iter": float(iter_tick),
+                "calls": float(len(iter_calls)),
+                "compute_ms": float(iter_compute),
+                "overhead_ms": float(iter_overhead),
+            }
+        )
+
+        window_calls = sum(float(x.get("calls") or 0.0) for x in self._guard_window)
+        window_compute = sum(float(x.get("compute_ms") or 0.0) for x in self._guard_window)
+        window_overhead = sum(float(x.get("overhead_ms") or 0.0) for x in self._guard_window)
 
         if (
             self._guard_enabled
-            and len(iter_calls) >= self._guard_min_calls
-            and iter_compute > 0.0
+            and window_calls >= float(self._guard_min_calls)
+            and window_compute > 0.0
         ):
-            ratio = iter_overhead / max(1e-6, iter_compute)
+            ratio = window_overhead / max(1e-6, window_compute)
             if ratio > self._guard_max_ratio:
                 self._force_local_until = iter_tick + self._guard_cooldown_iters
                 self._guard_reason = (
-                    f"iter={iter_tick} overhead/compute={ratio:.2f} "
+                    f"iter={iter_tick} window={len(self._guard_window)} "
+                    f"overhead/compute={ratio:.2f} "
                     f"> threshold={self._guard_max_ratio:.2f}"
                 )
                 print(f"[WARN] MNM comm-guard triggered: {self._guard_reason}")
@@ -1024,6 +1102,7 @@ class DistributedEvaluator(nn.Module):
                 "max_ratio": self._guard_max_ratio,
                 "min_calls": self._guard_min_calls,
                 "cooldown_iters": self._guard_cooldown_iters,
+                "window_iters": self._guard_window_iters,
                 "force_local_until": self._force_local_until,
                 "reason": self._guard_reason,
             },

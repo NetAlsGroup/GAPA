@@ -141,7 +141,7 @@ def transport_contract() -> Dict[str, Any]:
             "analysis_start": {"max_attempts": 2, "backoff_ms": 200},
             "analysis_status": {"max_attempts": 3, "backoff_ms": 200},
             "analysis_stop": {"max_attempts": 2, "backoff_ms": 200},
-            "fitness_batch": {"max_attempts": 2, "backoff_ms": 120},
+            "fitness_batch": {"max_attempts": 3, "backoff_ms": 80},
             "resource_lock": {"max_attempts": 3, "backoff_ms": 250},
             "resource_lock_status": {"max_attempts": 3, "backoff_ms": 250},
         },
