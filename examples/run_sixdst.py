@@ -30,7 +30,7 @@ from gapa.workflow import Workflow, load_dataset, Monitor
 from sixdst_custom import SixDSTAlgorithm
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="SixDST Algorithm Runner (Unified)")
     parser.add_argument("--dataset", default="ForestFire_n500", help="Dataset name")
     parser.add_argument("--mode", default="s", choices=["s", "sm", "m", "mnm"],
@@ -57,7 +57,7 @@ def main():
         help="Disable remote StrategyPlan device selection for s/sm/m",
     )
     parser.set_defaults(use_strategy_plan=None)
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     monitor = Monitor()
     lock_api_base = ""
