@@ -303,9 +303,27 @@ class Monitor:
         self._remote_result: Optional[Dict[str, Any]] = None
         self._local_timing: Optional[Dict[str, Any]] = None
         self._run_context: Optional[Dict[str, Any]] = None
+        self._workflow_state: str = "idle"
+        self._workflow_message: str = ""
 
     def set_run_context(self, context: Dict[str, Any]) -> None:
         self._run_context = dict(context)
+
+    def set_workflow_state(self, state: str, message: str = "") -> None:
+        self._workflow_state = str(state or "idle")
+        self._workflow_message = str(message or "")
+
+    def reset(self) -> None:
+        self._best_fitness = None
+        self._best_solution = None
+        self._fitness_history = []
+        self._extra_history = []
+        self._generation = 0
+        self._remote_result = None
+        self._local_timing = None
+        self._run_context = None
+        self._workflow_state = "idle"
+        self._workflow_message = ""
 
     def _resolve_api_base(self) -> str:
         if self.api_base:
@@ -937,6 +955,9 @@ class Monitor:
     def get_best_solution(self) -> Optional[torch.Tensor]:
         """Get the best solution found so far."""
         return self._best_solution
+
+    def get_best_gene(self) -> Optional[torch.Tensor]:
+        return self.get_best_solution()
     
     def get_fitness_history(self) -> List[float]:
         """Get the full history of best fitness values."""
@@ -949,10 +970,79 @@ class Monitor:
     @property
     def best_solution(self) -> Optional[torch.Tensor]:
         return self.get_best_solution()
+
+    @property
+    def best_gene(self) -> Optional[torch.Tensor]:
+        return self.get_best_gene()
     
     @property
     def generation(self) -> int:
         return self._generation
+
+    def _iteration_count(self) -> int:
+        history_based = max(0, len(self._fitness_history) - 1)
+        return max(int(self._generation), history_based)
+
+    @staticmethod
+    def _serialize_gene(gene: Optional[torch.Tensor]) -> Optional[List[Any]]:
+        if gene is None:
+            return None
+        try:
+            return gene.detach().cpu().tolist()
+        except Exception:
+            return None
+
+    def status(self) -> Dict[str, Any]:
+        best = self._best_fitness if self._best_fitness is not None else None
+        return {
+            "state": self._workflow_state,
+            "iteration": self._iteration_count(),
+            "best_fitness": best,
+            "message": self._workflow_message,
+        }
+
+    def history(self) -> Dict[str, Any]:
+        return {
+            "fitness": self.get_fitness_history(),
+            "extra": list(self._extra_history),
+        }
+
+    def result(self) -> Dict[str, Any]:
+        report_meta = {}
+        if isinstance(self._run_context, dict):
+            report_meta = self._run_context.get("reports") if isinstance(self._run_context.get("reports"), dict) else {}
+        timing = self._local_timing or {}
+        if self._remote_result and isinstance(self._remote_result.get("timing"), dict):
+            timing = dict(self._remote_result.get("timing") or {})
+        metrics: Dict[str, Any] = {}
+        if self._remote_result:
+            metrics_block = self._remote_result.get("best_metrics")
+            objectives = self._remote_result.get("objectives")
+            if isinstance(metrics_block, dict):
+                metrics.update(metrics_block)
+            if isinstance(objectives, dict):
+                metrics["objectives"] = objectives
+        return {
+            "best_fitness": self._best_fitness,
+            "best_gene": self._serialize_gene(self._best_solution),
+            "iterations": self._iteration_count(),
+            "elapsed_seconds": timing.get("iter_seconds"),
+            "metrics": metrics,
+            "report_path": report_meta.get("summary_path"),
+        }
+
+    def report(self, advanced_verbose: bool = False) -> Dict[str, Any]:
+        payload = {
+            "status": self.status(),
+            "result": self.result(),
+            "history": self.history(),
+            "run": dict(self._run_context or {}),
+        }
+        if advanced_verbose:
+            payload["advanced"] = self.export_all(pretty=False)
+            if self._local_timing:
+                payload["local_timing"] = dict(self._local_timing)
+        return payload
 
     def export_all(self, pretty: bool = False) -> Union[Dict[str, Any], str]:
         result = self._remote_result or {}
@@ -1350,6 +1440,9 @@ class Workflow:
         self._evaluator = None
         self._body = None
         self._state = None  # For step-by-step iteration
+        self._workflow_state = "idle"
+        self._pause_requested = False
+        self._executed_iterations = 0
         self.execution_contract = {
             "algorithm_id": self.algorithm_id,
             "requested_mode": self.requested_mode,
@@ -1360,6 +1453,44 @@ class Workflow:
             "servers": list(self.servers),
             "capabilities": self.algorithm_capabilities,
         }
+        self.monitor.set_workflow_state("idle")
+
+    def _set_workflow_state(self, state: str, message: str = "") -> None:
+        self._workflow_state = str(state)
+        self.monitor.set_workflow_state(state, message)
+
+    def _make_run_context(self, steps: int) -> Dict[str, Any]:
+        existing = self.monitor._run_context if isinstance(self.monitor._run_context, dict) else {}
+        return {
+            "run_id": str(existing.get("run_id") or uuid.uuid4()),
+            "started_at": str(existing.get("started_at") or (datetime.utcnow().isoformat() + "Z")),
+            "algorithm_id": self.algorithm_id,
+            "requested_mode": self.requested_mode,
+            "resolved_mode": self.mode,
+            "fallback_policy": self.fallback_policy,
+            "remote_server": self.remote_server,
+            "servers": list(self.servers),
+            "steps": int(steps),
+            "execution_contract": self.execution_contract,
+        }
+
+    def _update_local_timing(self, elapsed_s: float, iterations_delta: int) -> None:
+        previous = self.monitor._local_timing or {}
+        total_elapsed = float(previous.get("iter_seconds") or 0.0) + max(0.0, float(elapsed_s))
+        self._executed_iterations += max(0, int(iterations_delta))
+        self.monitor._local_timing = {
+            "iter_seconds": total_elapsed,
+            "iter_avg_ms": (total_elapsed / max(1, self._executed_iterations)) * 1000.0,
+            "throughput_ips": self._executed_iterations / total_elapsed if total_elapsed > 0 else None,
+        }
+
+    def _log_report_meta(self, report_meta: Dict[str, Any]) -> None:
+        if not self.verbose or not isinstance(report_meta, dict) or not report_meta.get("enabled"):
+            return
+        print(f"[GAPA] Report saved: {report_meta.get('summary_path')}")
+        bench = report_meta.get("benchmark") if isinstance(report_meta.get("benchmark"), dict) else {}
+        if bench.get("regressed"):
+            print(f"[WARN] Benchmark regression detected: ratio={bench.get('ratio'):.3f} threshold={bench.get('threshold'):.3f}")
     
     def _discover_resources(self) -> List[str]:
         """Discover available remote servers for MNM mode."""
@@ -1487,7 +1618,104 @@ class Workflow:
             print(f"[GAPA] MNM mode: {len(self.servers)} remote server(s)")
         return wrapped
     
-    def run(self, generations: int) -> None:
+    def _run_full(self, steps: int) -> None:
+        run_ctx = self._make_run_context(steps)
+        self.monitor.set_run_context(run_ctx)
+        self._set_workflow_state("running")
+        try:
+            if self.remote_server:
+                from gapa.remote_runner import run_remote_task
+                dataset_name = getattr(self.data_loader, "name", None) or getattr(self.data_loader, "dataset", None) or ""
+                result = run_remote_task(
+                    self.monitor,
+                    self.remote_server,
+                    algorithm=self.algorithm_id,
+                    dataset=dataset_name,
+                    iterations=steps,
+                    mode=self.mode,
+                    crossover_rate=0.8,
+                    mutate_rate=0.2,
+                    use_strategy_plan=self.remote_use_strategy_plan,
+                )
+                if isinstance(result, dict) and result.get("error"):
+                    raise RuntimeError(f"remote run failed: {result}")
+                run_ctx["ended_at"] = datetime.utcnow().isoformat() + "Z"
+                report_meta = self._emit_run_reports(run_ctx)
+                run_ctx["reports"] = report_meta
+                self.monitor.set_run_context(run_ctx)
+                self._set_workflow_state("completed")
+                self._log_report_meta(report_meta)
+                return
+            from gapa.framework.controller import Start
+
+            self._setup_components()
+            if self.verbose:
+                print(f"[GAPA] Starting {self.algorithm.__class__.__name__} in '{self.mode}' mode")
+                print(f"[GAPA] Generations: {steps}, Device: {self.device}")
+
+            import time
+            start_ts = time.perf_counter()
+            Start(
+                max_generation=steps,
+                data_loader=self.data_loader,
+                controller=self._controller,
+                evaluator=self._evaluator,
+                body=self._body,
+                world_size=self.world_size,
+                verbose=self.verbose,
+                observer=self.monitor,
+            )
+            end_ts = time.perf_counter()
+            self._update_local_timing(end_ts - start_ts, steps)
+            run_ctx["ended_at"] = datetime.utcnow().isoformat() + "Z"
+            report_meta = self._emit_run_reports(run_ctx)
+            run_ctx["reports"] = report_meta
+            self.monitor.set_run_context(run_ctx)
+            self._set_workflow_state("completed")
+            self._log_report_meta(report_meta)
+            if self.verbose:
+                print(f"\n[GAPA] Evolution complete. Best fitness: {self.monitor.best_fitness}")
+        except Exception as exc:
+            self._set_workflow_state("error", str(exc))
+            raise
+
+    def _run_incremental(self, steps: int) -> None:
+        if steps <= 0:
+            raise ValueError("steps must be a positive integer")
+        if self._state is None:
+            self.init_step()
+        elif self.verbose:
+            print("[GAPA] Resuming from current state; call reset() to restart.")
+
+        import time
+        run_ctx = self._make_run_context(steps)
+        self.monitor.set_run_context(run_ctx)
+        self._pause_requested = False
+        self._set_workflow_state("running")
+        start_ts = time.perf_counter()
+        executed = 0
+        try:
+            for _ in range(int(steps)):
+                if self._pause_requested:
+                    self._set_workflow_state("paused", "pause requested")
+                    break
+                self.step()
+                executed += 1
+        except Exception as exc:
+            self._set_workflow_state("error", str(exc))
+            raise
+        finally:
+            end_ts = time.perf_counter()
+            self._update_local_timing(end_ts - start_ts, executed)
+            run_ctx["ended_at"] = datetime.utcnow().isoformat() + "Z"
+            report_meta = self._emit_run_reports(run_ctx)
+            run_ctx["reports"] = report_meta
+            self.monitor.set_run_context(run_ctx)
+            if self._workflow_state != "paused":
+                self._set_workflow_state("completed")
+            self._log_report_meta(report_meta)
+
+    def run(self, steps: int) -> None:
         """
         Run the full evolution loop.
         
@@ -1495,96 +1723,36 @@ class Workflow:
         Start() function to ensure consistent behavior with frontend execution.
         
         Args:
-            generations: Number of generations to run
+            steps: Number of generations to run
         """
-        run_id = str(uuid.uuid4())
-        run_ctx = {
-            "run_id": run_id,
-            "started_at": datetime.utcnow().isoformat() + "Z",
-            "algorithm_id": self.algorithm_id,
-            "requested_mode": self.requested_mode,
-            "resolved_mode": self.mode,
-            "fallback_policy": self.fallback_policy,
-            "remote_server": self.remote_server,
-            "servers": list(self.servers),
-            "generations": int(generations),
-            "execution_contract": self.execution_contract,
-        }
-        self.monitor.set_run_context(run_ctx)
-
-        if self.remote_server:
-            from gapa.remote_runner import run_remote_task
-            dataset_name = getattr(self.data_loader, "name", None) or getattr(self.data_loader, "dataset", None) or ""
-            result = run_remote_task(
-                self.monitor,
-                self.remote_server,
-                algorithm=self.algorithm_id,
-                dataset=dataset_name,
-                iterations=generations,
-                mode=self.mode,
-                crossover_rate=0.8,
-                mutate_rate=0.2,
-                use_strategy_plan=self.remote_use_strategy_plan,
-            )
-            if isinstance(result, dict) and result.get("error"):
-                raise RuntimeError(f"remote run failed: {result}")
-            run_ctx["ended_at"] = datetime.utcnow().isoformat() + "Z"
-            report_meta = self._emit_run_reports(run_ctx)
-            run_ctx["reports"] = report_meta
-            self.monitor.set_run_context(run_ctx)
-            if self.verbose and isinstance(report_meta, dict) and report_meta.get("enabled"):
-                print(f"[GAPA] Report saved: {report_meta.get('summary_path')}")
-                bench = report_meta.get("benchmark") if isinstance(report_meta.get("benchmark"), dict) else {}
-                if bench.get("regressed"):
-                    print(f"[WARN] Benchmark regression detected: ratio={bench.get('ratio'):.3f} threshold={bench.get('threshold'):.3f}")
+        if self.mode == "s" and not self.remote_server:
+            self._run_incremental(int(steps))
             return
-        # Import the core execution function
-        from gapa.framework.controller import Start
-        
-        # Setup components
-        self._setup_components()
+        self._run_full(int(steps))
 
+    def pause(self) -> None:
+        self._pause_requested = True
+        if self._state is not None and self._workflow_state != "running":
+            self._set_workflow_state("paused", "pause requested")
+
+    def resume(self, steps: int) -> None:
+        if self.mode != "s" or self.remote_server:
+            raise RuntimeError("resume() is currently supported for local 's' mode workflows only")
+        if self._state is None:
+            raise RuntimeError("no existing workflow state to resume; call run() first")
         if self.verbose:
-            print(f"[GAPA] Starting {self.algorithm.__class__.__name__} in '{self.mode}' mode")
-            print(f"[GAPA] Generations: {generations}, Device: {self.device}")
+            print("[GAPA] Continuing from current state.")
+        self._run_incremental(int(steps))
 
-        import time
-        start_ts = time.perf_counter()
-
-        # Call the unified core engine
-        Start(
-            max_generation=generations,
-            data_loader=self.data_loader,
-            controller=self._controller,
-            evaluator=self._evaluator,
-            body=self._body,
-            world_size=self.world_size,
-            verbose=self.verbose,
-            observer=self.monitor,  # Pass monitor as observer
-        )
-        end_ts = time.perf_counter()
-        try:
-            total = max(0.0, end_ts - start_ts)
-            if generations > 0:
-                self.monitor._local_timing = {
-                    "iter_seconds": total,
-                    "iter_avg_ms": (total / generations) * 1000.0,
-                    "throughput_ips": generations / total if total > 0 else None,
-                }
-        except Exception:
-            pass
-        run_ctx["ended_at"] = datetime.utcnow().isoformat() + "Z"
-        report_meta = self._emit_run_reports(run_ctx)
-        run_ctx["reports"] = report_meta
-        self.monitor.set_run_context(run_ctx)
-        if self.verbose and isinstance(report_meta, dict) and report_meta.get("enabled"):
-            print(f"[GAPA] Report saved: {report_meta.get('summary_path')}")
-            bench = report_meta.get("benchmark") if isinstance(report_meta.get("benchmark"), dict) else {}
-            if bench.get("regressed"):
-                print(f"[WARN] Benchmark regression detected: ratio={bench.get('ratio'):.3f} threshold={bench.get('threshold'):.3f}")
-        
-        if self.verbose:
-            print(f"\n[GAPA] Evolution complete. Best fitness: {self.monitor.best_fitness}")
+    def reset(self) -> None:
+        self._controller = None
+        self._evaluator = None
+        self._body = None
+        self._state = None
+        self._pause_requested = False
+        self._executed_iterations = 0
+        self.monitor.reset()
+        self._set_workflow_state("idle")
     
     # =========================================================================
     # Step-by-Step Iteration Interface
@@ -1626,6 +1794,7 @@ class Workflow:
                 self._state["population"],
                 self._state["fitness_list"],
             )
+        self._set_workflow_state("idle", "initialized")
         
         if self.verbose:
             print(f"[GAPA] Initialized. Ready for step-by-step iteration.")
@@ -1654,6 +1823,7 @@ class Workflow:
             raise RuntimeError("Call init_step() before step()")
         
         # Execute one generation
+        self._set_workflow_state("running")
         self._state = self._controller.single_step(
             self._state,
             self._evaluator,
