@@ -1,12 +1,10 @@
 """
-GAPA Minimal Setup
-==================
-Minimal setup file for development installation.
-For full setup and PyPI publishing, use setup.py instead.
+Legacy minimal setup file.
 
-Usage:
-    pip install -e .  (using setup.py)
-    pip install .     (using setup.py)
+Preferred modern paths:
+    pip install .
+    pip install -e .
+    pip install ".[full]"
 """
 
 from setuptools import setup, find_packages

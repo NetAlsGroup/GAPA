@@ -50,179 +50,87 @@ For Chinese documentation, see [README.zh-CN.md](README.zh-CN.md).
 - Python `3.9+`
 - PyTorch `2.3.0+` (recommended)
 
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
 <h3>Installation</h3>
 
-Install from PyPI:
+Recommended beginner install:
 
 ```bash
 pip install gapa
 ```
 
-Install from source:
+Editable source install:
 
 ```bash
 git clone https://github.com/NetAlsGroup/GAPA.git
 cd GAPA
-python setup.py install
+pip install -e .
 ```
 
-Minimal install (without heavy dependency resolution):
+Optional install tiers:
 
 ```bash
-python setup_empty.py install
+pip install "gapa[full]"         # built-in algorithms, plotting, research helpers
+pip install "gapa[attack]"       # attack-oriented dependencies
+pip install "gapa[distributed]"  # app/server/remote runtime dependencies
+pip install "gapa[dev]"          # contributor toolchain + all optional stacks
 ```
+
+Source requirement files mirror the same tiers:
+
+```bash
+pip install -r requirements.txt
+pip install -r requirements/full.txt
+pip install -r requirements/attack.txt
+pip install -r requirements/distributed.txt
+pip install -r requirements/dev.txt
+```
+
+`requirements.txt` is now the lightweight core stack for the official quickstart path.
 
 <h3>Quick Start</h3>
 
-Official first-run command (works for installed package and source checkout):
+Official first-run command:
 
 ```bash
 python -m gapa demo
 ```
 
-Shortcut after installation:
+Installed shortcut:
 
 ```bash
 gapa demo
 ```
 
-This quickstart runs a built-in small graph demo, auto-saves a summary report under `results/quickstart/runs/`, and does not depend on `examples/` or repo-only datasets.
+What this does:
 
-Advanced script-first examples remain available:
+- runs a built-in small graph demo
+- auto-saves a summary report under `results/quickstart/runs/`
+- does not depend on `examples/` or repo-only datasets
 
-```bash
-python examples/run_sixdst.py --dataset ForestFire_n500 --mode s
-```
+Expected output:
 
-Run remote single-server execution (`s`/`sm`/`m`):
+- selected mode (`requested` / `resolved`)
+- best fitness summary
+- summary report path
 
-```bash
-python examples/run_sixdst.py --dataset ForestFire_n500 --mode m --server 6 --use-strategy-plan
-python examples/run_sixdst.py --dataset ForestFire_n500 --mode m --server 6 --no-strategy-plan
-```
-
-Run heterogeneous MNM mode:
+Validate the environment and smoke path:
 
 ```bash
-python examples/run_sixdst.py --dataset ForestFire_n500 --mode mnm --servers "Server 6"
+python -m gapa doctor
 ```
 
-<h3>Services</h3>
+Next steps:
 
-Start local orchestrator service:
+1. Custom local scripts and user-defined algorithms: [docs/ADVANCED_USAGE.md](docs/ADVANCED_USAGE.md)
+2. Services, remote execution, and MNM: [docs/ADVANCED_USAGE.md](docs/ADVANCED_USAGE.md)
+3. Performance, soak, QA, and RC procedures: [docs/OPERATIONS_AND_QA.md](docs/OPERATIONS_AND_QA.md)
 
-```bash
-python app.py
-```
+<h3>Project Surface</h3>
 
-Start remote server agent on each compute host:
-
-```bash
-uvicorn server_agent:app --host 0.0.0.0 --port 7777
-```
-
-Main runtime config files:
-
-- `servers.json`: remote server inventory and endpoints
-- `algorithms.json`: registry for generic/user-defined algorithms
-
-Useful environment variables:
-
-- `GAPA_MNM_MAX_WORKERS` (default: `4`)
-- `GAPA_MNM_REFRESH_S` (default: `2.0`)
-- `GAPA_MNM_MIN_CHUNK_SIZE` (default: `6`, merge tiny chunks to reduce communication-bound dispatch)
-- `GAPA_MNM_COMM_WINDOW_ITERS` (default: `3`, comm-guard evaluates overhead/compute by sliding window)
-- `GAPA_MNM_FP16_MIN_ROWS` (default: `24`, only large chunks are transported in FP16)
-- `GAPA_RPC_COMPRESS_MIN_BYTES` (default: `2048`, below this threshold payload keeps uncompressed frame)
-- `GAPA_RPC_COMPRESS_MIN_SAVING` (default: `0.05`, only compress when saving ratio is large enough)
-- `GAPA_RPC_TORCH_LEGACY_SERIALIZATION` (default: `1`, keep legacy torch serialization path for RPC compatibility/speed)
-
-Performance baseline and regression gate:
-- Generate baseline metrics (synthetic, default): `python examples/run_perf_baseline.py --profile small --source synthetic`.
-- Generate baseline metrics from a minimal live runtime path: `python examples/run_perf_baseline.py --profile small --source live --live-samples 48`.
-- Generate release-grade baseline with real algorithm path sample: `python examples/run_perf_baseline.py --profile release_small --source real --real-dataset ForestFire_n500 --real-generations 1 --real-pop-size 12 --real-runs 2`.
-- Re-run current metrics and compare with gate thresholds:
-  - `python tests/perf_regression_gate.py --baseline <baseline.json> --current <current.json> --output <gate.json>`
-- Gate checks include mode-set consistency (`missing/extra` mode must fail), throughput drop, latency increase, recovery latency increase, and remote failure rate delta for `S/SM/M/MNM`.
-- Baseline output now includes additive `host_facts`, `config_snapshot`, and (for `source=real`) `real_workload_meta`.
-
-Soak and chaos stability validation:
-- Run deterministic soak+chaos harness: `python tests/soak_chaos_stability.py --iterations 80 --output .multi-agents/qa/qa-soak-and-chaos-stability-hardening-iteration-14.json`.
-- Keep release gate: `python .multi-agents/scripts/run_cross_platform_mode_gate.py`.
-
-MNM communication optimization validation (iteration-16):
-- Generate before/after communication report: `python tests/mnm_comm_iteration16_report.py --output .multi-agents/qa/mnm-communication-optimization-iteration-16.json`.
-- QA template result: `.multi-agents/qa/qa-mnm-communication-algorithm-optimization-iteration-16.json`.
-
-Release-candidate operations package:
-- RC checklist, release notes, rollback runbook and promotion candidates are consolidated under `docs/`.
-- Start from `docs/RC_CHECKLIST_ITERATION_15.md` and validate against `.multi-agents/qa/qa-release-candidate-closure-and-promotion-iteration-15.json`.
-
-<h3>Project Layout</h3>
-
-```text
-GAPA/
-├── app.py                    # Local orchestrator service (API + web entry)
-├── server_agent.py           # Remote compute agent service
-├── algorithms.json           # Generic/user algorithm registry
-├── servers.json              # Remote server inventory
-├── gapa/                     # Core framework + built-in algorithms
-│   ├── algorithm/
-│   │   ├── CDA/
-│   │   ├── CND/
-│   │   ├── LPA/
-│   │   └── NCA/
-│   ├── framework/
-│   ├── utils/
-│   └── workflow.py           # Unified workflow + monitor
-├── server/                   # Runtime modules
-│   ├── distributed_evaluator.py
-│   ├── resource_lock.py
-│   ├── shared_runtime.py
-│   ├── task_queue.py
-│   └── algorithm_registry.py
-├── autoadapt/                # StrategyPlan and adaptive routing
-├── examples/                 # Minimal script-first demos
-├── tests/                    # Regression tests
-├── dataset/                  # Built-in datasets
-└── web/                      # Frontend assets
-```
-
-<h3>Examples</h3>
-
-The `examples/` directory is the primary script API for users.
-
-| File | Purpose |
-|------|---------|
-| `examples/run_sixdst.py` | End-to-end execution in `s`/`sm`/`m`/`mnm` modes |
-| `examples/resource_scheduler.py` | Resource listing, lock, and strategy planning |
-| `examples/run_lock_keepalive.py` | Lock/renew/release keepalive flow |
-| `examples/run_analysis_queue.py` | Queue-based remote scheduling |
-| `examples/run_report_export.py` | Unified monitor export and reporting |
-| `examples/run_trends.py` | Run trend aggregation |
-| `examples/sixdst_custom.py` | Example custom algorithm wrapper |
-
-<h3>Custom Algorithm Integration</h3>
-
-For user-defined or generic algorithms, use `algorithms.json` as a single registration entry point.
-
-Recommended flow:
-
-1. Implement your algorithm wrapper under `examples/` or your own package.
-2. Register the algorithm in `algorithms.json` with:
-   - `entry`: import path
-   - `init_kwargs`: constructor defaults
-   - `capabilities`: supported modes and runtime traits
-3. Start runs via `Workflow` / `examples/run_sixdst.py` style scripts.
-4. For remote or MNM execution, make sure both local `app.py` and remote `server_agent.py` can import the registered entry.
-
-This approach replaces the old ad-hoc `custom.py/run.py` path and keeps registration centralized.
+- `gapa/`: core package, workflow API, built-in demo entry
+- `examples/`: script-first advanced usage
+- `server/`, `app.py`, `server_agent.py`: service and remote runtime
+- `docs/`: advanced usage, operations, QA, and release material
 
 
 <br>

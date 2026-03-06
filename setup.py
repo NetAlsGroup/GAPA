@@ -1,5 +1,34 @@
 from setuptools import setup, find_packages
 
+
+FULL_REQUIREMENTS = [
+    "pandas>=2.0.0",
+    "matplotlib>=3.5.0",
+    "scipy>=1.10.0",
+    "python-igraph>=0.11.0",
+    "yacs>=0.1.8",
+]
+
+ATTACK_REQUIREMENTS = [
+    "dgl>=1.1.0",
+    "deeprobust>=0.2.8",
+]
+
+DISTRIBUTED_REQUIREMENTS = [
+    "requests>=2.31.0",
+    "flask>=2.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pynvml>=11.5.0",
+    "psutil>=5.9.0",
+]
+
+DEV_REQUIREMENTS = [
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+]
+
 # Read README for long description
 with open("README.md", "r", encoding="utf-8") as f:
     long_description = f.read()
@@ -44,32 +73,12 @@ setup(
         "tqdm>=4.48.0",
     ],
     
-    # Optional dependencies
     extras_require={
-        # Full dependencies for all features
-        "full": [
-            "pandas>=2.0.0",
-            "matplotlib>=3.5.0",
-            "scipy>=1.10.0",
-            "python-igraph>=0.11.0",
-            "yacs>=0.1.8",
-        ],
-        # Deep learning attack algorithms
-        "attack": [
-            "dgl>=1.1.0",
-            "deeprobust>=0.2.8",
-        ],
-        # Distributed mode (source deployment recommended)
-        "distributed": [
-            "requests>=2.28.0",
-            "flask>=2.0.0",
-        ],
-        # Development dependencies
-        "dev": [
-            "pytest>=7.0.0",
-            "black>=23.0.0",
-            "isort>=5.12.0",
-        ],
+        "full": FULL_REQUIREMENTS,
+        "attack": FULL_REQUIREMENTS + ATTACK_REQUIREMENTS,
+        "distributed": DISTRIBUTED_REQUIREMENTS,
+        "dev": FULL_REQUIREMENTS + ATTACK_REQUIREMENTS + DISTRIBUTED_REQUIREMENTS + DEV_REQUIREMENTS,
+        "all": FULL_REQUIREMENTS + ATTACK_REQUIREMENTS + DISTRIBUTED_REQUIREMENTS + DEV_REQUIREMENTS,
     },
     
     # Package metadata

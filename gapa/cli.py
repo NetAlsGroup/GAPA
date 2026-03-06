@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 
 from gapa import demo as demo_module
+from gapa import doctor as doctor_module
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -22,6 +23,28 @@ def build_parser() -> argparse.ArgumentParser:
             continue
         demo_parser._add_action(action)
     demo_parser.set_defaults(handler=_handle_demo)
+
+    doctor_parser = subparsers.add_parser(
+        "doctor",
+        help="Run environment and smoke validation.",
+        description="Validate whether GAPA is usable on this machine.",
+    )
+    for action in doctor_module.build_doctor_parser()._actions:
+        if action.dest == "help":
+            continue
+        doctor_parser._add_action(action)
+    doctor_parser.set_defaults(handler=_handle_doctor)
+
+    smoke_parser = subparsers.add_parser(
+        "smoke",
+        help="Alias for `gapa doctor`.",
+        description="Run the same checks as `gapa doctor`.",
+    )
+    for action in doctor_module.build_doctor_parser()._actions:
+        if action.dest == "help":
+            continue
+        smoke_parser._add_action(action)
+    smoke_parser.set_defaults(handler=_handle_doctor)
     return parser
 
 
@@ -40,6 +63,27 @@ def _handle_demo(args: argparse.Namespace) -> int:
     if args.quiet:
         demo_args.append("--quiet")
     return demo_module.main(demo_args)
+
+
+def _handle_doctor(args: argparse.Namespace) -> int:
+    doctor_args = []
+    if args.mode:
+        doctor_args.extend(["--mode", args.mode])
+    if args.graph:
+        doctor_args.extend(["--graph", args.graph])
+    doctor_args.extend(["--generations", str(args.generations)])
+    doctor_args.extend(["--pop-size", str(args.pop_size)])
+    if args.device:
+        doctor_args.extend(["--device", args.device])
+    if args.output_dir:
+        doctor_args.extend(["--output-dir", args.output_dir])
+    if args.skip_demo:
+        doctor_args.append("--skip-demo")
+    if args.quiet_demo:
+        doctor_args.append("--quiet-demo")
+    if args.json_output:
+        doctor_args.extend(["--json-output", args.json_output])
+    return doctor_module.main(doctor_args)
 
 
 def main(argv: list[str] | None = None) -> int:

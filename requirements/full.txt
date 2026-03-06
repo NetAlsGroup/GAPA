@@ -1,0 +1,7 @@
+-r core.txt
+
+pandas>=2.2.1
+matplotlib>=3.8.4
+scipy>=1.10.1
+igraph>=0.11.5
+yacs>=0.1.8
