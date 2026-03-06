@@ -1,7 +1,5 @@
-"""GAPA genetic-algorithm package.
+"""Public package surface for GAPA."""
 
-This package only contains GA-related algorithms/framework/utils.
-Resource auto-adaptation, web UI, and server scripts live at repo root.
-"""
+from gapa.workflow import Monitor, Workflow, load_dataset
 
-__all__: list[str] = []
+__all__ = ["Monitor", "Workflow", "load_dataset"]

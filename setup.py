@@ -80,12 +80,11 @@ setup(
         "Changelog": "https://github.com/NetAlsGroup/GAPA/releases",
     },
     
-    # Entry points (optional CLI)
-    # entry_points={
-    #     "console_scripts": [
-    #         "gapa=gapa.cli:main",
-    #     ],
-    # },
+    entry_points={
+        "console_scripts": [
+            "gapa=gapa.cli:main",
+        ],
+    },
     
     # Include package data
     include_package_data=True,

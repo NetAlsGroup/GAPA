@@ -13,6 +13,22 @@ GAPA 是面向 PSSO 的遗传算法加速库，支持：
 
 ## 快速开始
 
+官方首跑命令（源码与安装包共用）：
+
+```bash
+python -m gapa demo
+```
+
+安装后的快捷命令：
+
+```bash
+gapa demo
+```
+
+这个 quickstart 会运行一个包内置的小图 demo，把摘要结果写到 `results/quickstart/runs/`，不依赖 `examples/` 或仓库数据集。
+
+进阶脚本示例仍然保留在 `examples/` 目录中。
+
 ```bash
 python examples/run_sixdst.py --dataset ForestFire_n500 --mode s
 ```

@@ -80,7 +80,21 @@ python setup_empty.py install
 
 <h3>Quick Start</h3>
 
-Run the script-first baseline example:
+Official first-run command (works for installed package and source checkout):
+
+```bash
+python -m gapa demo
+```
+
+Shortcut after installation:
+
+```bash
+gapa demo
+```
+
+This quickstart runs a built-in small graph demo, auto-saves a summary report under `results/quickstart/runs/`, and does not depend on `examples/` or repo-only datasets.
+
+Advanced script-first examples remain available:
 
 ```bash
 python examples/run_sixdst.py --dataset ForestFire_n500 --mode s
