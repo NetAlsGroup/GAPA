@@ -19,6 +19,8 @@ GAPA Changelog
 - Iteration 14: Completed soak and chaos stability hardening with bounded recovery latency distribution evidence.
 - Iteration 15: Finalized RC closure package (checklist, rollback runbook, release notes, promotion candidates).
 - Iteration 16: Optimized MNM communication algorithm with framed payload compatibility, dispatch rebalance, and P0 QA gate pass.
+- Iteration 17: Activated governed multi-agent delivery flow with validator, local cache fallback, and dry-run close loop.
+- Iteration 18: Planned product-delivery slimming around a single beginner happy path, lighter installation tiers, user smoke validation, and examples/doc simplification.
 
 2026-02
 -------
