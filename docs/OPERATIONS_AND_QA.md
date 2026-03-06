@@ -2,6 +2,10 @@
 
 This page contains performance, stability, and release-oriented procedures. It is intentionally separated from the beginner onboarding path.
 
+Docs hub:
+
+- [README.md](README.md)
+
 ## Performance Baseline and Regression Gate
 
 - Generate baseline metrics (synthetic):
@@ -35,3 +39,8 @@ Gate checks include mode-set consistency, throughput drop, latency increase, rec
 - Release notes: `docs/RELEASE_NOTES_RC_ITERATION_15.md`
 - Rollback runbook: `docs/ROLLBACK_RUNBOOK_ITERATION_15.md`
 - Promotion candidates: `docs/PROMOTION_CANDIDATES_ITERATION_15.md`
+
+## Onboarding Consistency Gate
+
+- Validate the maintained beginner path:
+  - `python scripts/validate_onboarding_consistency.py`

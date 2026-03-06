@@ -2,6 +2,10 @@
 
 这个文档用于承接性能、稳定性、发布验证等内容，不再放在 README 的新手主路径里。
 
+文档导航：
+
+- [README.zh-CN.md](README.zh-CN.md)
+
 ## 性能基线与回归门禁
 
 - 生成性能基线（synthetic）：
@@ -35,3 +39,8 @@
 - 发布说明：`docs/RELEASE_NOTES_RC_ITERATION_15.md`
 - 回滚手册：`docs/ROLLBACK_RUNBOOK_ITERATION_15.md`
 - 推广候选：`docs/PROMOTION_CANDIDATES_ITERATION_15.md`
+
+## Onboarding 一致性门禁
+
+- 校验当前维护的用户主路径：
+  - `python scripts/validate_onboarding_consistency.py`

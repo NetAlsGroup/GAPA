@@ -121,8 +121,8 @@ python -m gapa doctor
 
 Next steps:
 
-1. Custom local scripts and user-defined algorithms: [docs/ADVANCED_USAGE.md](docs/ADVANCED_USAGE.md)
-2. Services, remote execution, and MNM: [docs/ADVANCED_USAGE.md](docs/ADVANCED_USAGE.md)
+1. Open the advanced docs hub: [docs/README.md](docs/README.md)
+2. Custom local scripts and user-defined algorithms: [docs/ADVANCED_USAGE.md](docs/ADVANCED_USAGE.md)
 3. Performance, soak, QA, and RC procedures: [docs/OPERATIONS_AND_QA.md](docs/OPERATIONS_AND_QA.md)
 
 <h3>Project Surface</h3>
@@ -130,7 +130,7 @@ Next steps:
 - `gapa/`: core package, workflow API, built-in demo entry
 - `examples/`: script-first advanced usage
 - `server/`, `app.py`, `server_agent.py`: service and remote runtime
-- `docs/`: advanced usage, operations, QA, and release material
+- `docs/`: second-layer docs for advanced usage, operations, QA, and release material
 
 
 <br>

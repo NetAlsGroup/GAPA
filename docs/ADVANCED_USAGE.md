@@ -2,6 +2,10 @@
 
 This page collects script-first, service, and advanced runtime guidance that is intentionally kept out of the beginner onboarding path.
 
+Docs hub:
+
+- [README.md](README.md)
+
 ## Script Entry Points
 
 Core examples live under `examples/`:

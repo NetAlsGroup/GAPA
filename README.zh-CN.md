@@ -82,8 +82,8 @@ python -m gapa doctor
 
 下一步：
 
-1. 本地脚本与自定义算法： [docs/ADVANCED_USAGE.zh-CN.md](docs/ADVANCED_USAGE.zh-CN.md)
-2. 服务、远程执行与 MNM： [docs/ADVANCED_USAGE.zh-CN.md](docs/ADVANCED_USAGE.zh-CN.md)
+1. 打开进阶文档导航： [docs/README.zh-CN.md](docs/README.zh-CN.md)
+2. 本地脚本与自定义算法： [docs/ADVANCED_USAGE.zh-CN.md](docs/ADVANCED_USAGE.zh-CN.md)
 3. 性能、稳定性、QA 与发布： [docs/OPERATIONS_AND_QA.zh-CN.md](docs/OPERATIONS_AND_QA.zh-CN.md)
 
 ## 项目表面
@@ -91,7 +91,7 @@ python -m gapa doctor
 - `gapa/`：核心包、workflow API、内置 demo 入口
 - `examples/`：进阶脚本入口
 - `server/`、`app.py`、`server_agent.py`：服务与远程运行时
-- `docs/`：进阶使用、运维、QA 与发布资料
+- `docs/`：第二层文档入口，承接进阶使用、运维、QA 与发布资料
 
 ## 更新日志
 
@@ -99,5 +99,6 @@ python -m gapa doctor
 
 ## 进阶资料
 
+- 文档导航： [docs/README.zh-CN.md](docs/README.zh-CN.md)
 - 进阶使用： [docs/ADVANCED_USAGE.zh-CN.md](docs/ADVANCED_USAGE.zh-CN.md)
 - 运维与 QA： [docs/OPERATIONS_AND_QA.zh-CN.md](docs/OPERATIONS_AND_QA.zh-CN.md)

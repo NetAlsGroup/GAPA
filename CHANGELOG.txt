@@ -20,7 +20,7 @@ GAPA Changelog
 - Iteration 15: Finalized RC closure package (checklist, rollback runbook, release notes, promotion candidates).
 - Iteration 16: Optimized MNM communication algorithm with framed payload compatibility, dispatch rebalance, and P0 QA gate pass.
 - Iteration 17: Activated governed multi-agent delivery flow with validator, local cache fallback, and dry-run close loop.
-- Iteration 18: Started product-delivery slimming by landing the shared official entrypoint `python -m gapa demo` / `gapa demo`, splitting install tiers, slimming README, adding `gapa doctor` / `gapa smoke`, and restructuring examples into first-script/minimal-customization/advanced layers.
+- Iteration 18: Started product-delivery slimming by landing the shared official entrypoint `python -m gapa demo` / `gapa demo`, splitting install tiers, slimming README, adding `gapa doctor` / `gapa smoke`, restructuring examples into first-script/minimal-customization/advanced layers, adding a second-layer docs hub to demote operations/release material out of the beginner path, and shipping an onboarding consistency gate to keep README/CLI/examples/docs aligned.
 
 2026-02
 -------
