@@ -2,35 +2,33 @@
 
 Use the examples in this order.
 
-## 1. First script
+## 1. Core API
+
+- `api/data_loader.py`
+  - inspect the public dataset registry and load a dataset by name
+- `api/workflow.py`
+  - run a minimal local workflow with `Workflow`
+- `api/monitor.py`
+  - inspect `status()`, `result()`, and `report()`
+- `api/resource_manager.py`
+  - query resources and request a strategy plan
+- `api/algorithm.py`
+  - pass a user-defined `Algorithm` subclass into `Workflow`
+
+## 2. Advanced and compatibility scripts
 
 - `quickstart_local.py`
-  - closest script equivalent to `python -m gapa demo`
-  - uses built-in small graphs and no repo dataset
-
-## 2. Minimal customization
-
+  - closest script equivalent to the package demo path
 - `custom_algorithm_minimal.py`
-  - smallest custom algorithm wrapper path
-  - runs a user-defined algorithm through `Workflow`
-
-## 3. Advanced execution
-
+  - existing minimal custom algorithm path
 - `advanced/remote_single_server.py`
-  - recommended named entry for remote `s` / `sm` / `m`
+  - remote `s` / `sm` / `m`
 - `advanced/mnm_multi_node.py`
-  - recommended named entry for heterogeneous MNM
-- `advanced/README.md`
-  - index for remote, queue, lock, reporting, and baseline scripts
-
-## Compatibility paths
-
-These existing scripts are kept for compatibility and power users:
-
+  - heterogeneous MNM
 - `run_sixdst.py`
-  - single-node (`s` / `sm` / `m`) and MNM execution
+  - compatibility execution entry
 - `resource_scheduler.py`
-  - server/resource query, lock/unlock, strategy plan
+  - resource query and lock management
 - `run_analysis_queue.py`
   - queue-aware remote submit and polling
 - `run_lock_keepalive.py`

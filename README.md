@@ -1,58 +1,43 @@
 <div align="center">
   <img src="assets/LOGO.png" width="400" alt="GAPA Logo"/>
-
-  <h3>
-    GAPA: A Parallel Accelerated Framework for Graph Structure Optimization
-  </h3>
-
-  <p>
-    Efficiently solving PSSO problems (CND, CDA, NCA, LPA) via Unified Genetic Algorithms and Multi-level Parallelism.
-  </p>
+  <h3>GAPA: Genetic Algorithm Library for Perturbed Substructure Optimization</h3>
+  <p>Local Python-first graph optimization with unified workflow, monitoring, extensibility, and accelerated execution.</p>
 </div>
 
-
 <div align="center">
-  
   <a href="https://arxiv.org/abs/2412.20980">
     <img src="https://img.shields.io/badge/arxiv-2412.20980-red" alt="arXiv">
   </a>
-  
   <a href="https://pypi.org/project/gapa/">
     <img src="https://img.shields.io/pypi/v/gapa?logo=python" alt="PyPI Version">
   </a>
-  
   <a href="https://pypi.org/project/gapa/">
     <img src="https://img.shields.io/badge/python-3.9+-orange?logo=python" alt="Python Version">
   </a>
-
   <img src="https://img.shields.io/github/last-commit/NetAlsGroup/GAPA" alt="GitHub last commit">
-
   <a href="https://github.com/NetAlsGroup/GAPA">
     <img src="https://img.shields.io/github/stars/NetAlsGroup%2FGAPA" alt="GitHub Stars">
   </a>
-
-  </div>
-
-GAPA is a Python library for accelerated Perturbed Substructure Structure Optimization (PSSO),
-including CND, CDA, NCA, and LPA workloads. It provides a unified GA execution interface across:
-
-- local single-process (`s`)
-- single-node multi-GPU (`sm`)
-- local distributed multi-process (`m`)
-- heterogeneous multi-node distributed fitness acceleration (`mnm`)
-
-All algorithm implementations are based on [PyTorch](https://github.com/pytorch/pytorch).
+</div>
 
 For Chinese documentation, see [README.zh-CN.md](README.zh-CN.md).
 
-<h3>Requirements</h3>
+## What GAPA Is
 
-- Python `3.9+`
-- PyTorch `2.3.0+` (recommended)
+GAPA is a local Python library for perturbed substructure structure optimization (PSSO) with genetic algorithms.
+It focuses on a unified user-facing workflow:
 
-<h3>Installation</h3>
+- load a registered dataset with `DataLoader`
+- run an algorithm through `Workflow`
+- inspect progress and outputs with `Monitor`
+- access resource planning through `ResourceManager`
+- extend behavior with custom `Algorithm` subclasses
 
-Recommended beginner install:
+Parallel acceleration is built in. Web, service, and heterogeneous distributed execution stay available as advanced layers.
+
+## Installation
+
+Recommended install:
 
 ```bash
 pip install gapa
@@ -66,77 +51,74 @@ cd GAPA
 pip install -e .
 ```
 
-Optional install tiers:
+Optional dependency tiers:
 
 ```bash
-pip install "gapa[full]"         # built-in algorithms, plotting, research helpers
-pip install "gapa[attack]"       # attack-oriented dependencies
-pip install "gapa[distributed]"  # app/server/remote runtime dependencies
-pip install "gapa[dev]"          # contributor toolchain + all optional stacks
+pip install "gapa[full]"
+pip install "gapa[attack]"
+pip install "gapa[distributed]"
+pip install "gapa[dev]"
 ```
 
-Source requirement files mirror the same tiers:
+## Supported Tasks
 
-```bash
-pip install -r requirements.txt
-pip install -r requirements/full.txt
-pip install -r requirements/attack.txt
-pip install -r requirements/distributed.txt
-pip install -r requirements/dev.txt
+- `CND`: critical node detection
+- `CDA`: community detection attack
+- `NCA`: node classification attack
+- `LPA`: link prediction attack
+
+## Minimal Example
+
+```python
+from gapa import DataLoader, Monitor, Workflow
+from gapa.algorithms import SixDSTAlgorithm
+
+data = DataLoader.load("Circuit")
+monitor = Monitor()
+algorithm = SixDSTAlgorithm(pop_size=16)
+workflow = Workflow(algorithm, data, monitor=monitor, mode="s", verbose=False)
+workflow.run(steps=20)
+
+print(monitor.result())
 ```
 
-`requirements.txt` is now the lightweight core stack for the official quickstart path.
+More runnable examples:
 
-<h3>Quick Start</h3>
+- [examples/api/workflow.py](examples/api/workflow.py)
+- [examples/api/monitor.py](examples/api/monitor.py)
+- [examples/README.md](examples/README.md)
 
-Official first-run command:
+## Core API
 
-```bash
-python -m gapa demo
-```
+- `DataLoader`: load a registered dataset with `DataLoader.load(name)`
+- `Workflow`: run, step, pause, resume, and reset algorithm execution
+- `Monitor`: inspect `status()`, `result()`, `history()`, and `report()`
+- `ResourceManager`: query resources and request strategy plans
+- `Algorithm`: define custom algorithm objects that plug into `Workflow`
 
-Installed shortcut:
+## Extensibility
 
-```bash
-gapa demo
-```
+GAPA keeps the execution path unified for built-in and user-defined algorithms. A user-defined algorithm object can be passed into the same `Workflow` used by built-in algorithms.
 
-What this does:
+Minimal API examples:
 
-- runs a built-in small graph demo
-- auto-saves a summary report under `results/quickstart/runs/`
-- does not depend on `examples/` or repo-only datasets
+- [data_loader.py](examples/api/data_loader.py)
+- [workflow.py](examples/api/workflow.py)
+- [monitor.py](examples/api/monitor.py)
+- [resource_manager.py](examples/api/resource_manager.py)
+- [algorithm.py](examples/api/algorithm.py)
 
-Expected output:
+## Advanced Capabilities
 
-- selected mode (`requested` / `resolved`)
-- best fitness summary
-- summary report path
+Advanced layers stay available, but they are not the main onboarding path.
 
-Validate the environment and smoke path:
+- docs hub: [docs/README.md](docs/README.md)
+- advanced usage: [docs/ADVANCED_USAGE.md](docs/ADVANCED_USAGE.md)
+- operations and QA: [docs/OPERATIONS_AND_QA.md](docs/OPERATIONS_AND_QA.md)
+- remote runtime: `server/`, `app.py`, `server_agent.py`
+- web console: `web/`
 
-```bash
-python -m gapa doctor
-```
-
-Next steps:
-
-1. Open the advanced docs hub: [docs/README.md](docs/README.md)
-2. Custom local scripts and user-defined algorithms: [docs/ADVANCED_USAGE.md](docs/ADVANCED_USAGE.md)
-3. Performance, soak, QA, and RC procedures: [docs/OPERATIONS_AND_QA.md](docs/OPERATIONS_AND_QA.md)
-
-<h3>Project Surface</h3>
-
-- `gapa/`: core package, workflow API, built-in demo entry
-- `examples/`: script-first advanced usage
-- `server/`, `app.py`, `server_agent.py`: service and remote runtime
-- `docs/`: second-layer docs for advanced usage, operations, QA, and release material
-
-
-<br>
-<h3>
-Implemented Algorithms
-</h3>
+## Implemented Algorithms
 
 | Abbr             | Years        | Type        | Ref                           | Code                                                                                                                                   |
 |------------------|--------------|-------------|-------------------------------|----------------------------------------------------------------------------------------------------------------------------------------|
@@ -150,21 +132,12 @@ Implemented Algorithms
 | <center>LPA-GA   | <center>2019 | <center>LPA | <center>[\[6\]](#r6)</center> | <center>-                                                                                                                              |
 | <center>GANI     | <center>2023 | <center>NCA | <center>[\[7\]](#r7)</center> | <center>[Link](https://github.com/alexfanjn/GANI)                                                                                      |
 | <center>NCA-GA   | <center>2018 | <center>NCA | <center>[\[8\]](#r8)</center> | <center>[Link](https://github.com/Hanjun-Dai/graph_adversarial_attack?tab=readme-ov-file)                                              |
-<br>
 
-<h3>Changelog</h3>
+## Citation
 
-See [CHANGELOG.txt](CHANGELOG.txt) for detailed release and milestone updates.
+If you use GAPA in your research, cite:
 
-<br>
-
-<h3>
-Citing GAPA
-</h3>
-If you use GAPA in your research and want to cite in your work, please use:
-<br>
-
-```
+```bibtex
 @article{
     title = Efficient Parallel Genetic Algorithm for Perturbed Substructure Optimization in Complex Network
     author = Shanqing Yu, Meng Zhou, Jintao Zhou, Minghao Zhao, Yidan Song, Yao Lu, Zeyu Wang, Qi Xuan
@@ -174,11 +147,11 @@ If you use GAPA in your research and want to cite in your work, please use:
 }
 ```
 
-<br>
-<h3>References</h3>
+## References
+
 <p id="r1">
-[1] Jinyin Chen, Lihong Chen, Yixian Chen, Minghao Zhao, Shanqing Yu,  
-Qi Xuan, and Xiaoniu Yang. Ga-based q-attack on community detection.  
+[1] Jinyin Chen, Lihong Chen, Yixian Chen, Minghao Zhao, Shanqing Yu,
+Qi Xuan, and Xiaoniu Yang. Ga-based q-attack on community detection.
 IEEE Transactions on Computational Social Systems, 6(3):491–503, 2019.
 </p>
 
@@ -199,7 +172,7 @@ Unsupervised euclidean distance attack on network embedding. In 2020 IEEE Fifth 
 </p>
 
 <p id="r5">
-[5] Yu, Shanqing, Yongqi Wang, Jiaxiang Li, Xu Fang, Jinyin Chen, Ziwan Zheng, and Chenbo Fu. 
+[5] Yu, Shanqing, Yongqi Wang, Jiaxiang Li, Xu Fang, Jinyin Chen, Ziwan Zheng, and Chenbo Fu.
 "An improved differential evolution framework using network topology information for critical nodes detection." IEEE Transactions on Computational Social Systems 10, no. 2 (2022): 448-457.
 </p>
 
