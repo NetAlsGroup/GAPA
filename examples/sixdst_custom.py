@@ -7,10 +7,10 @@ This algorithm uses the same core engine as the frontend (Start, CustomControlle
 ensuring consistent behavior across all execution contexts.
 
 Usage:
-    from gapa.workflow import Workflow, load_dataset, Monitor
+    from gapa import DataLoader, Monitor, Workflow
     from examples.sixdst_custom import SixDSTAlgorithm
     
-    data = load_dataset("ForestFire_n500")
+    data = DataLoader.load("Circuit")
     algo = SixDSTAlgorithm(pop_size=80)
     workflow = Workflow(algo, data, mode="m")
     workflow.run(1000)
@@ -216,7 +216,7 @@ class SixDSTAlgorithm(Algorithm):
         cutoff_rounds: Number of cutoff rounds (default: 10)
     
     Example:
-        >>> data = load_dataset("ForestFire_n500")
+        >>> data = DataLoader.load("Circuit")
         >>> algo = SixDSTAlgorithm(pop_size=80)
         >>> workflow = Workflow(algo, data, mode="mnm", auto_select=True)
         >>> workflow.run(1000)

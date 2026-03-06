@@ -233,7 +233,7 @@ LOCAL_TASK = TaskState()
 app = Flask(__name__, static_folder=str(STATIC_ROOT), static_url_path="/static")
 store = JobStore()
 ALGO_MANIFEST_PATH = Path(__file__).resolve().parent / "gapa" / "algorithm" / "manifest.json"
-DATASETS_MANIFEST_PATH = Path(__file__).resolve().parent / "datasets.json"
+DATASETS_MANIFEST_PATH = Path(__file__).resolve().parent / "datasets" / "registry.json"
 
 
 @app.after_request
@@ -359,7 +359,21 @@ def api_v1_datasets():
         return jsonify({})
     try:
         raw = json.loads(DATASETS_MANIFEST_PATH.read_text(encoding="utf-8"))
-        return jsonify(raw if isinstance(raw, dict) else {})
+        if not isinstance(raw, dict):
+            return jsonify({})
+        algorithms = raw.get("algorithms", {})
+        by_algorithm = {}
+        if isinstance(algorithms, dict):
+            for name, meta in algorithms.items():
+                if isinstance(meta, dict):
+                    by_algorithm[name] = list(meta.get("datasets", []))
+        return jsonify(
+            {
+                "datasets": raw.get("datasets", {}),
+                "algorithms": algorithms,
+                "by_algorithm": by_algorithm,
+            }
+        )
     except Exception as exc:
         return jsonify(make_error_response(
             "ManifestError",

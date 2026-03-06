@@ -3,7 +3,7 @@
 Minimal example: run a short workflow, export report, then show trend summary.
 
 Usage:
-    python examples/run_report_export.py --dataset ForestFire_n500 --generations 10
+    python examples/run_report_export.py --dataset Circuit --generations 10
 """
 
 import argparse
@@ -17,19 +17,19 @@ _project_root = os.path.dirname(_script_dir)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from gapa.workflow import Workflow, load_dataset, Monitor
+from gapa import DataLoader, Monitor, Workflow
 from sixdst_custom import SixDSTAlgorithm
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Report export example")
-    parser.add_argument("--dataset", default="ForestFire_n500")
+    parser.add_argument("--dataset", default="Circuit")
     parser.add_argument("--generations", type=int, default=10)
     parser.add_argument("--mode", default="s", choices=["s", "sm", "m", "mnm"])
     args = parser.parse_args()
 
     monitor = Monitor()
-    data = load_dataset(args.dataset)
+    data = DataLoader.load(args.dataset)
     algo = SixDSTAlgorithm(pop_size=40)
     workflow = Workflow(algo, data, monitor=monitor, mode=args.mode, verbose=True)
     workflow.run(args.generations)

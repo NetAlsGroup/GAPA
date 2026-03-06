@@ -6,9 +6,9 @@ Demonstrates the unified GAPA workflow interface.
 Uses the same core engine (Start, CustomController) as the frontend.
 
 Usage:
-    python run_sixdst.py --dataset ForestFire_n500
-    python run_sixdst.py --dataset ForestFire_n500 --mode m
-    python run_sixdst.py --dataset ForestFire_n500 --mode mnm --auto-select
+    python run_sixdst.py --dataset Circuit
+    python run_sixdst.py --dataset Circuit --mode m
+    python run_sixdst.py --dataset Circuit --mode mnm --auto-select
 
     python run_sixdst.py --mode m --server 6 --use-strategy-plan
     python run_sixdst.py --mode m --server 6 --no-strategy-plan
@@ -26,13 +26,13 @@ if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
 # GAPA imports
-from gapa.workflow import Workflow, load_dataset, Monitor
+from gapa import DataLoader, Monitor, Workflow
 from sixdst_custom import SixDSTAlgorithm
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="SixDST Algorithm Runner (Unified)")
-    parser.add_argument("--dataset", default="ForestFire_n500", help="Dataset name")
+    parser.add_argument("--dataset", default="Circuit", help="Dataset name")
     parser.add_argument("--mode", default="s", choices=["s", "sm", "m", "mnm"],
                         help="Execution mode (default: s)")
     parser.add_argument("--generations", type=int, default=50, help="Max generations")
@@ -64,7 +64,7 @@ def main(argv=None):
     locked_servers: List[str] = []
 
     # 1. Load data
-    data = load_dataset(args.dataset)
+    data = DataLoader.load(args.dataset)
     
     # 2. Create algorithm
     algo = SixDSTAlgorithm(pop_size=args.pop_size)

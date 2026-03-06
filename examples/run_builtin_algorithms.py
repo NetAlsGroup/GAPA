@@ -3,7 +3,7 @@
 Run built-in GAPA algorithms from a single script.
 
 Examples:
-  python examples/run_builtin_algorithms.py --method CutOff --dataset ForestFire_n500 --mode s
+  python examples/run_builtin_algorithms.py --method CutOff --dataset Circuit --mode s
   python examples/run_builtin_algorithms.py --method TDE --generations 20 --pop-size 40
   python examples/run_builtin_algorithms.py --method CGN --dataset karate --mode s
   python examples/run_builtin_algorithms.py --all --generations 10
@@ -27,7 +27,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from gapa.workflow import load_dataset  # noqa: E402
+from gapa import DataLoader  # noqa: E402
 from gapa.workflow import Monitor  # noqa: E402
 from gapa.remote_runner import run_remote_task  # noqa: E402
 from gapa.utils.init_device import init_device  # noqa: E402
@@ -44,9 +44,9 @@ from gapa.algorithm.CDA.EDA import EDAEvaluator, EDAController, EDA  # noqa: E40
 
 METHODS = ["CutOff", "TDE", "SixDST", "CGN", "QAttack", "CDA-EDA"]
 DEFAULT_DATASET = {
-    "CutOff": "ForestFire_n500",
-    "TDE": "ForestFire_n500",
-    "SixDST": "ForestFire_n500",
+    "CutOff": "Circuit",
+    "TDE": "Circuit",
+    "SixDST": "Circuit",
     "CGN": "karate",
     "QAttack": "karate",
     "CDA-EDA": "karate",
@@ -315,7 +315,7 @@ def _run_one(method: str, args, device, world_size) -> Tuple[str, bool, str]:
                 best = None
             return method, True, f"remote ok (best={best})"
 
-        data_loader = load_dataset(dataset, device=str(device))
+        data_loader = DataLoader.load(dataset, device=str(device))
         t0 = perf_counter()
         RUNNERS[method](args, data_loader, device, world_size)
         dt = perf_counter() - t0

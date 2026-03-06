@@ -21,7 +21,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Queue-aware analysis start example")
     parser.add_argument("--server-id", default=None, help="Target server id/name")
     parser.add_argument("--algorithm", default="SixDST")
-    parser.add_argument("--dataset", default="ForestFire_n500")
+    parser.add_argument("--dataset", default="Circuit")
     parser.add_argument("--iterations", type=int, default=10)
     parser.add_argument("--mode", default="M")
     parser.add_argument("--queue-if-busy", action="store_true")

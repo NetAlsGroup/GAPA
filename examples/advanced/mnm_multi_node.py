@@ -17,7 +17,7 @@ import run_sixdst
 
 
 def main(argv=None):
-    base_args = ["--dataset", "ForestFire_n500", "--mode", "mnm"]
+    base_args = ["--dataset", "Circuit", "--mode", "mnm"]
     if argv:
         base_args.extend(argv)
     return run_sixdst.main(base_args)

@@ -1,5 +1,6 @@
 """Public package surface for GAPA."""
 
-from gapa.workflow import Monitor, Workflow, load_dataset
+from gapa.data_loader import DataLoader
+from gapa.workflow import Monitor, Workflow
 
-__all__ = ["Monitor", "Workflow", "load_dataset"]
+__all__ = ["DataLoader", "Monitor", "Workflow"]

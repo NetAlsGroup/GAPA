@@ -1,0 +1,158 @@
+{
+  "datasets": {
+    "karate": {
+      "task": "CDA",
+      "tasks": ["CDA"],
+      "path": "karate.txt",
+      "format": "edgelist",
+      "nodes": 34,
+      "edges": 78
+    },
+    "dolphins": {
+      "task": "CDA",
+      "tasks": ["CDA", "LPA"],
+      "path": "dolphins.gml",
+      "format": "gml",
+      "nodes": 62,
+      "edges": 159
+    },
+    "football": {
+      "task": "CDA",
+      "tasks": ["CDA"],
+      "path": "football.gml",
+      "format": "gml",
+      "nodes": 115,
+      "edges": 613
+    },
+    "email-EU-core": {
+      "task": "CDA",
+      "tasks": ["CDA"],
+      "path": "email-EU-core.gml",
+      "format": "gml",
+      "nodes": 1005,
+      "edges": 16706
+    },
+    "Circuit": {
+      "task": "CND",
+      "tasks": ["CND"],
+      "path": "Circuit.txt",
+      "format": "edgelist",
+      "nodes": 252,
+      "edges": 219
+    },
+    "A01": {
+      "task": "CND",
+      "tasks": ["CND"],
+      "path": "A01.txt",
+      "format": "edgelist",
+      "nodes": 259,
+      "edges": 640
+    },
+    "humanDiseasome": {
+      "task": "CND",
+      "tasks": ["CND", "LPA"],
+      "path": "humanDiseasome.txt",
+      "format": "edgelist",
+      "nodes": 516,
+      "edges": 451
+    },
+    "yeast1": {
+      "task": "CND",
+      "tasks": ["CND"],
+      "path": "yeast1.txt",
+      "format": "edgelist",
+      "nodes": 1966,
+      "edges": 1592
+    },
+    "chameleon_filtered": {
+      "task": "NCA",
+      "tasks": ["NCA"],
+      "path": "chameleon_filtered.npz",
+      "format": "npz",
+      "nodes": 890,
+      "edges": 8854
+    },
+    "squirrel_filtered": {
+      "task": "NCA",
+      "tasks": ["NCA"],
+      "path": "squirrel_filtered.npz",
+      "format": "npz",
+      "nodes": 2223,
+      "edges": 46998
+    },
+    "cora": {
+      "task": "NCA",
+      "tasks": ["NCA"],
+      "path": "cora.npz",
+      "format": "npz",
+      "nodes": 2708,
+      "edges": 5278
+    },
+    "citeseer": {
+      "task": "NCA",
+      "tasks": ["NCA"],
+      "path": "citeseer.npz",
+      "format": "npz",
+      "nodes": 3312,
+      "edges": 4654
+    },
+    "jazz": {
+      "task": "LPA",
+      "tasks": ["LPA"],
+      "path": "jazz.txt",
+      "format": "edgelist",
+      "nodes": 75,
+      "edges": 89
+    },
+    "USAir97": {
+      "task": "LPA",
+      "tasks": ["LPA"],
+      "path": "USAir97.txt",
+      "format": "edgelist",
+      "nodes": 332,
+      "edges": 317
+    }
+  },
+  "algorithms": {
+    "CDA-EDA": {
+      "task": "CDA",
+      "datasets": ["karate", "dolphins", "football", "email-EU-core"]
+    },
+    "CGN": {
+      "task": "CDA",
+      "datasets": ["karate", "dolphins", "football", "email-EU-core"]
+    },
+    "QAttack": {
+      "task": "CDA",
+      "datasets": ["karate", "dolphins", "football", "email-EU-core"]
+    },
+    "TDE": {
+      "task": "CND",
+      "datasets": ["Circuit", "A01", "humanDiseasome", "yeast1"]
+    },
+    "CutOff": {
+      "task": "CND",
+      "datasets": ["Circuit", "A01", "humanDiseasome", "yeast1"]
+    },
+    "SixDST": {
+      "task": "CND",
+      "datasets": ["Circuit", "A01", "humanDiseasome", "yeast1"]
+    },
+    "GANI": {
+      "task": "NCA",
+      "datasets": ["chameleon_filtered", "squirrel_filtered", "cora", "citeseer"]
+    },
+    "NCA-GA": {
+      "task": "NCA",
+      "datasets": ["chameleon_filtered", "squirrel_filtered", "cora", "citeseer"]
+    },
+    "LPA-EDA": {
+      "task": "LPA",
+      "datasets": ["dolphins", "humanDiseasome", "jazz", "USAir97"]
+    },
+    "LPA-GA": {
+      "task": "LPA",
+      "datasets": ["dolphins", "humanDiseasome", "jazz", "USAir97"]
+    }
+  }
+}

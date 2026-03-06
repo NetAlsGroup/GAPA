@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import socket
 import sys
@@ -8,6 +7,8 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from gapa.config import build_remote_server_entries
 from .mode_runtime import classify_transport_error, request_with_retry
 
 try:
@@ -32,25 +33,7 @@ except Exception:
 # Paths and shared executor for resource collection
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_ROOT = BASE_DIR / "web"
-SERVERS_FILE = Path(os.getenv("GAPA_SERVERS_FILE", BASE_DIR / "servers.json"))
 _executor = ThreadPoolExecutor(max_workers=10)
-
-
-def _ensure_server_file() -> None:
-    """Create a minimal server config file when it is missing."""
-    if SERVERS_FILE.exists():
-        return
-    default_data = {
-        "servers": [
-            {
-                "id": "local",
-                "name": "本机",
-                "base_url": "",
-            }
-        ]
-    }
-    SERVERS_FILE.write_text(json.dumps(default_data, indent=4, ensure_ascii=False), encoding="utf-8")
-    print("已自动生成 servers.json")
 
 
 def _normalize_server_entry(entry: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
@@ -70,14 +53,8 @@ def _normalize_server_entry(entry: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]
 
 
 def load_server_list() -> List[Dict[str, str]]:
-    """Safely read the server list and ensure the local host is first."""
-    _ensure_server_file()
-    try:
-        config = json.loads(SERVERS_FILE.read_text(encoding="utf-8"))
-        servers = config.get("servers", [])
-    except Exception as exc:  # pragma: no cover - defensive path
-        print(f"加载服务器列表失败：{exc}，回退到仅本机模式")
-        return [{"id": "local", "name": "本机", "base_url": ""}]
+    """Build the server list from env-backed remote URLs and keep local first."""
+    servers = build_remote_server_entries()
 
     seen = set()
     unique_servers: List[Dict[str, Any]] = []
@@ -277,19 +254,8 @@ def get_all_resources(remote_addr: Optional[str]) -> Dict[str, Dict[str, Any]]:
 
 
 def load_server_config(mask_password: bool = False) -> List[Dict[str, Any]]:
-    """Load remote server config from JSON file; optionally mask passwords."""
-    if not SERVERS_FILE.exists():
-        return []
-    try:
-        raw = json.loads(SERVERS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-
-    if isinstance(raw, dict):
-        raw = raw.get("servers", [])
-    if not isinstance(raw, list):
-        return []
-
+    """Load remote server config from env-backed URLs."""
+    raw = build_remote_server_entries()
     servers: List[Dict[str, Any]] = []
     for item in raw:
         if not isinstance(item, dict):

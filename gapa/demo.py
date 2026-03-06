@@ -14,7 +14,8 @@ from gapa.framework.body import Body
 from gapa.framework.controller import CustomController
 from gapa.framework.evaluator import BasicEvaluator
 from gapa.utils.functions import CNDTest
-from gapa.workflow import Algorithm, DataLoader, Monitor, Workflow
+from gapa.data_loader import DataLoader
+from gapa.workflow import Algorithm, Monitor, Workflow
 
 
 DEMO_GRAPHS = {

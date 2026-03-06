@@ -13,14 +13,11 @@ Core Classes:
     - Workflow: Unified orchestrator (wraps existing Start/Controller)
     - Monitor: Tracks evolution progress
 
-Utility Functions:
-    - load_dataset: Load graph dataset by name
-
 Example:
-    >>> from gapa.workflow import Workflow, load_dataset, Monitor
+    >>> from gapa.workflow import Workflow, DataLoader, Monitor
     >>> from examples.sixdst_custom import SixDSTAlgorithm
     >>> 
-    >>> data = load_dataset("ForestFire_n500")
+    >>> data = DataLoader.load("A01")
     >>> algo = SixDSTAlgorithm(budget=data.k, pop_size=80)
     >>> monitor = Monitor()
     >>> workflow = Workflow(algo, data, monitor=monitor, mode="m")
@@ -37,14 +34,16 @@ from typing import Any, Dict, Optional, List
 
 __all__ = [
     "Algorithm",
-    "Workflow", 
+    "Workflow",
     "Monitor",
-    "load_dataset",
+    "DataLoader",
 ]
 
+from gapa.config import get_app_base_url, get_results_dir
+from gapa.data_loader import DataLoader
 
 def _results_root() -> Path:
-    return Path(os.getenv("GAPA_RESULTS_DIR", str(Path(__file__).resolve().parents[1] / "results")))
+    return get_results_dir(Path(__file__).resolve().parents[1])
 
 
 def _load_json_file(path: Path, default: Any) -> Any:
@@ -220,22 +219,7 @@ def _resolve_default_api_base() -> str:
     env_base = os.getenv("GAPA_API_BASE")
     if env_base:
         return str(env_base).rstrip("/")
-    cfg = os.getenv("GAPA_SERVERS_FILE")
-    path = Path(cfg) if cfg else Path(__file__).resolve().parents[1] / "servers.json"
-    if path.exists():
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            servers = raw.get("servers", []) if isinstance(raw, dict) else []
-            for entry in servers:
-                if not isinstance(entry, dict):
-                    continue
-                port = entry.get("port")
-                protocol = entry.get("protocol") or "http"
-                if port:
-                    return f"{protocol}://127.0.0.1:{port}"
-        except Exception:
-            pass
-    return "http://127.0.0.1:5000"
+    return get_app_base_url().rstrip("/")
 
 import os
 import sys
@@ -255,7 +239,6 @@ warnings.filterwarnings("ignore", message=".*nvidia-ml-py.*", category=FutureWar
 
 import torch
 import torch.nn as nn
-import networkx as nx
 try:
     import requests  # type: ignore
 except Exception:  # pragma: no cover - optional dependency for monitor HTTP
@@ -277,321 +260,6 @@ except ImportError:
 # Supported modes in PyPI package vs Source deployment
 PYPI_MODES = ["s", "sm", "m"]
 SOURCE_MODES = ["s", "sm", "m", "mnm"]
-
-
-# =============================================================================
-# Data Loading
-# =============================================================================
-
-class DataLoader:
-    """
-    Container for graph dataset.
-    
-    Compatible with the existing GAPA data loader interface.
-    """
-    
-    def __init__(
-        self,
-        name: str,
-        G: nx.Graph,
-        A: torch.Tensor,
-        nodes: torch.Tensor,
-        k: int,
-        selected_genes_num: int,
-        device: torch.device,
-    ):
-        self.name = name
-        self.dataset = name  # Alias for compatibility with existing code
-        self.G = G
-        self.A = A
-        self.nodes = nodes
-        self.nodes_num = len(nodes)
-        self.k = k
-        self.selected_genes_num = selected_genes_num
-        self.device = device
-
-
-def load_dataset(
-    name: str,
-    *,
-    detection_rate: float = 0.1,
-    selected_genes_rate: float = 0.4,
-    device: str = "auto",
-    sort_nodes: bool = True,
-    paths: Optional[List[str]] = None,
-    format: Optional[str] = None,
-) -> DataLoader:
-    """
-    Load a graph dataset by name or path.
-    
-    Supports multiple common graph formats with auto-detection.
-    
-    Supported Formats:
-        - **edgelist**: Two-column file (source target), whitespace/comma separated
-        - **csv**: CSV with 'source,target' or first two columns as edges
-        - **adjlist**: Adjacency list format
-        - **gml**: Graph Modeling Language
-        - **graphml**: GraphML XML format
-        - **gexf**: GEXF format (Gephi)
-        - **npz**: NumPy adjacency matrix
-    
-    Args:
-        name: Dataset name (e.g., "ForestFire_n500") or full file path
-        detection_rate: Fraction of nodes to select as budget (k). Default: 0.1
-        selected_genes_rate: Fraction of nodes for gene pool. Default: 0.4
-        device: Computation device - "auto", "cuda", or "cpu". Default: "auto"
-        sort_nodes: Whether to sort node labels for consistent indexing. Default: True
-        paths: Custom search paths (optional). Will be searched first.
-        format: Force specific format. Auto-detected if None.
-    
-    Returns:
-        DataLoader with graph data
-    
-    Example:
-        >>> # By name (searches in standard locations)
-        >>> data = load_dataset("ForestFire_n500")
-        
-        >>> # Direct path with edge list
-        >>> data = load_dataset("/path/to/edges.txt", format="edgelist")
-        
-        >>> # CSV file
-        >>> data = load_dataset("interactions.csv", format="csv")
-    """
-    import numpy as np
-    
-    # Determine device
-    if device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(device)
-    
-    # Check if name is a direct path
-    direct_path = Path(name)
-    if direct_path.exists() and direct_path.is_file():
-        graph_path = direct_path
-        dataset_name = direct_path.stem
-    else:
-        # Build search paths
-        project_root = Path(__file__).parent.parent
-        
-        # Supported extensions
-        extensions = [".txt", ".csv", ".edgelist", ".gml", ".graphml", ".gexf", ".npz"]
-        
-        search_paths = []
-        if paths:
-            for p in paths:
-                for ext in extensions:
-                    search_paths.append(Path(p) / f"{name}{ext}")
-        
-        for ext in extensions:
-            search_paths.extend([
-                project_root / "datasets" / f"{name}{ext}",
-                project_root / "dataset" / f"{name}{ext}",
-                project_root / "datasets" / name / f"{name}{ext}",
-                project_root / "dataset" / name / f"{name}{ext}",
-                Path.cwd() / "datasets" / f"{name}{ext}",
-                Path.cwd() / f"{name}{ext}",
-            ])
-        
-        graph_path = None
-        for p in search_paths:
-            if p.exists():
-                graph_path = p
-                break
-        
-        if graph_path is None:
-            tried_paths = "\n  - ".join(str(p) for p in search_paths[:8])
-            raise FileNotFoundError(
-                f"Dataset '{name}' not found.\n\n"
-                f"Searched in:\n  - {tried_paths}\n\n"
-                f"Supported formats: edgelist, csv, adjlist, gml, graphml, gexf, npz\n\n"
-                f"Suggestions:\n"
-                f"  1. Provide full path: load_dataset('/path/to/data.csv')\n"
-                f"  2. Specify format: load_dataset('name', format='edgelist')\n"
-                f"  3. Place file in ./datasets/ directory"
-            )
-        dataset_name = name
-    
-    print(f"[GAPA] Loading dataset: {graph_path}")
-    
-    # Auto-detect format from extension if not specified
-    suffix = graph_path.suffix.lower()
-    if format is None:
-        format_map = {
-            ".txt": "auto",
-            ".csv": "csv",
-            ".edgelist": "edgelist",
-            ".gml": "gml",
-            ".graphml": "graphml",
-            ".gexf": "gexf",
-            ".npz": "npz",
-        }
-        format = format_map.get(suffix, "auto")
-    
-    # Load graph based on format
-    G = _load_graph(graph_path, format)
-    
-    # Process graph
-    if sort_nodes:
-        nodelist = sorted(list(G.nodes()))
-        A = torch.tensor(nx.to_numpy_array(G, nodelist=nodelist), device=device, dtype=torch.float32)
-        G = nx.from_numpy_array(A.cpu().numpy())
-    else:
-        A = torch.tensor(nx.to_numpy_array(G), device=device, dtype=torch.float32)
-    
-    nodes = torch.tensor(list(G.nodes()), device=device)
-    nodes_num = len(nodes)
-    k = max(1, int(detection_rate * nodes_num))
-    selected_genes_num = max(1, int(selected_genes_rate * nodes_num))
-    
-    print(f"[GAPA] Graph loaded: {nodes_num} nodes, {len(G.edges())} edges")
-    print(f"[GAPA] Budget (k): {k}, Gene pool: {selected_genes_num}")
-    
-    return DataLoader(
-        name=dataset_name,
-        G=G,
-        A=A,
-        nodes=nodes,
-        k=k,
-        selected_genes_num=selected_genes_num,
-        device=device,
-    )
-
-
-def _load_graph(path: Path, format: str) -> nx.Graph:
-    """
-    Load graph from file with format auto-detection.
-    
-    Supports: edgelist, csv, adjlist, gml, graphml, gexf, npz
-    """
-    import numpy as np
-    
-    path_str = str(path)
-    
-    if format == "gml":
-        return nx.read_gml(path_str, label="id")
-    
-    elif format == "graphml":
-        return nx.read_graphml(path_str)
-    
-    elif format == "gexf":
-        return nx.read_gexf(path_str)
-    
-    elif format == "npz":
-        data = np.load(path_str)
-        # Try common keys for adjacency matrix
-        for key in ["A", "adj", "adjacency", "matrix", data.files[0]]:
-            if key in data.files:
-                adj = data[key]
-                return nx.from_numpy_array(adj)
-        raise ValueError(f"NPZ file does not contain adjacency matrix. Keys: {data.files}")
-    
-    elif format == "csv":
-        return _load_edgelist_csv(path)
-    
-    elif format == "edgelist":
-        return _load_edgelist(path)
-    
-    elif format == "auto":
-        # Try to auto-detect based on content
-        return _load_auto(path)
-    
-    else:
-        # Default: try adjlist
-        try:
-            return nx.read_adjlist(path_str, nodetype=int)
-        except:
-            return _load_edgelist(path)
-
-
-def _load_edgelist(path: Path) -> nx.Graph:
-    """Load edge list (two columns: source target)."""
-    edges = []
-    with open(path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith('#') or line.startswith('%'):
-                continue
-            parts = line.replace(',', ' ').split()
-            if len(parts) >= 2:
-                try:
-                    src, tgt = int(parts[0]), int(parts[1])
-                    edges.append((src, tgt))
-                except ValueError:
-                    # Try as string nodes
-                    edges.append((parts[0], parts[1]))
-    
-    G = nx.Graph()
-    G.add_edges_from(edges)
-    return G
-
-
-def _load_edgelist_csv(path: Path) -> nx.Graph:
-    """Load CSV edge list."""
-    import csv
-    
-    edges = []
-    with open(path, 'r', newline='') as f:
-        # Skip BOM if present
-        sample = f.read(1024)
-        f.seek(0)
-        
-        # Detect delimiter
-        dialect = csv.Sniffer().sniff(sample, delimiters=',\t;')
-        has_header = csv.Sniffer().has_header(sample)
-        
-        reader = csv.reader(f, dialect)
-        if has_header:
-            next(reader)  # Skip header
-        
-        for row in reader:
-            if len(row) >= 2:
-                try:
-                    src, tgt = int(row[0]), int(row[1])
-                except ValueError:
-                    src, tgt = row[0].strip(), row[1].strip()
-                edges.append((src, tgt))
-    
-    G = nx.Graph()
-    G.add_edges_from(edges)
-    return G
-
-
-def _load_auto(path: Path) -> nx.Graph:
-    """Auto-detect format and load."""
-    with open(path, 'r') as f:
-        first_lines = [f.readline() for _ in range(5)]
-    
-    content = ''.join(first_lines)
-    
-    # Check for GML markers
-    if 'graph [' in content.lower() or 'node [' in content.lower():
-        return nx.read_gml(str(path), label="id")
-    
-    # Check for GraphML
-    if '<?xml' in content and 'graphml' in content.lower():
-        return nx.read_graphml(str(path))
-    
-    # Check if it's CSV-like
-    if ',' in content and not content.strip().startswith('#'):
-        return _load_edgelist_csv(path)
-    
-    # Try edge list first (most common)
-    try:
-        G = _load_edgelist(path)
-        if G.number_of_edges() > 0:
-            return G
-    except:
-        pass
-    
-    # Fall back to adjlist
-    try:
-        return nx.read_adjlist(str(path), nodetype=int)
-    except:
-        pass
-    
-    # Last resort: edge list without type conversion
-    return _load_edgelist(path)
 
 
 # =============================================================================
@@ -644,27 +312,8 @@ class Monitor:
             return self.api_base.rstrip("/")
         return _resolve_default_api_base()
 
-    def _guess_api_base_from_servers_file(self) -> Optional[str]:
-        cfg = os.getenv("GAPA_SERVERS_FILE")
-        if cfg:
-            path = Path(cfg)
-        else:
-            path = Path(__file__).resolve().parents[1] / "servers.json"
-        if not path.exists():
-            return None
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return None
-        servers = raw.get("servers", []) if isinstance(raw, dict) else []
-        for entry in servers:
-            if not isinstance(entry, dict):
-                continue
-            port = entry.get("port")
-            protocol = entry.get("protocol") or "http"
-            if port:
-                return f"{protocol}://127.0.0.1:{port}"
-        return None
+    def _guess_api_base_from_config(self) -> Optional[str]:
+        return _resolve_default_api_base()
 
     def _http_get_json(self, url: str) -> Dict[str, Any]:
         if requests is None:
@@ -1527,7 +1176,7 @@ class Workflow:
         
         Args:
             algorithm: Algorithm instance (subclass of Algorithm)
-            data_loader: DataLoader from load_dataset()
+            data_loader: DataLoader from DataLoader.load()
             monitor: Optional Monitor for tracking progress
             mode: Execution mode - "s", "sm", "m", "m_cpu", "mnm"
             workers: Number of workers for resource discovery (MNM mode)

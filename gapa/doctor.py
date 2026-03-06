@@ -10,6 +10,7 @@ from typing import Any, Dict
 
 import torch
 
+from gapa.config import get_remote_servers
 from gapa.demo import build_demo_parser, run_demo
 
 
@@ -18,7 +19,7 @@ def _module_available(name: str) -> bool:
 
 
 def collect_environment() -> Dict[str, Any]:
-    package_root = Path(__file__).resolve().parents[1]
+    remote_servers = get_remote_servers()
     return {
         "python": {
             "version": platform.python_version(),
@@ -44,8 +45,8 @@ def collect_environment() -> Dict[str, Any]:
             "pynvml": _module_available("pynvml"),
         },
         "paths": {
-            "servers_json": str(package_root / "servers.json"),
-            "servers_json_exists": (package_root / "servers.json").exists(),
+            "remote_servers": remote_servers,
+            "remote_server_count": len(remote_servers),
         },
     }
 
@@ -82,14 +83,14 @@ def explain_mode_resolution(requested_mode: str, env: Dict[str, Any]) -> Dict[st
                 "reason": "MNM requires source deployment with distributed components",
                 "tip": "Use `gapa[distributed]` with source checkout and configure remote agents.",
             }
-        if not env["paths"]["servers_json_exists"]:
+        if int(env["paths"]["remote_server_count"]) <= 0:
             return {
                 "requested_mode": requested_mode,
                 "resolved_mode": "mnm",
                 "degraded": False,
                 "runnable": False,
-                "reason": "servers.json is missing, so remote MNM targets are not configured",
-                "tip": "Create `servers.json` and bring remote agents online before using MNM.",
+                "reason": "GAPA_REMOTE_SERVERS is empty, so remote MNM targets are not configured",
+                "tip": "Add remote agent URLs to `.env` before using MNM.",
             }
         return {
             "requested_mode": requested_mode,

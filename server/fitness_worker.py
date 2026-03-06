@@ -305,18 +305,18 @@ class _FitnessContext:
         # build evaluator/controller dynamically without hard-coding branches.
         try:
             from .algorithm_registry import load_algorithm_entries, load_algorithm_registry
-            from gapa.workflow import load_dataset
+            from gapa import DataLoader
         except Exception:
             load_algorithm_entries = None  # type: ignore[assignment]
             load_algorithm_registry = None  # type: ignore[assignment]
-            load_dataset = None  # type: ignore[assignment]
+            DataLoader = None  # type: ignore[assignment]
 
-        if load_algorithm_registry is not None and load_dataset is not None:
+        if load_algorithm_registry is not None and DataLoader is not None:
             registry = load_algorithm_registry()
             algo_cls = registry.get(algo)
             if algo_cls is not None:
                 # One dataset object can be reused; evaluator is created per pop_size.
-                data_loader = load_dataset(self.dataset, device=self.device)
+                data_loader = DataLoader.load(self.dataset, device=self.device)
                 torch_device = torch.device(self.device)
                 init_kwargs_template: Dict[str, Any] = {}
                 if load_algorithm_entries is not None:

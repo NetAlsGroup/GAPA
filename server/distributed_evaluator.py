@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 from collections import deque
-import json
 import os
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Deque, Dict, List, Optional, Tuple
 
+from gapa.config import build_remote_server_entries
 
 try:
     import requests  # type: ignore
@@ -124,26 +123,8 @@ class DispatchAssignment:
     worker: DeviceWorker
     chunk: Any
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent
-
-
-def _servers_file() -> Path:
-    return Path(os.getenv("GAPA_SERVERS_FILE", str(_repo_root() / "servers.json")))
-
-
 def load_workers(exclude_local: bool = True, allowed_ids: Optional[List[str]] = None) -> List[Worker]:
-    path = _servers_file()
-    if not path.exists():
-        return []
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if isinstance(raw, dict):
-        raw = raw.get("servers", [])
-    if not isinstance(raw, list):
-        return []
+    raw = build_remote_server_entries()
     out: List[Worker] = []
     for entry in raw:
         if not isinstance(entry, dict):

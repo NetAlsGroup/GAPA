@@ -167,10 +167,10 @@ def _run_real_workload_sample(*, dataset: str, generations: int, pop_size: int, 
         torch = None  # type: ignore
 
     try:
-        from gapa.workflow import Monitor, Workflow, load_dataset
+        from gapa import DataLoader, Monitor, Workflow
         from examples.sixdst_custom import SixDSTAlgorithm
 
-        data = load_dataset(dataset)
+        data = DataLoader.load(dataset)
         algo = SixDSTAlgorithm(
             pop_size=int(pop_size),
             cutoff_enabled=False,
@@ -275,7 +275,7 @@ def main() -> None:
     parser.add_argument("--repeats", type=int, default=None)
     parser.add_argument("--work-units", type=int, default=None)
     parser.add_argument("--live-samples", type=int, default=None, help="Sample count for --source live")
-    parser.add_argument("--real-dataset", default="ForestFire_n500")
+    parser.add_argument("--real-dataset", default="Circuit")
     parser.add_argument("--real-generations", type=int, default=None)
     parser.add_argument("--real-pop-size", type=int, default=None)
     parser.add_argument("--real-runs", type=int, default=None)
