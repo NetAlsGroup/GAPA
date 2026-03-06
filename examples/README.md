@@ -15,7 +15,20 @@ Use the examples in this order.
 - `api/algorithm.py`
   - pass a user-defined `Algorithm` subclass into `Workflow`
 
-## 2. Advanced and compatibility scripts
+## 2. Built-in algorithms
+
+- `algorithms/CND/sixdst.py`
+- `algorithms/CND/cutoff.py`
+- `algorithms/CND/tde.py`
+- `algorithms/CDA/cgn.py`
+- `algorithms/CDA/qattack.py`
+- `algorithms/CDA/cda_eda.py`
+- `algorithms/NCA/gani.py`
+- `algorithms/NCA/nca_ga.py`
+- `algorithms/LPA/lpa_eda.py`
+- `algorithms/LPA/lpa_ga.py`
+
+## 3. Advanced and compatibility scripts
 
 - `quickstart_local.py`
   - closest script equivalent to the package demo path

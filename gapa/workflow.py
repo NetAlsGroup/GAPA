@@ -1646,6 +1646,26 @@ class Workflow:
                 self._set_workflow_state("completed")
                 self._log_report_meta(report_meta)
                 return
+            if callable(getattr(self.algorithm, "run_full", None)):
+                if self.verbose:
+                    print(f"[GAPA] Starting {self.algorithm.__class__.__name__} in '{self.mode}' mode")
+                    print(f"[GAPA] Generations: {steps}, Device: {self.device}")
+
+                import time
+
+                start_ts = time.perf_counter()
+                self.algorithm.run_full(self, int(steps))
+                end_ts = time.perf_counter()
+                self._update_local_timing(end_ts - start_ts, steps)
+                run_ctx["ended_at"] = datetime.utcnow().isoformat() + "Z"
+                report_meta = self._emit_run_reports(run_ctx)
+                run_ctx["reports"] = report_meta
+                self.monitor.set_run_context(run_ctx)
+                self._set_workflow_state("completed")
+                self._log_report_meta(report_meta)
+                if self.verbose:
+                    print(f"\n[GAPA] Evolution complete. Best fitness: {self.monitor.best_fitness}")
+                return
             from gapa.framework.controller import Start
 
             self._setup_components()
@@ -1678,6 +1698,9 @@ class Workflow:
         except Exception as exc:
             self._set_workflow_state("error", str(exc))
             raise
+
+    def _supports_incremental(self) -> bool:
+        return bool(getattr(self.algorithm, "supports_incremental", False))
 
     def _run_incremental(self, steps: int) -> None:
         if steps <= 0:
@@ -1725,7 +1748,7 @@ class Workflow:
         Args:
             steps: Number of generations to run
         """
-        if self.mode == "s" and not self.remote_server:
+        if self.mode == "s" and not self.remote_server and self._supports_incremental():
             self._run_incremental(int(steps))
             return
         self._run_full(int(steps))
@@ -1738,6 +1761,8 @@ class Workflow:
     def resume(self, steps: int) -> None:
         if self.mode != "s" or self.remote_server:
             raise RuntimeError("resume() is currently supported for local 's' mode workflows only")
+        if not self._supports_incremental():
+            raise RuntimeError(f"resume() is not available for algorithm '{self.algorithm.__class__.__name__}'")
         if self._state is None:
             raise RuntimeError("no existing workflow state to resume; call run() first")
         if self.verbose:

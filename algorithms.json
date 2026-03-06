@@ -4,21 +4,91 @@
       "id": "SixDST",
       "name": "SixDSTAlgorithm",
       "aliases": ["SixDSTAlgorithm"],
-      "entry": "examples.sixdst_custom:SixDSTAlgorithm",
-      "init_kwargs": {
-        "pop_size": 80,
-        "crossover_rate": 0.6,
-        "mutate_rate": 0.2,
-        "cutoff_enabled": true,
-        "cutoff_rounds": 10
-      },
-      "capabilities": {
-        "supported_modes": ["s", "sm", "m", "mnm"],
-        "supports_distributed_fitness": true,
-        "supports_remote": true,
-        "fitness_direction": "min"
-      },
-      "category": "Custom"
+      "entry": "gapa.algorithms:SixDSTAlgorithm",
+      "init_kwargs": {"pop_size": 80, "crossover_rate": 0.6, "mutate_rate": 0.2},
+      "capabilities": {"supported_modes": ["s", "sm", "m", "mnm"], "supports_distributed_fitness": true, "supports_remote": true, "fitness_direction": "min"},
+      "category": "CND"
+    },
+    {
+      "id": "CutOff",
+      "name": "CutOffAlgorithm",
+      "aliases": ["CutOffAlgorithm"],
+      "entry": "gapa.algorithms:CutOffAlgorithm",
+      "init_kwargs": {"pop_size": 40, "crossover_rate": 0.7, "mutate_rate": 0.2},
+      "capabilities": {"supported_modes": ["s", "sm", "m", "mnm"], "supports_distributed_fitness": true, "supports_remote": true, "fitness_direction": "min"},
+      "category": "CND"
+    },
+    {
+      "id": "TDE",
+      "name": "TDEAlgorithm",
+      "aliases": ["TDEAlgorithm"],
+      "entry": "gapa.algorithms:TDEAlgorithm",
+      "init_kwargs": {"pop_size": 40, "crossover_rate": 0.7, "mutate_rate": 0.2},
+      "capabilities": {"supported_modes": ["s", "sm", "m", "mnm"], "supports_distributed_fitness": true, "supports_remote": true, "fitness_direction": "max"},
+      "category": "CND"
+    },
+    {
+      "id": "CGN",
+      "name": "CGNAlgorithm",
+      "aliases": ["CGNAlgorithm"],
+      "entry": "gapa.algorithms:CGNAlgorithm",
+      "init_kwargs": {"pop_size": 40, "crossover_rate": 0.7, "mutate_rate": 0.01},
+      "capabilities": {"supported_modes": ["s", "sm", "m", "mnm"], "supports_distributed_fitness": true, "supports_remote": true, "fitness_direction": "min"},
+      "category": "CDA"
+    },
+    {
+      "id": "QAttack",
+      "name": "QAttackAlgorithm",
+      "aliases": ["QAttackAlgorithm"],
+      "entry": "gapa.algorithms:QAttackAlgorithm",
+      "init_kwargs": {"pop_size": 40, "crossover_rate": 0.8, "mutate_rate": 0.1},
+      "capabilities": {"supported_modes": ["s", "sm", "m", "mnm"], "supports_distributed_fitness": true, "supports_remote": true, "fitness_direction": "max"},
+      "category": "CDA"
+    },
+    {
+      "id": "CDA-EDA",
+      "name": "CDAEDAAlgorithm",
+      "aliases": ["CDAEDAAlgorithm"],
+      "entry": "gapa.algorithms:CDAEDAAlgorithm",
+      "init_kwargs": {"pop_size": 40, "crossover_rate": 0.6, "mutate_rate": 0.2},
+      "capabilities": {"supported_modes": ["s", "sm", "m", "mnm"], "supports_distributed_fitness": true, "supports_remote": true, "fitness_direction": "max"},
+      "category": "CDA"
+    },
+    {
+      "id": "GANI",
+      "name": "GANIAlgorithm",
+      "aliases": ["GANIAlgorithm", "SGAAlgorithm"],
+      "entry": "gapa.algorithms:GANIAlgorithm",
+      "init_kwargs": {"pop_size": 20, "crossover_rate": 0.7, "mutate_rate": 0.3},
+      "capabilities": {"supported_modes": ["s", "sm", "m", "mnm"], "supports_distributed_fitness": true, "supports_remote": true, "fitness_direction": "min"},
+      "category": "NCA"
+    },
+    {
+      "id": "NCA-GA",
+      "name": "NCAGAAlgorithm",
+      "aliases": ["NCAGAAlgorithm"],
+      "entry": "gapa.algorithms:NCAGAAlgorithm",
+      "init_kwargs": {"pop_size": 20, "crossover_rate": 0.7, "mutate_rate": 0.3},
+      "capabilities": {"supported_modes": ["s", "sm", "m", "mnm"], "supports_distributed_fitness": true, "supports_remote": true, "fitness_direction": "max"},
+      "category": "NCA"
+    },
+    {
+      "id": "LPA-EDA",
+      "name": "LPAEDAAlgorithm",
+      "aliases": ["LPAEDAAlgorithm"],
+      "entry": "gapa.algorithms:LPAEDAAlgorithm",
+      "init_kwargs": {"pop_size": 40, "mutate_rate": 0.1},
+      "capabilities": {"supported_modes": ["s", "sm", "m", "mnm"], "supports_distributed_fitness": true, "supports_remote": true, "fitness_direction": "max"},
+      "category": "LPA"
+    },
+    {
+      "id": "LPA-GA",
+      "name": "LPAGAAlgorithm",
+      "aliases": ["LPAGAAlgorithm"],
+      "entry": "gapa.algorithms:LPAGAAlgorithm",
+      "init_kwargs": {"pop_size": 40, "crossover_rate": 0.7, "mutate_rate": 0.1},
+      "capabilities": {"supported_modes": ["s", "sm", "m", "mnm"], "supports_distributed_fitness": true, "supports_remote": true, "fitness_direction": "max"},
+      "category": "LPA"
     }
   ]
 }
