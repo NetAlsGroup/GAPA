@@ -217,7 +217,7 @@ def _resolve_selected(payload: Dict[str, Any]) -> Dict[str, Any]:
 
         # 1) StrategyPlan as primary selector for M/SM.
         try:
-            from autoadapt import StrategyPlan as _StrategyPlan  # type: ignore
+            from gapa.autoadapt import StrategyPlan as _StrategyPlan  # type: ignore
         except Exception:
             _StrategyPlan = None
         if use_strategy_plan and _StrategyPlan is not None:
@@ -778,7 +778,7 @@ def api_resource_lock_status() -> Dict[str, Any]:
 def api_strategy_plan(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Compute StrategyPlan on this server (static profiling)."""
     try:
-        from autoadapt import StrategyPlan as _StrategyPlan  # type: ignore
+        from gapa.autoadapt import StrategyPlan as _StrategyPlan  # type: ignore
     except Exception:
         _StrategyPlan = None
     if _StrategyPlan is None:
@@ -831,7 +831,7 @@ def api_strategy_plan_progress(progress_id: str) -> Dict[str, Any]:
 def api_strategy_compare(payload: Dict[str, Any]) -> Dict[str, Any]:
     """Return candidate plan comparison for UI explanation."""
     try:
-        from autoadapt import StrategyCompare as _StrategyCompare  # type: ignore
+        from gapa.autoadapt import StrategyCompare as _StrategyCompare  # type: ignore
     except Exception:
         _StrategyCompare = None
     if _StrategyCompare is None:

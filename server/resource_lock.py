@@ -261,7 +261,7 @@ class ResourceLockManager:
             except Exception:
                 pass
         try:
-            from autoadapt import StrategyPlan  # type: ignore
+            from gapa.autoadapt import StrategyPlan  # type: ignore
         except Exception:
             StrategyPlan = None
         if StrategyPlan is None:

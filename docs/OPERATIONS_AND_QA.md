@@ -14,24 +14,26 @@ Docs hub:
   - `python examples/run_perf_baseline.py --profile small --source live --live-samples 48`
 - Generate release-grade baseline with real workload sample:
   - `python examples/run_perf_baseline.py --profile release_small --source real --real-dataset ForestFire_n500 --real-generations 1 --real-pop-size 12 --real-runs 2`
-- Re-run current metrics and compare with gate thresholds:
-  - `python tests/perf_regression_gate.py --baseline <baseline.json> --current <current.json> --output <gate.json>`
+- Compare the generated baselines with your own release thresholds in your local validation workflow.
 
-Gate checks include mode-set consistency, throughput drop, latency increase, recovery latency increase, and remote failure rate delta for `S` / `SM` / `M` / `MNM`.
+Public documentation keeps the baseline generation path. Internal regression gates, private release thresholds, and governance automation are maintained outside the open-source workflow.
 
 ## Soak and Chaos Stability
 
-- Run deterministic soak and chaos harness:
-  - `python tests/soak_chaos_stability.py --iterations 80 --output .multi-agents/qa/qa-soak-and-chaos-stability-hardening-iteration-14.json`
-- Keep release gate:
-  - `python .multi-agents/scripts/run_cross_platform_mode_gate.py`
+- For public validation, use the maintained API and algorithm examples as the stable smoke path:
+  - `python examples/api/workflow.py`
+  - `python examples/algorithms/CND/sixdst.py`
+
+Long-run soak, chaos, and private release gates remain part of the internal delivery workflow and are not required for open-source usage.
 
 ## MNM Communication Validation
 
-- Generate before and after communication report:
-  - `python tests/mnm_comm_iteration16_report.py --output .multi-agents/qa/mnm-communication-optimization-iteration-16.json`
-- QA template result:
-  - `.multi-agents/qa/qa-mnm-communication-algorithm-optimization-iteration-16.json`
+For MNM validation in the public workflow, start from the local resource view and then move to the documented distributed setup:
+
+- `python examples/api/resource_manager.py`
+- `python server_agent.py`
+
+Release-grade MNM communication benchmarking and QA packaging remain internal.
 
 ## Release Candidate Package
 
@@ -42,5 +44,10 @@ Gate checks include mode-set consistency, throughput drop, latency increase, rec
 
 ## Onboarding Consistency Gate
 
-- Validate the maintained beginner path:
-  - `python scripts/validate_onboarding_consistency.py`
+The maintained beginner path is now defined by:
+
+- `README.md`
+- `examples/api/`
+- `examples/algorithms/`
+
+Internal onboarding consistency gates are no longer part of the public repository workflow.

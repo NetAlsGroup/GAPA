@@ -11,7 +11,7 @@ from datetime import datetime
 
 from flask import Flask, jsonify, request, send_from_directory
 
-from autoadapt import StrategyPlan, DistributedStrategyPlan
+from gapa.autoadapt import StrategyPlan, DistributedStrategyPlan
 
 from server import (
     STATIC_ROOT,
@@ -576,7 +576,7 @@ def api_strategy_compare():
             )
 
         # Local fallback
-        from autoadapt import StrategyCompare
+        from gapa.autoadapt import StrategyCompare
 
         snap = current_resource_snapshot()
         return jsonify(
@@ -727,7 +727,7 @@ def api_distributed_strategy_plan():
             )
             if p_resp.ok:
                 try:
-                    from autoadapt.api.schemas import Plan
+                    from gapa.autoadapt.api.schemas import Plan
 
                     pdata = p_resp.json()
                     if isinstance(pdata, dict) and "backend" in pdata:

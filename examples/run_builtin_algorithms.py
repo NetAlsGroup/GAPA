@@ -347,7 +347,7 @@ def _pick_plan(args) -> Optional[Dict[str, Any]]:
             raise RuntimeError(f"invalid remote strategy_plan response: {plan}")
         return plan
 
-    from autoadapt import StrategyPlan  # type: ignore
+    from gapa.autoadapt import StrategyPlan  # type: ignore
     from server.agent_monitor import resources_payload  # type: ignore
 
     plan_obj = StrategyPlan(

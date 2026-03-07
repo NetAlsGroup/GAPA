@@ -1,8 +1,11 @@
 # Dataset file dont need to upload
 /[Dd]ataset/
+/autoadapt/
+/old_expamples/
 # Pycharm file dont need to upload
 /.idea/
 __pycache__/
+*.pyc
 /.DS_Store
 /.gitignore
 /.gitattributes
@@ -24,3 +27,4 @@ __pycache__/
 /.multi-agents
 
 /tests/
+/scripts/

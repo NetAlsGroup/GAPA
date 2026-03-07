@@ -14,24 +14,24 @@
   - `python examples/run_perf_baseline.py --profile small --source live --live-samples 48`
 - 生成发布级基线（真实 workload 采样）：
   - `python examples/run_perf_baseline.py --profile release_small --source real --real-dataset ForestFire_n500 --real-generations 1 --real-pop-size 12 --real-runs 2`
-- 重新采集当前指标并执行门禁对比：
-  - `python tests/perf_regression_gate.py --baseline <baseline.json> --current <current.json> --output <gate.json>`
-
-门禁覆盖 `S` / `SM` / `M` / `MNM` 的 mode 集合一致性、吞吐下降、时延上升、恢复时延上升和远程失败率漂移。
+- 基线生成链路保留为公开工作流；回归阈值、内部门禁和治理自动化留在内部交付流程中。
 
 ## 长稳与混沌稳定性
 
-- 执行确定性 soak + chaos 验证：
-  - `python tests/soak_chaos_stability.py --iterations 80 --output .multi-agents/qa/qa-soak-and-chaos-stability-hardening-iteration-14.json`
-- 发布前继续执行跨平台 P0 门禁：
-  - `python .multi-agents/scripts/run_cross_platform_mode_gate.py`
+- 公开验证路径建议使用当前维护的 API 与算法样例：
+  - `python examples/api/workflow.py`
+  - `python examples/algorithms/CND/sixdst.py`
+
+长稳、chaos 和发布级门禁属于内部交付流程，不再要求开源用户执行。
 
 ## MNM 通信验证
 
-- 生成通信前后对比报告：
-  - `python tests/mnm_comm_iteration16_report.py --output .multi-agents/qa/mnm-communication-optimization-iteration-16.json`
-- QA 模板结果：
-  - `.multi-agents/qa/qa-mnm-communication-algorithm-optimization-iteration-16.json`
+公开工作流中的 MNM 验证建议从资源视图和分布式启动入口开始：
+
+- `python examples/api/resource_manager.py`
+- `python server_agent.py`
+
+发布级 MNM 通信压测和 QA 打包保留在内部流程中。
 
 ## 发布候选包
 
@@ -42,5 +42,10 @@
 
 ## Onboarding 一致性门禁
 
-- 校验当前维护的用户主路径：
-  - `python scripts/validate_onboarding_consistency.py`
+当前维护的公开用户主路径由以下内容组成：
+
+- `README.zh-CN.md`
+- `examples/api/`
+- `examples/algorithms/`
+
+内部 onboarding 一致性门禁不再作为公开仓库工作流的一部分。
