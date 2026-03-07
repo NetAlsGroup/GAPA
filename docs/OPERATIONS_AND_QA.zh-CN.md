@@ -8,13 +8,12 @@
 
 ## 性能基线与回归门禁
 
-- 生成性能基线（synthetic）：
-  - `python examples/run_perf_baseline.py --profile small --source synthetic`
-- 基于最小真实运行链路生成 live 基线：
-  - `python examples/run_perf_baseline.py --profile small --source live --live-samples 48`
-- 生成发布级基线（真实 workload 采样）：
-  - `python examples/run_perf_baseline.py --profile release_small --source real --real-dataset ForestFire_n500 --real-generations 1 --real-pop-size 12 --real-runs 2`
-- 基线生成链路保留为公开工作流；回归阈值、内部门禁和治理自动化留在内部交付流程中。
+- 公开工作流中的最小验证路径保持为：
+  - `python examples/api/workflow.py`
+  - `python examples/algorithms/CND/sixdst.py`
+- 如果你维护自己的性能基线，请在本地验证流程中与私有发布阈值进行对比。
+
+回归阈值、内部门禁和治理自动化留在内部交付流程中。
 
 ## 长稳与混沌稳定性
 

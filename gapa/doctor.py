@@ -98,7 +98,7 @@ def explain_mode_resolution(requested_mode: str, env: Dict[str, Any]) -> Dict[st
             "degraded": False,
             "runnable": False,
             "reason": "MNM requires live remote agents and is not self-verifiable with the built-in local smoke run",
-            "tip": "Use `python examples/run_sixdst.py --mode mnm ...` after remote setup.",
+            "tip": "Use `app.py`, `server_agent.py`, and `ResourceManager` after remote setup.",
         }
 
     if mode == "s":

@@ -1,7 +1,7 @@
 # Promotion Candidates (Iteration 15)
 
 ## Candidate 1: Release Benchmark Tri-Source Pattern
-- Source: `examples/run_perf_baseline.py` (`synthetic/live/real`)
+- Source: legacy benchmark workflow (`old_examples/run_perf_baseline.py`, `synthetic/live/real`)
 - Why promote: standardizes release evidence collection with same gate schema.
 - Target: `Code/.multi-agents` benchmark skill recipes.
 

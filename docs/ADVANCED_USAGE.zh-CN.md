@@ -1,32 +1,19 @@
 # 进阶使用
 
-这个文档承接 README 中不适合放在首页新手主路径里的内容，包括脚本入口、服务启动和运行时配置。
+这个文档承接 README 中不适合放在首页新手主路径里的内容，包括服务启动、远程运行时和进阶集成说明。
 
 文档导航：
 
 - [README.zh-CN.md](README.zh-CN.md)
 
-## 脚本入口
+## 公开入口
 
-核心示例位于 `examples/`：
+当前维护的公开示例入口只有两层：
 
-| 文件 | 用途 |
-|---|---|
-| `examples/run_sixdst.py` | `s` / `sm` / `m` / `mnm` 端到端运行 |
-| `examples/resource_scheduler.py` | 资源查看、锁定与策略规划 |
-| `examples/run_lock_keepalive.py` | 锁续期 / 释放 keepalive |
-| `examples/run_analysis_queue.py` | 队列化远程调度 |
-| `examples/run_report_export.py` | 监控导出与结果汇总 |
-| `examples/run_trends.py` | 运行趋势聚合 |
-| `examples/sixdst_custom.py` | 自定义算法封装示例 |
+- `examples/api/`
+- `examples/algorithms/`
 
-示例命令：
-
-```bash
-python examples/run_sixdst.py --dataset ForestFire_n500 --mode s
-python examples/run_sixdst.py --dataset ForestFire_n500 --mode m --server 6 --use-strategy-plan
-python examples/run_sixdst.py --dataset ForestFire_n500 --mode mnm --servers "Server 6"
-```
+历史脚本式参考保留在 `old_examples/`，仅作兼容与留档用途。
 
 ## 服务启动
 
@@ -44,7 +31,7 @@ uvicorn server_agent:app --host 0.0.0.0 --port 7777
 
 ## 运行时配置
 
-- `servers.json`：远程服务器清单与端点
+- `.env` / `.env.example`：服务地址、远程端点、资源筛选条件
 - `algorithms.json`：通用/自定义算法注册入口
 
 常用环境变量：
@@ -64,7 +51,7 @@ uvicorn server_agent:app --host 0.0.0.0 --port 7777
 
 推荐流程：
 
-1. 在 `examples/` 或你自己的包中实现算法封装。
+1. 在你自己的包中实现算法封装，或从 `examples/api/algorithm.py` 起步。
 2. 在 `algorithms.json` 中登记 `entry`、`init_kwargs` 和 `capabilities`。
-3. 通过 `Workflow` 或示例脚本发起运行。
+3. 通过 `Workflow` 发起运行。
 4. 如果要走远程或 MNM，确保本地 `app.py` 与远端 `server_agent.py` 都能导入对应入口。

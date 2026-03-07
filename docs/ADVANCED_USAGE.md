@@ -1,32 +1,19 @@
 # Advanced Usage
 
-This page collects script-first, service, and advanced runtime guidance that is intentionally kept out of the beginner onboarding path.
+This page collects service, remote runtime, and advanced integration guidance that is intentionally kept out of the beginner onboarding path.
 
 Docs hub:
 
 - [README.md](README.md)
 
-## Script Entry Points
+## Public Entry Points
 
-Core examples live under `examples/`:
+The maintained public example surface is:
 
-| File | Purpose |
-|---|---|
-| `examples/run_sixdst.py` | end-to-end execution in `s` / `sm` / `m` / `mnm` |
-| `examples/resource_scheduler.py` | resource listing, lock, and strategy planning |
-| `examples/run_lock_keepalive.py` | lock / renew / release keepalive flow |
-| `examples/run_analysis_queue.py` | queue-based remote scheduling |
-| `examples/run_report_export.py` | monitor export and reporting |
-| `examples/run_trends.py` | run trend aggregation |
-| `examples/sixdst_custom.py` | example custom algorithm wrapper |
+- `examples/api/`
+- `examples/algorithms/`
 
-Example commands:
-
-```bash
-python examples/run_sixdst.py --dataset ForestFire_n500 --mode s
-python examples/run_sixdst.py --dataset ForestFire_n500 --mode m --server 6 --use-strategy-plan
-python examples/run_sixdst.py --dataset ForestFire_n500 --mode mnm --servers "Server 6"
-```
+Legacy script-first references are preserved under `old_examples/` for compatibility only.
 
 ## Services
 
@@ -44,7 +31,7 @@ uvicorn server_agent:app --host 0.0.0.0 --port 7777
 
 ## Runtime Config
 
-- `servers.json`: remote server inventory and endpoints
+- `.env` / `.env.example`: service host, remote endpoints, and resource filters
 - `algorithms.json`: registry for generic and user-defined algorithms
 
 Useful environment variables:
@@ -64,7 +51,7 @@ For user-defined or generic algorithms, use `algorithms.json` as the registratio
 
 Recommended flow:
 
-1. Implement your wrapper under `examples/` or your own package.
+1. Implement your wrapper in your own package or start from `examples/api/algorithm.py`.
 2. Register the algorithm in `algorithms.json` with `entry`, `init_kwargs`, and `capabilities`.
-3. Start runs via `Workflow` or example scripts.
+3. Start runs via `Workflow`.
 4. For remote or MNM execution, make sure both local `app.py` and remote `server_agent.py` can import the registered entry.

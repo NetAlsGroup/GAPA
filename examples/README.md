@@ -1,6 +1,6 @@
 # Examples
 
-Use the examples in this order.
+Public examples are intentionally kept minimal. Use them in this order.
 
 ## 1. Core API
 
@@ -28,27 +28,11 @@ Use the examples in this order.
 - `algorithms/LPA/lpa_eda.py`
 - `algorithms/LPA/lpa_ga.py`
 
-## 3. Advanced and compatibility scripts
+## 3. Advanced usage
 
-- `quickstart_local.py`
-  - closest script equivalent to the package demo path
-- `custom_algorithm_minimal.py`
-  - existing minimal custom algorithm path
-- `advanced/remote_single_server.py`
-  - remote `s` / `sm` / `m`
-- `advanced/mnm_multi_node.py`
-  - heterogeneous MNM
-- `run_sixdst.py`
-  - compatibility execution entry
-- `resource_scheduler.py`
-  - resource query and lock management
-- `run_analysis_queue.py`
-  - queue-aware remote submit and polling
-- `run_lock_keepalive.py`
-  - lock renew / release keepalive flow
-- `run_report_export.py`
-  - monitor export and reporting
-- `run_trends.py`
-  - trend aggregation for `results/run_reports.jsonl`
-- `run_perf_baseline.py`
-  - synthetic / live / real performance baseline generation
+Advanced service, remote runtime, and compatibility guidance has been moved out of the public examples surface.
+
+- advanced docs: `docs/ADVANCED_USAGE.md`
+- operations and QA: `docs/OPERATIONS_AND_QA.md`
+- remote entry points: `app.py`, `server_agent.py`, `server/`
+- legacy script-first references: `old_examples/`
