@@ -136,10 +136,168 @@ class ResourceManager:
         self.api_base = api_base
         self.timeout_s = float(timeout_s)
 
+    def _use_proxy(self) -> bool:
+        return bool(self.api_base)
+
     def _resolve_api_base(self) -> str:
         if self.api_base:
             return self.api_base.rstrip("/")
         return _resolve_default_api_base()
+
+    def _local_snapshots(self) -> Dict[str, Any]:
+        from server.resource_service import get_all_resources
+
+        return get_all_resources(None)
+
+    def _local_server_entries(self) -> List[Dict[str, Any]]:
+        from server.resource_service import load_server_list
+
+        return load_server_list()
+
+    def _local_strategy_plan(
+        self,
+        *,
+        server_id: Optional[str] = None,
+        algorithm: Optional[str] = None,
+        dataset: Optional[str] = None,
+        mode: Optional[str] = None,
+        warmup: int = 0,
+        objective: str = "time",
+        multi_gpu: bool = True,
+        gpu_busy_threshold: Optional[float] = None,
+        min_gpu_free_mb: Optional[int] = None,
+        tpe_trials: Optional[int] = None,
+        tpe_warmup: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        from gapa.autoadapt import StrategyPlan
+
+        target_server = str(server_id or "local")
+        if target_server != "local":
+            payload: Dict[str, Any] = {
+                "algorithm": algorithm,
+                "dataset": dataset,
+                "mode": mode,
+                "warmup": int(warmup),
+                "objective": objective,
+                "multi_gpu": bool(multi_gpu),
+                "gpu_busy_threshold": gpu_busy_threshold,
+                "min_gpu_free_mb": min_gpu_free_mb,
+                "tpe_trials": tpe_trials,
+                "tpe_warmup": tpe_warmup,
+            }
+            return self._post_server_direct(target_server, "/api/strategy_plan", payload)
+
+        snap = self._local_snapshots().get("local")
+        if not isinstance(snap, dict):
+            return {"error": "local resource snapshot unavailable", "detail": snap}
+        plan = StrategyPlan(
+            fitness=None,
+            warmup=warmup,
+            objective=objective,
+            multi_gpu=multi_gpu,
+            resource_snapshot=snap,
+            gpu_busy_threshold=gpu_busy_threshold,
+            min_gpu_free_mb=min_gpu_free_mb,
+            tpe_trials=tpe_trials,
+            tpe_warmup=tpe_warmup,
+        )
+        out = plan.to_dict() if hasattr(plan, "to_dict") else dict(plan)
+        if algorithm:
+            out["algorithm"] = algorithm
+        if dataset:
+            out["dataset"] = dataset
+        if mode:
+            out["mode"] = mode
+        out["server_id"] = "local"
+        return out
+
+    def _local_distributed_strategy_plan(
+        self,
+        *,
+        server_ids: Optional[List[str]] = None,
+        servers: Optional[List[str]] = None,
+        algorithm: Optional[str] = None,
+        dataset: Optional[str] = None,
+        mode: Optional[str] = None,
+        per_server_gpus: int = 1,
+        min_gpu_free_mb: int = 1024,
+        gpu_busy_threshold: float = 85.0,
+    ) -> Dict[str, Any]:
+        from gapa.autoadapt import DistributedStrategyPlan
+
+        requested = list(server_ids or servers or [])
+        snapshots = self._local_snapshots()
+        if not requested:
+            requested = list(snapshots.keys())
+
+        server_resources: Dict[str, Any] = {}
+        server_plans: Dict[str, Any] = {}
+        for sid in requested:
+            sid = str(sid)
+            snap = snapshots.get(sid)
+            if not isinstance(snap, dict):
+                server_resources[sid] = {"error": "snapshot unavailable"}
+                continue
+            server_resources[sid] = snap
+            if sid == "local":
+                local_plan = self._local_strategy_plan(
+                    server_id="local",
+                    algorithm=algorithm,
+                    dataset=dataset,
+                    mode=mode,
+                    warmup=0,
+                    objective="time",
+                    multi_gpu=True,
+                    gpu_busy_threshold=gpu_busy_threshold,
+                    min_gpu_free_mb=min_gpu_free_mb,
+                )
+                if isinstance(local_plan, dict) and "backend" in local_plan:
+                    server_plans[sid] = local_plan
+                continue
+            remote_plan = self._post_server_direct(
+                sid,
+                "/api/strategy_plan",
+                {
+                    "algorithm": algorithm,
+                    "dataset": dataset,
+                    "mode": mode,
+                    "warmup": 0,
+                    "objective": "time",
+                    "multi_gpu": True,
+                    "gpu_busy_threshold": gpu_busy_threshold,
+                    "min_gpu_free_mb": min_gpu_free_mb,
+                },
+            )
+            if isinstance(remote_plan, dict) and "backend" in remote_plan:
+                server_plans[sid] = remote_plan
+
+        def _plan_obj(raw: Any) -> Any:
+            if not isinstance(raw, dict) or "backend" not in raw:
+                return None
+            try:
+                from gapa.autoadapt.api.schemas import Plan
+
+                keys = getattr(Plan, "__dataclass_fields__", {}).keys()
+                return Plan(**{k: raw.get(k) for k in keys})
+            except Exception:
+                return None
+
+        plan = DistributedStrategyPlan(
+            server_resources=server_resources,
+            server_plans={sid: _plan_obj(raw) for sid, raw in server_plans.items()},
+            per_server_gpus=per_server_gpus,
+            min_gpu_free_mb=min_gpu_free_mb,
+            gpu_busy_threshold=gpu_busy_threshold,
+        )
+        plan["server_resources"] = server_resources
+        plan["server_plans"] = server_plans
+        if algorithm:
+            plan["algorithm"] = algorithm
+        if dataset:
+            plan["dataset"] = dataset
+        if mode:
+            plan["mode"] = mode
+        return plan
 
     def _http_get_json(self, url: str) -> Dict[str, Any]:
         if requests is None:
@@ -246,6 +404,27 @@ class ResourceManager:
         return data if isinstance(data, dict) else {"error": "invalid snapshots"}
 
     def server(self) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+        if not self._use_proxy():
+            servers = self._local_server_entries()
+            snapshots = self._local_snapshots()
+            results: List[Dict[str, Any]] = []
+            for item in servers:
+                if not isinstance(item, dict):
+                    continue
+                sid = item.get("id") or item.get("name") or item.get("host")
+                snap = snapshots.get(sid) if isinstance(snapshots, dict) else None
+                online = isinstance(snap, dict) and "error" not in snap
+                base_url = item.get("base_url")
+                results.append(
+                    {
+                        "id": sid,
+                        "name": item.get("name") or sid,
+                        "base_url": base_url,
+                        "status": "Activate" if online else "Deactivate",
+                        "online": bool(online),
+                    }
+                )
+            return results
         base = self._resolve_api_base()
         servers = self._http_get_json(f"{base}/api/servers")
         if not isinstance(servers, list):
@@ -309,6 +488,12 @@ class ResourceManager:
         return {"error": "server not found in snapshots", "server_id": target_id}
 
     def resources(self, all_servers: bool = True) -> Dict[str, Any]:
+        if not self._use_proxy():
+            snapshots = self._local_snapshots()
+            if all_servers:
+                return snapshots
+            local = snapshots.get("local")
+            return local if isinstance(local, dict) else {"error": "local resource snapshot unavailable", "detail": local}
         base = self._resolve_api_base()
         if all_servers:
             data = self._http_get_json(f"{base}/api/v1/resources/all")
@@ -386,6 +571,20 @@ class ResourceManager:
         tpe_trials: Optional[int] = None,
         tpe_warmup: Optional[int] = None,
     ) -> Dict[str, Any]:
+        if not self._use_proxy():
+            return self._local_strategy_plan(
+                server_id=server_id,
+                algorithm=algorithm,
+                dataset=dataset,
+                mode=mode,
+                warmup=warmup,
+                objective=objective,
+                multi_gpu=multi_gpu,
+                gpu_busy_threshold=gpu_busy_threshold,
+                min_gpu_free_mb=min_gpu_free_mb,
+                tpe_trials=tpe_trials,
+                tpe_warmup=tpe_warmup,
+            )
         base = self._resolve_api_base()
         payload: Dict[str, Any] = {
             "server_id": server_id or "local",
@@ -420,6 +619,17 @@ class ResourceManager:
         min_gpu_free_mb: int = 1024,
         gpu_busy_threshold: float = 85.0,
     ) -> Dict[str, Any]:
+        if not self._use_proxy():
+            return self._local_distributed_strategy_plan(
+                server_ids=server_ids,
+                servers=servers,
+                algorithm=algorithm,
+                dataset=dataset,
+                mode=mode,
+                per_server_gpus=per_server_gpus,
+                min_gpu_free_mb=min_gpu_free_mb,
+                gpu_busy_threshold=gpu_busy_threshold,
+            )
         base = self._resolve_api_base()
         payload: Dict[str, Any] = {
             "server_ids": server_ids or servers or [],
