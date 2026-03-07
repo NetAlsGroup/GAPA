@@ -71,8 +71,8 @@ def _match_server(server: Dict[str, Any], query: str) -> bool:
     return False
 
 
-def select_online_server(monitor: Any, server_query: str) -> Dict[str, Any]:
-    servers = monitor.server()
+def select_online_server(resource_manager: Any, server_query: str) -> Dict[str, Any]:
+    servers = resource_manager.server()
     if isinstance(servers, dict) and servers.get("error"):
         return _err("SERVER_LIST_ERROR", "server list error", detail=servers)
     if not isinstance(servers, list):
@@ -174,7 +174,7 @@ def poll_remote_status(
 
 
 def run_remote_task(
-    monitor: Any,
+    resource_manager: Any,
     server_query: str,
     *,
     algorithm: str,
@@ -187,7 +187,7 @@ def run_remote_task(
     max_polls: int = 600,
     interval_s: float = 1.0,
 ) -> Dict[str, Any]:
-    server = select_online_server(monitor, server_query)
+    server = select_online_server(resource_manager, server_query)
     if server.get("error"):
         return server
     started = start_remote_run(
