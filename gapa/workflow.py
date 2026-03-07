@@ -931,6 +931,7 @@ class Workflow:
         self.servers = servers or []
         self.remote_server = remote_server
         self.remote_use_strategy_plan = remote_use_strategy_plan
+        self._server_url_explicit = bool(server_url)
         self.server_url = (server_url or _resolve_default_api_base()).rstrip("/")
 
         # Resolve canonical algorithm id + capability contract (if registered)
@@ -1257,9 +1258,11 @@ class Workflow:
         try:
             if self.remote_server:
                 from gapa.remote_runner import run_remote_task
+                from gapa.resource_manager import ResourceManager
                 dataset_name = getattr(self.data_loader, "name", None) or getattr(self.data_loader, "dataset", None) or ""
+                resource_manager = ResourceManager(api_base=self.server_url if self._server_url_explicit else None)
                 result = run_remote_task(
-                    self.monitor,
+                    resource_manager,
                     self.remote_server,
                     algorithm=self.algorithm_id,
                     dataset=dataset_name,
@@ -1271,6 +1274,11 @@ class Workflow:
                 )
                 if isinstance(result, dict) and result.get("error"):
                     raise RuntimeError(f"remote run failed: {result}")
+                best = result.get("result", {}).get("best_score") if isinstance(result.get("result"), dict) else None
+                if isinstance(best, (int, float)):
+                    self.monitor._best_fitness = float(best)
+                if isinstance(result.get("result"), dict):
+                    self.monitor._remote_result = result["result"]
                 run_ctx["ended_at"] = datetime.utcnow().isoformat() + "Z"
                 report_meta = self._emit_run_reports(run_ctx)
                 run_ctx["reports"] = report_meta

@@ -114,7 +114,9 @@ def start_remote_run(
     if getattr(requests, "post", None) is None:
         return _err("REQUESTS_UNAVAILABLE", "requests not available", url=url)
     try:
-        resp = requests.post(url, json=payload, timeout=timeout_s)
+        session = requests.Session()
+        session.trust_env = False
+        resp = session.post(url, json=payload, timeout=timeout_s)
     except Exception as exc:
         return _err("HTTP_REQUEST_FAILED", str(exc), url=url)
     if not resp.ok:
@@ -145,7 +147,9 @@ def poll_remote_status(
     last = {"state": "unknown"}
     for _ in range(max_polls):
         try:
-            resp = requests.get(url, timeout=10)
+            session = requests.Session()
+            session.trust_env = False
+            resp = session.get(url, timeout=10)
         except Exception as exc:
             return _err("HTTP_REQUEST_FAILED", str(exc), url=url)
         if not resp.ok:
@@ -231,16 +235,6 @@ def run_remote_task(
                     series = curves.get(primary)
                     if isinstance(series, list) and series:
                         best = series[-1]
-    if best is not None and hasattr(monitor, "_best_fitness"):
-        try:
-            monitor._best_fitness = float(best)
-        except Exception:
-            pass
-    if isinstance(final.get("result"), dict) and hasattr(monitor, "_remote_result"):
-        try:
-            monitor._remote_result = final["result"]
-        except Exception:
-            pass
     if isinstance(final, dict) and not final.get("error"):
         final.setdefault(
             "run_meta",

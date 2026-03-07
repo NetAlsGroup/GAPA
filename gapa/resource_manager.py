@@ -132,7 +132,7 @@ def _resolve_default_api_base() -> str:
 class ResourceManager:
     """Independent public resource and remote-runtime access surface."""
 
-    def __init__(self, api_base: Optional[str] = None, timeout_s: float = 5.0):
+    def __init__(self, api_base: Optional[str] = None, timeout_s: float = 10.0):
         self.api_base = api_base
         self.timeout_s = float(timeout_s)
 
@@ -168,6 +168,7 @@ class ResourceManager:
         min_gpu_free_mb: Optional[int] = None,
         tpe_trials: Optional[int] = None,
         tpe_warmup: Optional[int] = None,
+        timeout_s: Optional[float] = None,
     ) -> Dict[str, Any]:
         from gapa.autoadapt import StrategyPlan
 
@@ -185,7 +186,12 @@ class ResourceManager:
                 "tpe_trials": tpe_trials,
                 "tpe_warmup": tpe_warmup,
             }
-            return self._post_server_direct(target_server, "/api/strategy_plan", payload)
+            return self._post_server_direct(
+                target_server,
+                "/api/strategy_plan",
+                payload,
+                timeout_s=max(float(timeout_s or self.timeout_s), 30.0),
+            )
 
         snap = self._local_snapshots().get("local")
         if not isinstance(snap, dict):
@@ -222,6 +228,7 @@ class ResourceManager:
         per_server_gpus: int = 1,
         min_gpu_free_mb: int = 1024,
         gpu_busy_threshold: float = 85.0,
+        timeout_s: Optional[float] = None,
     ) -> Dict[str, Any]:
         from gapa.autoadapt import DistributedStrategyPlan
 
@@ -267,6 +274,7 @@ class ResourceManager:
                     "gpu_busy_threshold": gpu_busy_threshold,
                     "min_gpu_free_mb": min_gpu_free_mb,
                 },
+                timeout_s=max(float(timeout_s or self.timeout_s), 30.0),
             )
             if isinstance(remote_plan, dict) and "backend" in remote_plan:
                 server_plans[sid] = remote_plan
@@ -303,7 +311,9 @@ class ResourceManager:
         if requests is None:
             return {"error": "requests not available"}
         try:
-            resp = requests.get(url, timeout=self.timeout_s)
+            session = requests.Session()
+            session.trust_env = False
+            resp = session.get(url, timeout=self.timeout_s)
         except Exception as exc:
             return {"error": str(exc)}
         if not getattr(resp, "ok", False):
@@ -324,13 +334,14 @@ class ResourceManager:
         target = f"{url}?{query}" if query else url
         return self._http_get_json(target)
 
-    def _http_post_json(self, url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _http_post_json(self, url: str, payload: Dict[str, Any], timeout_s: Optional[float] = None) -> Dict[str, Any]:
         if requests is None:
             return {"error": "requests not available"}
         try:
             session = requests.Session()
             session.trust_env = False
-            resp = session.post(url, json=payload, timeout=(3.0, max(5.0, self.timeout_s)))
+            read_timeout = max(5.0, float(timeout_s if timeout_s is not None else self.timeout_s))
+            resp = session.post(url, json=payload, timeout=(3.0, read_timeout))
         except Exception as exc:
             return {"error": str(exc)}
         try:
@@ -341,7 +352,13 @@ class ResourceManager:
             return {"error": f"HTTP {resp.status_code}", "body": body}
         return body if isinstance(body, dict) else {"data": body}
 
-    def _post_server_direct(self, server_id: str, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def _post_server_direct(
+        self,
+        server_id: str,
+        endpoint: str,
+        payload: Dict[str, Any],
+        timeout_s: Optional[float] = None,
+    ) -> Dict[str, Any]:
         if requests is None:
             return {"error": "requests not available"}
         servers = self.server()
@@ -362,7 +379,8 @@ class ResourceManager:
         try:
             session = requests.Session()
             session.trust_env = False
-            resp = session.post(base_url + endpoint, json=payload, timeout=(3.0, max(5.0, self.timeout_s)))
+            read_timeout = max(5.0, float(timeout_s if timeout_s is not None else self.timeout_s))
+            resp = session.post(base_url + endpoint, json=payload, timeout=(3.0, read_timeout))
         except Exception as exc:
             return {"error": str(exc), "server_id": server_id, "url": base_url + endpoint}
         try:
@@ -460,6 +478,32 @@ class ResourceManager:
         return results
 
     def server_resource(self, server_id_or_name: str) -> Dict[str, Any]:
+        if not self._use_proxy():
+            servers = self.server()
+            if isinstance(servers, dict) and "error" in servers:
+                return servers
+            target_id = None
+            lookup = str(server_id_or_name or "")
+            for item in servers:
+                sid = item.get("id")
+                name = item.get("name")
+                if lookup == sid or lookup == name:
+                    target_id = sid
+                    break
+            if target_id is None:
+                for item in servers:
+                    sid = item.get("id")
+                    name = item.get("name")
+                    if name and name.lower() == lookup.lower():
+                        target_id = sid
+                        break
+            if not target_id:
+                return {"error": "server not found", "input": server_id_or_name}
+            snapshots = self._local_snapshots()
+            snap = snapshots.get(target_id) if isinstance(snapshots, dict) else None
+            if isinstance(snap, dict):
+                return snap
+            return {"error": "server not found in snapshots", "server_id": target_id}
         servers = self.server()
         if isinstance(servers, dict) and "error" in servers:
             return servers
@@ -570,6 +614,7 @@ class ResourceManager:
         min_gpu_free_mb: Optional[int] = None,
         tpe_trials: Optional[int] = None,
         tpe_warmup: Optional[int] = None,
+        timeout_s: Optional[float] = None,
     ) -> Dict[str, Any]:
         if not self._use_proxy():
             return self._local_strategy_plan(
@@ -584,6 +629,7 @@ class ResourceManager:
                 min_gpu_free_mb=min_gpu_free_mb,
                 tpe_trials=tpe_trials,
                 tpe_warmup=tpe_warmup,
+                timeout_s=timeout_s,
             )
         base = self._resolve_api_base()
         payload: Dict[str, Any] = {
@@ -606,7 +652,7 @@ class ResourceManager:
             payload["tpe_trials"] = int(tpe_trials)
         if tpe_warmup is not None:
             payload["tpe_warmup"] = int(tpe_warmup)
-        return self._http_post_json(f"{base}/api/strategy_plan", payload)
+        return self._http_post_json(f"{base}/api/strategy_plan", payload, timeout_s=timeout_s)
 
     def distributed_strategy_plan(
         self,
@@ -618,6 +664,7 @@ class ResourceManager:
         per_server_gpus: int = 1,
         min_gpu_free_mb: int = 1024,
         gpu_busy_threshold: float = 85.0,
+        timeout_s: Optional[float] = None,
     ) -> Dict[str, Any]:
         if not self._use_proxy():
             return self._local_distributed_strategy_plan(
@@ -629,6 +676,7 @@ class ResourceManager:
                 per_server_gpus=per_server_gpus,
                 min_gpu_free_mb=min_gpu_free_mb,
                 gpu_busy_threshold=gpu_busy_threshold,
+                timeout_s=timeout_s,
             )
         base = self._resolve_api_base()
         payload: Dict[str, Any] = {
@@ -643,7 +691,7 @@ class ResourceManager:
             payload["dataset"] = dataset
         if mode:
             payload["mode"] = mode
-        return self._http_post_json(f"{base}/api/distributed_strategy_plan", payload)
+        return self._http_post_json(f"{base}/api/distributed_strategy_plan", payload, timeout_s=timeout_s)
 
     def analysis_status(self, server_id: Optional[str] = None) -> Dict[str, Any]:
         base = self._resolve_api_base()

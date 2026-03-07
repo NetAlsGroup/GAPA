@@ -92,7 +92,13 @@ def get_server_agent_port() -> int:
 
 def get_results_dir(base_dir: Path | None = None) -> Path:
     root = base_dir or _project_root()
-    return Path(_setting("GAPA_RESULTS_DIR") or str(root / "results")).expanduser().resolve()
+    raw = _setting("GAPA_RESULTS_DIR")
+    if not raw:
+        return (root / "results").resolve()
+    path = Path(str(raw)).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    return path.resolve()
 
 
 def get_remote_servers() -> List[str]:

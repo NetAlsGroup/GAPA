@@ -30,7 +30,14 @@ These examples are source-tree examples. Run `pip install -e .` once before exec
 - `algorithms/LPA/lpa_eda.py`
 - `algorithms/LPA/lpa_ga.py`
 
-## 3. Advanced usage
+## 3. Remote API
+
+- `remote/resource_manager.py`
+  - inspect configured remote servers and request a remote strategy plan
+- `remote/workflow.py`
+  - run a minimal remote workflow through `Workflow`
+
+## 4. Advanced usage
 
 Advanced service, remote runtime, and compatibility guidance has been moved out of the public examples surface.
 
