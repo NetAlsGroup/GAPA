@@ -143,17 +143,17 @@ class NCA_GAController(BasicController):
                             )
                         except Exception:
                             pass
-                if self.mode == "mnm" and (generation % 30 == 0 or (generation + 1) == max_generation):
-                    t_total = time_mod.perf_counter() - t_gen_start
-                    comm = evaluator.comm_stats() if hasattr(evaluator, "comm_stats") else {}
-                    avg_ms = comm.get("avg_ms", 0.0)
-                    total_ms = comm.get("total_ms", 0.0)
-                    print(
-                        f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
-                        flush=True,
-                    )
-                pbar.set_postfix(Loss=max(fitness_list).item(), Acc=min(best_acc), AS_Rate=max(best_as_rate))
-                pbar.update(1)
+                    if self.mode == "mnm" and (generation % 30 == 0 or (generation + 1) == max_generation):
+                        t_total = time_mod.perf_counter() - t_gen_start
+                        comm = evaluator.comm_stats() if hasattr(evaluator, "comm_stats") else {}
+                        avg_ms = comm.get("avg_ms", 0.0)
+                        total_ms = comm.get("total_ms", 0.0)
+                        print(
+                            f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
+                            flush=True,
+                        )
+                    pbar.set_postfix(Loss=max(fitness_list).item(), Acc=min(best_acc), AS_Rate=max(best_as_rate))
+                    pbar.update(1)
             # Test
             top_index = best_acc.index(min(best_acc))
             print(f"Acc: {best_acc[top_index]}, AS_Rate: {best_as_rate[top_index]}")

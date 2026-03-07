@@ -189,17 +189,17 @@ class EDAController(BasicController):
                             )
                         except Exception:
                             pass
-                if self.mode == "mnm" and (generation % 50 == 0 or (generation + 1) == max_generation):
-                    t_total = time_mod.perf_counter() - t_gen_start
-                    comm = evaluator.comm_stats() if hasattr(evaluator, "comm_stats") else {}
-                    avg_ms = comm.get("avg_ms", 0.0)
-                    total_ms = comm.get("total_ms", 0.0)
-                    print(
-                        f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
-                        flush=True,
-                    )
-                pbar.set_postfix(fitness=max(fitness_list).item(), Q=min(best_Q), NMI=min(best_NMI))
-                pbar.update(1)
+                    if self.mode == "mnm" and (generation % 50 == 0 or (generation + 1) == max_generation):
+                        t_total = time_mod.perf_counter() - t_gen_start
+                        comm = evaluator.comm_stats() if hasattr(evaluator, "comm_stats") else {}
+                        avg_ms = comm.get("avg_ms", 0.0)
+                        total_ms = comm.get("total_ms", 0.0)
+                        print(
+                            f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
+                            flush=True,
+                        )
+                    pbar.set_postfix(fitness=max(fitness_list).item(), Q=min(best_Q), NMI=min(best_NMI))
+                    pbar.update(1)
             end = time()
             global_time = end - start
             top_index = best_Q.index(min(best_Q))

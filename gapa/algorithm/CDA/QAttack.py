@@ -219,17 +219,17 @@ class QAttackController(BasicController):
                             )
                         except Exception:
                             pass
-                if self.mode == "mnm" and (generation % 30 == 0 or (generation + 1) == max_generation):
-                    t_total = time_mod.perf_counter() - t_gen_start
-                    comm = evaluator.comm_stats() if hasattr(evaluator, "comm_stats") else {}
-                    avg_ms = comm.get("avg_ms", 0.0)
-                    total_ms = comm.get("total_ms", 0.0)
-                    print(
-                        f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
-                        flush=True,
-                    )
-                pbar.set_postfix(fitness=max(fitness_list).item(), Q=min(best_Q), NMI=min(best_NMI))
-                pbar.update(1)
+                    if self.mode == "mnm" and (generation % 30 == 0 or (generation + 1) == max_generation):
+                        t_total = time_mod.perf_counter() - t_gen_start
+                        comm = evaluator.comm_stats() if hasattr(evaluator, "comm_stats") else {}
+                        avg_ms = comm.get("avg_ms", 0.0)
+                        total_ms = comm.get("total_ms", 0.0)
+                        print(
+                            f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
+                            flush=True,
+                        )
+                    pbar.set_postfix(fitness=max(fitness_list).item(), Q=min(best_Q), NMI=min(best_NMI))
+                    pbar.update(1)
             top_index = best_Q.index(min(best_Q))
             print(f"Q after attack: {best_Q[top_index]}, NMI after attack: {best_NMI[top_index]}")
             self.save(self.dataset, best_genes[top_index], [best_Q[top_index], best_NMI[top_index], time_list[-1]], time_list, "QAttack", bestQ=best_Q, bestNMI=best_NMI)

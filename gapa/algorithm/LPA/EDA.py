@@ -441,17 +441,17 @@ class EDAController(BasicController):
                             )
                         except Exception:
                             pass
-                if self.mode == "mnm" and (generation % 10 == 0 or (generation + 1) == max_generation):
-                    t_total = time_mod.perf_counter() - t_gen_start
-                    comm = evaluator.comm_stats() if hasattr(evaluator, "comm_stats") else {}
-                    avg_ms = comm.get("avg_ms", 0.0)
-                    total_ms = comm.get("total_ms", 0.0)
-                    print(
-                        f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
-                        flush=True,
-                    )
-                pbar.set_postfix(fitness=max(fitness_list).item(), Pre=min(best_Pre), AUC=min(best_AUC))
-                pbar.update(1)
+                    if self.mode == "mnm" and (generation % 10 == 0 or (generation + 1) == max_generation):
+                        t_total = time_mod.perf_counter() - t_gen_start
+                        comm = evaluator.comm_stats() if hasattr(evaluator, "comm_stats") else {}
+                        avg_ms = comm.get("avg_ms", 0.0)
+                        total_ms = comm.get("total_ms", 0.0)
+                        print(
+                            f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
+                            flush=True,
+                        )
+                    pbar.set_postfix(fitness=max(fitness_list).item(), Pre=min(best_Pre), AUC=min(best_AUC))
+                    pbar.update(1)
 
             top_index = best_AUC.index(min(best_AUC))
             print(f"Best Pre: {best_Pre[top_index]}. Best AUC: {best_AUC[top_index]}.")
