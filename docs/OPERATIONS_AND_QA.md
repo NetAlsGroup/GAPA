@@ -1,9 +1,8 @@
 # Operations and QA
 
-This page contains performance, stability, and release-oriented procedures. It is intentionally separated from the beginner onboarding path.
+This document covers performance, stability, and release-oriented procedures.
 
 Docs hub:
-
 - [README.md](README.md)
 
 ## Performance Baseline and Regression Gate

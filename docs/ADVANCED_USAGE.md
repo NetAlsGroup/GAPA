@@ -1,9 +1,8 @@
 # Advanced Usage
 
-This page collects service, remote runtime, and advanced integration guidance that is intentionally kept out of the beginner onboarding path.
+This document introduces advanced API content, including service startup, remote runtime, and integration guidance.
 
 Docs hub:
-
 - [README.md](README.md)
 
 ## Public Entry Points

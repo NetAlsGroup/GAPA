@@ -33,17 +33,17 @@ It focuses on a unified user-facing workflow:
 - access resource planning through `ResourceManager`
 - extend behavior with custom `Algorithm` subclasses
 
-Parallel acceleration is built in. Web, service, and heterogeneous distributed execution stay available as advanced layers.
+The base service includes local parallel acceleration for genetic algorithms. Web, service, and heterogeneous distributed execution remain available as advanced services.
 
 ## Installation
 
-Recommended package install:
+Recommended package install (to be updated):
 
 ```bash
 pip install gapa
 ```
 
-If you want to run the repository examples, use an editable source install first:
+Install from source:
 
 ```bash
 git clone https://github.com/NetAlsGroup/GAPA.git
@@ -67,7 +67,7 @@ pip install "gapa[dev]"
 - `NCA`: node classification attack
 - `LPA`: link prediction attack
 
-## Minimal Example
+## Algorithm Example
 
 ```python
 from gapa import DataLoader, Monitor, Workflow
@@ -76,7 +76,13 @@ from gapa.algorithms import SixDSTAlgorithm
 data = DataLoader.load("Circuit")
 monitor = Monitor()
 algorithm = SixDSTAlgorithm(pop_size=16)
-workflow = Workflow(algorithm, data, monitor=monitor, mode="s", verbose=False)
+workflow = Workflow(
+    algorithm,
+    data,
+    monitor=monitor,
+    mode="s",
+    verbose=False,
+)
 workflow.run(steps=20)
 
 print(monitor.result())
@@ -92,13 +98,19 @@ from gapa.algorithms import SixDSTAlgorithm
 
 data = DataLoader.load("Circuit")
 monitor = Monitor()
-workflow = Workflow(SixDSTAlgorithm(pop_size=16), data, monitor=monitor, mode="s", verbose=False)
+workflow = Workflow(
+    SixDSTAlgorithm(pop_size=16),
+    data,
+    monitor=monitor,
+    mode="s",
+    verbose=False,
+)
 workflow.run(steps=5)
 
 print(monitor.result())
 ```
 
-Source checkout validation:
+Run with example scripts:
 
 ```bash
 python examples/api/workflow.py
@@ -116,7 +128,7 @@ More runnable examples:
 ## Core API
 
 - `DataLoader`: load a registered dataset with `DataLoader.load(name)`
-- `Workflow`: run, step, pause, resume, and reset algorithm execution
+- `Workflow`: run, single-step, pause, resume, and reset algorithm execution
 - `Monitor`: inspect `status()`, `result()`, `history()`, and `report()`
 - `ResourceManager`: query resources and request strategy plans
 - `Algorithm`: define custom algorithm objects that plug into `Workflow`
@@ -133,9 +145,7 @@ Minimal API examples:
 - [resource_manager.py](examples/api/resource_manager.py)
 - [algorithm.py](examples/api/algorithm.py)
 
-## Advanced Capabilities
-
-Advanced layers stay available, but they are not the main onboarding path.
+## Advanced Usage
 
 - docs hub: [docs/README.md](docs/README.md)
 - advanced usage: [docs/ADVANCED_USAGE.md](docs/ADVANCED_USAGE.md)
