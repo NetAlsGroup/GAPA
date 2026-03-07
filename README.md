@@ -37,13 +37,13 @@ Parallel acceleration is built in. Web, service, and heterogeneous distributed e
 
 ## Installation
 
-Recommended install:
+Recommended package install:
 
 ```bash
 pip install gapa
 ```
 
-Editable source install:
+If you want to run the repository examples, use an editable source install first:
 
 ```bash
 git clone https://github.com/NetAlsGroup/GAPA.git
@@ -81,6 +81,31 @@ workflow.run(steps=20)
 
 print(monitor.result())
 ```
+
+## Quick Validation
+
+Installed package validation:
+
+```python
+from gapa import DataLoader, Monitor, Workflow
+from gapa.algorithms import SixDSTAlgorithm
+
+data = DataLoader.load("Circuit")
+monitor = Monitor()
+workflow = Workflow(SixDSTAlgorithm(pop_size=16), data, monitor=monitor, mode="s", verbose=False)
+workflow.run(steps=5)
+
+print(monitor.result())
+```
+
+Source checkout validation:
+
+```bash
+python examples/api/workflow.py
+python examples/algorithms/CND/sixdst.py
+```
+
+Repository examples are source-tree examples. Run them after `pip install -e .`.
 
 More runnable examples:
 

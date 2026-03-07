@@ -141,7 +141,11 @@ class DataLoader:
 
     @classmethod
     def _datasets_root(cls) -> Path:
-        return Path(__file__).resolve().parents[1] / "datasets"
+        repo_root = Path(__file__).resolve().parents[1] / "datasets"
+        if repo_root.exists():
+            return repo_root
+        package_root = Path(__file__).resolve().parent / "datasets"
+        return package_root
 
     @staticmethod
     def _resolve_device(device: str) -> torch.device:

@@ -95,6 +95,10 @@ setup(
         ],
     },
     
+    package_data={
+        "gapa": ["datasets/*"],
+    },
+
     # Include package data
     include_package_data=True,
     zip_safe=False,

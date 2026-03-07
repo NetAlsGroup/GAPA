@@ -30,6 +30,13 @@ class _CaptureSaveMixin:
         return super().save(dataset, gene, best_metric, time_list, method, **kwargs)
 
 
+def _datasets_root() -> Path:
+    repo_root = Path(__file__).resolve().parents[1] / "datasets"
+    if repo_root.exists():
+        return repo_root
+    return Path(__file__).resolve().parent / "datasets"
+
+
 class _LegacyAlgorithm(Algorithm):
     supports_incremental = False
 
@@ -411,7 +418,7 @@ class NCAGAAlgorithm(_LegacyAlgorithm):
     def _load_nca_payload(public_loader: DataLoader, device: torch.device) -> Any:
         data_path = Path(str(public_loader.meta.get("path") or ""))
         if not data_path.is_absolute():
-            data_path = Path(__file__).resolve().parents[1] / "datasets" / data_path
+            data_path = _datasets_root() / data_path
         if not data_path.exists():
             raise FileNotFoundError(f"NCA dataset file missing: {data_path}")
         raw = np.load(data_path, allow_pickle=True)

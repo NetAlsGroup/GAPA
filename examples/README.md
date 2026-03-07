@@ -2,6 +2,8 @@
 
 Public examples are intentionally kept minimal. Use them in this order.
 
+These examples are source-tree examples. Run `pip install -e .` once before executing files under `examples/`.
+
 ## 1. Core API
 
 - `api/data_loader.py`
