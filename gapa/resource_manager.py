@@ -144,6 +144,24 @@ class ResourceManager:
             return self.api_base.rstrip("/")
         return _resolve_default_api_base()
 
+    def _is_direct_remote_scope(self, scope: Optional[str]) -> bool:
+        if self._use_proxy():
+            return False
+        token = str(scope or "").strip()
+        if not token or token in {"all", "local"}:
+            return False
+        servers = self.server()
+        if not isinstance(servers, list):
+            return False
+        for item in servers:
+            if not isinstance(item, dict):
+                continue
+            sid = str(item.get("id") or "")
+            name = str(item.get("name") or "")
+            if token in (sid, name) or token.lower() in (sid.lower(), name.lower()):
+                return sid != "local"
+        return False
+
     def _local_snapshots(self) -> Dict[str, Any]:
         from server.resource_service import get_all_resources
 
@@ -547,6 +565,23 @@ class ResourceManager:
         return self._http_get_json(f"{base}/api/resources")
 
     def lock_status(self, scope: str = "all", realtime: bool = True) -> Dict[str, Any]:
+        if self._is_direct_remote_scope(scope):
+            server = self._normalize_server_id(scope, self.server() if isinstance(self.server(), list) else [])
+            if not server:
+                return {"error": "server not found", "scope": scope}
+            if requests is None:
+                return {"error": "requests not available"}
+            servers = self.server()
+            if not isinstance(servers, list):
+                return {"error": "server list unavailable", "detail": servers}
+            target = next((s for s in servers if str(s.get("id")) == server), None)
+            if not isinstance(target, dict) or not target.get("base_url"):
+                return {"error": "missing base_url", "scope": scope}
+            base = str(target.get("base_url")).rstrip("/")
+            return self._http_get_json_with_params(
+                f"{base}/api/resource_lock/status",
+                {"realtime": str(bool(realtime)).lower()},
+            )
         base = self._resolve_api_base()
         return self._http_get_json_with_params(
             f"{base}/api/resource_lock/status",
@@ -563,6 +598,21 @@ class ResourceManager:
         devices: Optional[List[Any]] = None,
         devices_by_server: Optional[Dict[str, List[Any]]] = None,
     ) -> Dict[str, Any]:
+        if self._is_direct_remote_scope(scope):
+            server = self._normalize_server_id(scope, self.server() if isinstance(self.server(), list) else [])
+            if not server:
+                return {"error": "server not found", "scope": scope}
+            payload: Dict[str, Any] = {
+                "duration_s": float(duration_s),
+                "warmup_iters": int(warmup_iters),
+                "mem_mb": int(mem_mb),
+                "strict_idle": bool(strict_idle),
+            }
+            if devices is not None:
+                payload["devices"] = devices
+            if devices_by_server is not None:
+                payload["devices"] = devices_by_server.get(server)
+            return self._post_server_direct(server, "/api/resource_lock", payload)
         base = self._resolve_api_base()
         payload: Dict[str, Any] = {
             "scope": scope,
@@ -578,6 +628,11 @@ class ResourceManager:
         return self._http_post_json(f"{base}/api/resource_lock", payload)
 
     def unlock_resource(self, scope: str = "all") -> Dict[str, Any]:
+        if self._is_direct_remote_scope(scope):
+            server = self._normalize_server_id(scope, self.server() if isinstance(self.server(), list) else [])
+            if not server:
+                return {"error": "server not found", "scope": scope}
+            return self._post_server_direct(server, "/api/resource_lock/release", {})
         base = self._resolve_api_base()
         return self._http_post_json(f"{base}/api/resource_lock/release", {"scope": scope})
 
@@ -591,6 +646,18 @@ class ResourceManager:
         lock_id: Optional[str] = None,
         owner: Optional[str] = None,
     ) -> Dict[str, Any]:
+        if self._is_direct_remote_scope(scope):
+            server = self._normalize_server_id(scope, self.server() if isinstance(self.server(), list) else [])
+            if not server:
+                return {"error": "server not found", "scope": scope}
+            payload: Dict[str, Any] = {}
+            if duration_s is not None:
+                payload["duration_s"] = float(duration_s)
+            if lock_id:
+                payload["lock_id"] = str(lock_id)
+            if owner:
+                payload["owner"] = str(owner)
+            return self._post_server_direct(server, "/api/resource_lock/renew", payload)
         base = self._resolve_api_base()
         payload: Dict[str, Any] = {"scope": scope}
         if duration_s is not None:

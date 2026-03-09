@@ -37,7 +37,16 @@ These examples are source-tree examples. Run `pip install -e .` once before exec
 - `remote/workflow.py`
   - run a minimal remote workflow through `Workflow`
 
-## 4. Advanced usage
+## 4. Advanced API
+
+- `advanced/mnm_workflow.py`
+  - run a minimal MNM workflow with all online remote servers from `.env`
+- `advanced/service_api.py`
+  - smoke test the local `app.py` service API surface
+- `advanced/resource_lock.py`
+  - exercise lock, renew, release on the first online remote server
+
+## 5. Advanced usage
 
 Advanced service, remote runtime, and compatibility guidance has been moved out of the public examples surface.
 

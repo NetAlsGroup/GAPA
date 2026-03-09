@@ -133,6 +133,26 @@ class _LegacyAlgorithm(Algorithm):
         if primary is not None and not monitor._fitness_history:
             monitor._fitness_history.append(primary)
 
+    @staticmethod
+    def _maybe_wrap_evaluator(workflow: Any, evaluator: nn.Module) -> nn.Module:
+        if getattr(workflow, "mode", None) == "mnm" and getattr(workflow, "servers", None):
+            wrapped = workflow._wrap_for_mnm(evaluator)
+            setattr(wrapped, "_is_distributed", True)
+            workflow._evaluator = wrapped
+            return wrapped
+        return evaluator
+
+    @staticmethod
+    def _mnm_wrap_factory(workflow: Any):
+        if getattr(workflow, "mode", None) == "mnm" and getattr(workflow, "servers", None):
+            def _wrap(evaluator: nn.Module) -> nn.Module:
+                wrapped = workflow._wrap_for_mnm(evaluator)
+                setattr(wrapped, "_is_distributed", True)
+                workflow._evaluator = wrapped
+                return wrapped
+            return _wrap
+        return None
+
 
 class SixDSTAlgorithm(_LegacyAlgorithm):
     def __init__(self, pop_size: int = 80, crossover_rate: float = 0.6, mutate_rate: float = 0.2, cutoff_tag: str = "popGreedy_cutoff_"):
@@ -165,6 +185,7 @@ class SixDSTAlgorithm(_LegacyAlgorithm):
         )
         controller.observer = self._observer(workflow.monitor)
         evaluator = SixDSTEvaluator(pop_size=self.pop_size, adj=loader.A, device=workflow.device)
+        evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         SixDST(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("PCG", "MCN"))
 
@@ -198,6 +219,7 @@ class CutOffAlgorithm(_LegacyAlgorithm):
         )
         controller.observer = self._observer(workflow.monitor)
         evaluator = CutoffEvaluator(pop_size=self.pop_size, graph=loader.G, nodes=loader.nodes, device=workflow.device)
+        evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         Cutoff(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("PCG", "MCN"))
 
@@ -229,6 +251,7 @@ class TDEAlgorithm(_LegacyAlgorithm):
         )
         controller.observer = self._observer(workflow.monitor)
         evaluator = TDEEvaluator(pop_size=self.pop_size, graph=loader.G, budget=loader.k, device=workflow.device)
+        evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         TDE(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("PCG", "MCN"))
 
@@ -260,6 +283,7 @@ class CGNAlgorithm(_LegacyAlgorithm):
         )
         controller.observer = self._observer(workflow.monitor)
         evaluator = CGNEvaluator(pop_size=self.pop_size, graph=loader.G.copy(), device=workflow.device)
+        evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         CGN(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("Q", "NMI"))
 
@@ -291,6 +315,7 @@ class QAttackAlgorithm(_LegacyAlgorithm):
         )
         controller.observer = self._observer(workflow.monitor)
         evaluator = QAttackEvaluator(pop_size=self.pop_size, graph=loader.G.copy(), device=workflow.device)
+        evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         QAttack(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("Q", "NMI"))
 
@@ -322,6 +347,7 @@ class CDAEDAAlgorithm(_LegacyAlgorithm):
         )
         controller.observer = self._observer(workflow.monitor)
         evaluator = EDAEvaluator(pop_size=self.pop_size, graph=loader.G.copy(), adj=loader.A, nodes_num=loader.nodes_num, device=workflow.device)
+        evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         EDA(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("Q", "NMI"))
 
@@ -362,6 +388,7 @@ class LPAGAAlgorithm(_LegacyAlgorithm):
         )
         controller.observer = self._observer(workflow.monitor)
         evaluator = GAEvaluator(pop_size=self.pop_size, graph=loader.G, ratio=0, device=workflow.device)
+        evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         LPA_GA(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("Pre", "AUC"))
 
@@ -401,6 +428,7 @@ class LPAEDAAlgorithm(_LegacyAlgorithm):
         )
         controller.observer = self._observer(workflow.monitor)
         evaluator = EDAEvaluator(pop_size=self.pop_size, graph=loader.G, ratio=0, device=workflow.device)
+        evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         EDA(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("Pre", "AUC"))
 
@@ -492,6 +520,7 @@ class NCAGAAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
+        evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         NCA_GA(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("Acc", "ASR"))
 
@@ -568,7 +597,7 @@ class GANIAlgorithm(_LegacyAlgorithm):
                 classifier=classifier,
                 homophily_ratio=self.homophily_ratio,
                 world_size=workflow.world_size,
-                wrap_evaluator=None,
+                wrap_evaluator=self._mnm_wrap_factory(workflow),
                 verbose=workflow.verbose,
             )
         finally:
