@@ -14,8 +14,6 @@ Read this file after `/Users/nakilea/Desktop/Code/AGENTS.md`.
 - Local multi-agent assets live under `/Users/nakilea/Desktop/Code/GAPA/.multi-agents`
 - Project kickoff file:
   - `/Users/nakilea/Desktop/Code/GAPA/.multi-agents/THREAD_KICKOFF.md`
-- Directory migration guide:
-  - `/Users/nakilea/Desktop/Code/GAPA/.multi-agents/DIRECTORY_MIGRATION.md`
 
 ## Thread Bootstrap
 
@@ -43,20 +41,16 @@ Choose only what the task needs:
 - Repository overview:
   - `/Users/nakilea/Desktop/Code/GAPA/README.md`
 - Governance core:
-  - preferred normalized design path: `/Users/nakilea/Desktop/Code/GAPA/.multi-agents/design/`
-  - preferred normalized memory path: `/Users/nakilea/Desktop/Code/GAPA/.multi-agents/memory/`
   - `/Users/nakilea/Desktop/Code/GAPA/.multi-agents/README.md`
   - `/Users/nakilea/Desktop/Code/GAPA/.multi-agents/GAPA_BLUEPRINT.md`
   - `/Users/nakilea/Desktop/Code/GAPA/.multi-agents/ORCHESTRATION.md`
   - `/Users/nakilea/Desktop/Code/GAPA/.multi-agents/AGENT_REGISTRY.md`
 - Runtime policy:
-  - preferred normalized path: `/Users/nakilea/Desktop/Code/GAPA/.multi-agents/runtime/policy/`
   - `/Users/nakilea/Desktop/Code/GAPA/.multi-agents/runtime/workspace-policy.yaml`
   - `/Users/nakilea/Desktop/Code/GAPA/.multi-agents/runtime/sandbox-policy.yaml`
   - `/Users/nakilea/Desktop/Code/GAPA/.multi-agents/runtime/test-policy.yaml`
   - `/Users/nakilea/Desktop/Code/GAPA/.multi-agents/runtime/delivery-policy.yaml`
 - Active task packet:
-  - preferred normalized path: `/Users/nakilea/Desktop/Code/GAPA/.multi-agents/tasks/packets/`
   - `/Users/nakilea/Desktop/Code/GAPA/.multi-agents/tasks/<active-task>.md`
 
 ## Execution Guardrails
@@ -82,4 +76,3 @@ Choose only what the task needs:
 - Preserve the unified `DataLoader / Workflow / Monitor / ResourceManager` user-facing model unless the task explicitly changes it.
 - Keep examples, docs, and runtime behavior aligned when changing public interfaces.
 - Update project-local changelog or task evidence when the task packet requires governance closeout.
-- New `.multi-agents` assets should follow the normalized `design / runtime / tasks / memory` split.
