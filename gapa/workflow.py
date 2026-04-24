@@ -248,14 +248,18 @@ except Exception:  # pragma: no cover - optional dependency for monitor HTTP
 # Feature Flags (for PyPI vs Source deployment)
 # =============================================================================
 
-# Check if distributed (MNM) features are available
-# These are only available in source deployment, not in PyPI package
-try:
-    from server.distributed_evaluator import DistributedEvaluator
-    HAS_DISTRIBUTED = True
-except ImportError:
-    HAS_DISTRIBUTED = False
-    DistributedEvaluator = None
+# Distributed (MNM) features are loaded lazily. Importing gapa should not touch
+# server-side modules because they may initialize runtime state such as SQLite.
+def _load_distributed_evaluator():
+    try:
+        from server.distributed_evaluator import DistributedEvaluator as _DistributedEvaluator
+        return _DistributedEvaluator
+    except Exception:
+        return None
+
+
+def _has_distributed() -> bool:
+    return _load_distributed_evaluator() is not None
 
 # Supported modes in PyPI package vs Source deployment
 PYPI_MODES = ["s", "sm", "m"]
@@ -952,9 +956,10 @@ class Workflow:
             pass
         
         # Validate mode
-        valid_modes = SOURCE_MODES if HAS_DISTRIBUTED else PYPI_MODES
+        has_distributed = _has_distributed()
+        valid_modes = SOURCE_MODES if has_distributed else PYPI_MODES
         if mode not in valid_modes:
-            if mode == "mnm" and not HAS_DISTRIBUTED:
+            if mode == "mnm" and not has_distributed:
                 raise ImportError(
                     "MNM mode requires source deployment with distributed components.\n\n"
                     "PyPI package (pip install gapa) only supports: s, sm, m modes.\n\n"
@@ -1236,10 +1241,13 @@ class Workflow:
     
     def _wrap_for_mnm(self, evaluator) -> nn.Module:
         """Wrap evaluator for distributed execution."""
-        if not HAS_DISTRIBUTED or DistributedEvaluator is None:
-            if self.verbose:
-                print("[GAPA] Warning: DistributedEvaluator not available. Using local evaluation.")
-            return evaluator
+        DistributedEvaluator = _load_distributed_evaluator()
+        if DistributedEvaluator is None:
+            raise ImportError(
+                "MNM mode requires distributed components, but DistributedEvaluator "
+                "could not be imported. Run from the source tree or install the "
+                "distributed package components."
+            )
 
         wrapped = DistributedEvaluator(
             evaluator,
