@@ -1,30 +1,104 @@
-# Dataset file dont need to upload
-/[Dd]ataset/
-/autoadapt/
-/old_expamples/
-# Pycharm file dont need to upload
-/.idea/
-__pycache__/
-*.pyc
-/.DS_Store
-/.gitignore
-/.gitattributes
-# Experiment file dont need to upload
+# GAPA Git policy:
+# Track only core algorithm source and minimal metadata.
+# Non-core service, web, docs, examples, local memory, runtime output,
+# generated artifacts, IDE files, and private configs stay out of Git.
+
+# Ignore everything by default.
+*
+
+# Keep repository metadata and minimal project metadata.
+!/.gitignore
+!/.gitattributes
+!/LICENSE
+!/README.md
+!/README.zh-CN.md
+!/CHANGELOG.txt
+!/setup.py
+!/requirements.txt
+!/requirements/
+!/requirements/**
+!/algorithms.json
+
+# Keep the Python package container.
+!/gapa/
+
+# Core algorithm source.
+!/gapa/algorithm/
+!/gapa/algorithm/**
+!/gapa/framework/
+!/gapa/framework/**
+!/gapa/DeepLearning/
+!/gapa/DeepLearning/**
+!/gapa/utils/
+!/gapa/utils/**
+!/gapa/algorithms.py
+
+# Minimal public package/runtime support used by algorithm wrappers.
+!/gapa/__init__.py
+!/gapa/__main__.py
+!/gapa/config.py
+!/gapa/data_loader.py
+!/gapa/workflow.py
+
+# Algorithm dataset registry and bundled benchmark datasets.
+!/datasets/
+!/datasets/**
+!/gapa/datasets/
+!/gapa/datasets/**
+
+# Always ignore generated/local/private files, even under allowed dirs.
+**/.DS_Store
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.dylib
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build and runtime outputs.
+/build/
+/dist/
+/results/
 /experiment_data/
 /backup/
-/dist/
-/gapa.egg-info/
-/build/
 /gapa4/
-/servers.json
-/.env
-
 /main.py
 /tmp_test.py
-/results/
 
-# Private expert knowledge (do not open-source)
-/.multi-agents
+# Local/private configuration.
+/.env
+/.env.*
+!/.env.example
+/servers.json
 
+# Non-core project surfaces.
+/app.py
+/server/
+/server_agent.py
+/web/
+/examples/
+/old_examples/
+/docs/
+/assets/
 /tests/
 /scripts/
+/dataset/
+
+# Private governance and local memory.
+/.multi-agents/
+/memory/
+/project.json
+/summary-brief.md
+/summary-detailed.md
+/task-backlog.md
+/tree-index.md
+
+# IDE/editor state.
+/.idea/
+.vscode/
