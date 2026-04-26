@@ -1,0 +1,9 @@
+# Linux CUDA 11.8 PyTorch runtime.
+# Verified by installation testing on the Linux server environment.
+#
+# Install as the first Linux server step:
+#   pip install -r requirements/linux-cu118-torch.txt
+--index-url https://download.pytorch.org/whl/cu118
+torch==2.6.0
+torchvision==0.21.0
+torchaudio==2.6.0

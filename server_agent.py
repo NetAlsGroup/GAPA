@@ -47,6 +47,7 @@ from server.shared_runtime import (
     summarize_warmup_result,
     terminate_process_tree,
 )
+from gapa.config import get_server_agent_host, get_server_agent_port
 
 
 
@@ -855,7 +856,7 @@ def api_strategy_compare(payload: Dict[str, Any]) -> Dict[str, Any]:
 if __name__ == "__main__":
     import uvicorn
 
-    host = os.getenv("GAPA_AGENT_HOST", "0.0.0.0")
-    port = int(os.getenv("GAPA_AGENT_PORT", "4467"))
+    host = get_server_agent_host()
+    port = get_server_agent_port()
     check_dependencies()
     uvicorn.run("server_agent:app", host=host, port=port)

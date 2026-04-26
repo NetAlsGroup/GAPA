@@ -1,0 +1,10 @@
+# Linux environment.
+#
+# Record only versions verified on the Linux server environment.
+# Python baseline: 3.10.
+#
+# Verified step 1: install PyTorch CUDA 11.8 runtime.
+#   pip install -r requirements/linux-cu118-torch.txt
+#
+# Non-Torch dependencies will be added here after server-side installation
+# testing confirms compatible versions.

@@ -47,10 +47,7 @@ setup(
     classifiers=[
         "Development Status :: 4 - Beta",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
-        "Programming Language :: Python :: 3.11",
-        "Programming Language :: Python :: 3.12",
         "License :: OSI Approved :: MIT License",
         "Intended Audience :: Developers",
         "Intended Audience :: Education",
@@ -60,7 +57,7 @@ setup(
         "Operating System :: OS Independent",
     ],
     
-    python_requires=">=3.9",
+    python_requires=">=3.10,<3.11",
     
     # Only include gapa package (not server/, web/, etc.)
     packages=find_packages(include=["gapa", "gapa.*"]),

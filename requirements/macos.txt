@@ -1,0 +1,7 @@
+# macOS environment.
+#
+# This file is intentionally separate from Linux because PyTorch wheels and
+# GPU runtime choices differ by platform. Record only versions verified on
+# macOS here.
+# Python baseline: 3.10.
+-r core.txt

@@ -11,6 +11,7 @@ from datetime import datetime
 
 from flask import Flask, jsonify, request, send_from_directory
 
+from gapa.config import get_app_host, get_app_port
 from gapa.autoadapt import StrategyPlan, DistributedStrategyPlan
 
 from server import (
@@ -1719,10 +1720,12 @@ def check_dependencies():
         print("\n[INFO] All critical dependencies (psutil, pynvml, torch) are installed.\n")
 
 if __name__ == "__main__":
+    host = get_app_host()
+    port = get_app_port()
     print("=" * 50)
     print("GAPA Console 启动成功！")
     check_dependencies()
-    print("本地访问 → http://localhost:4467")
-    print("局域网访问 → http://本机IP:4467")
+    print(f"本地访问 → http://localhost:{port}")
+    print(f"绑定地址 → {host}:{port}")
     print("=" * 50)
-    app.run(host="0.0.0.0", port=4467, threaded=True)
+    app.run(host=host, port=port, threaded=True)

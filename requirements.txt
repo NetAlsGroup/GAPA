@@ -1,6 +1,14 @@
 # Beginner/core dependency set.
-# For all runtime features use:
-#   pip install -r requirements/full.txt
-# For development tools as well use:
+#
+# Platform-specific experiment environments are split by operating system:
+#   Linux CUDA 11.8:
+#     pip install -r requirements/linux-cu118-torch.txt
+#     pip install -r requirements/linux.txt
+#   macOS:
+#     pip install -r requirements/macos.txt
+#   Windows:
+#     pip install -r requirements/windows.txt
+#
+# Development tools:
 #   pip install -r requirements/dev.txt
 -r requirements/core.txt
