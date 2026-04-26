@@ -1,25 +1,27 @@
-# Linux environment.
+# Linux experiment environment (validated on the CUDA 11.8 server).
 #
-# Record only versions verified on the Linux server environment.
-# Python baseline: 3.10.
+# Python baseline: 3.10
+# Recommended install order:
+#   1) pip install -r requirements/linux-cu118-torch.txt
+#   2) pip install -r requirements/linux.txt
+#   3) pip install -e .
 #
-# Verified step 1: install PyTorch CUDA 11.8 runtime.
-#   pip install -r requirements/linux-cu118-torch.txt
-#
-# Verified step 2: server/runtime support.
+# DGL must use the matching wheel source for torch 2.6 + cu118.
+-f https://data.dgl.ai/wheels/torch-2.6/cu118/repo.html
+
+# Core runtime
+numpy
+networkx
 fastapi
 requests
 psutil
 pynvml
 tqdm
+
+# Scientific / algorithm runtime
 scipy
 igraph==0.11.6
-deeprobust
 pandas
 yacs
-#
-# Verified step 3: graph runtime packages with custom wheel source.
-#   pip install dgl -f https://data.dgl.ai/wheels/torch-2.6/cu118/repo.html
-#
-# Additional algorithm dependencies will be added here after server-side
-# installation testing confirms compatible versions.
+dgl
+deeprobust

@@ -71,6 +71,8 @@ htmlcov/
 /gapa4/
 /main.py
 /tmp_test.py
+/.run/
+/.gapa-tunnel.sh
 
 # Local/private configuration.
 /.env
@@ -85,6 +87,7 @@ htmlcov/
 /server_agent.py
 /web/
 /examples/
+/local_examples/
 /old_examples/
 /docs/
 /assets/
