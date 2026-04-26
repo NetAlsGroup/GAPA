@@ -104,6 +104,7 @@ def start_remote_run(
     crossover_rate: float,
     mutate_rate: float,
     pop_size: Optional[int] = None,
+    devices: Optional[List[int]] = None,
     use_strategy_plan: Optional[bool] = None,
     timeout_s: Optional[float] = None,
 ) -> Dict[str, Any]:
@@ -121,6 +122,8 @@ def start_remote_run(
     }
     if pop_size is not None:
         payload["pop_size"] = int(pop_size)
+    if devices:
+        payload["devices"] = [int(x) for x in devices]
     if use_strategy_plan is not None:
         payload["use_strategy_plan"] = bool(use_strategy_plan)
     if getattr(requests, "post", None) is None:
@@ -201,6 +204,7 @@ def run_remote_task(
     crossover_rate: float,
     mutate_rate: float,
     pop_size: Optional[int] = None,
+    devices: Optional[List[int]] = None,
     use_strategy_plan: Optional[bool] = None,
     start_timeout_s: Optional[float] = None,
     max_polls: int = 600,
@@ -218,13 +222,21 @@ def run_remote_task(
         crossover_rate=crossover_rate,
         mutate_rate=mutate_rate,
         pop_size=pop_size,
+        devices=devices,
         use_strategy_plan=use_strategy_plan,
         timeout_s=start_timeout_s,
     )
     if started.get("error"):
         return started
-    last_seen = {"current": None, "total": None}
+    last_seen = {"current": None, "total": None, "log_count": 0}
     def _progress_cb(info, _data):
+        logs = _data.get("logs") if isinstance(_data, dict) else None
+        if isinstance(logs, list):
+            start = int(last_seen.get("log_count") or 0)
+            new_logs = [line for line in logs[start:] if isinstance(line, str)]
+            for line in new_logs:
+                print(line)
+            last_seen["log_count"] = len(logs)
         if not info:
             return
         cur = info.get("current")
@@ -233,9 +245,30 @@ def run_remote_task(
             return
         last_seen["current"] = cur
         last_seen["total"] = total
-        print(f"[INFO] iter {cur}/{total}")
+        if not isinstance(logs, list):
+            print(f"[INFO] iter {cur}/{total}")
 
     final = poll_remote_status(server, max_polls=max_polls, interval_s=interval_s, progress_cb=_progress_cb)
+    if isinstance(final, dict):
+        mode_decision = final.get("mode_decision")
+        if isinstance(mode_decision, dict):
+            print(
+                "[INFO] remote mode decision:"
+                f" requested={mode_decision.get('requested_mode')}"
+                f" selected={mode_decision.get('selected_mode')}"
+                f" degraded={mode_decision.get('degraded')}"
+                f" reason={mode_decision.get('reason') or '-'}"
+            )
+        result_block = final.get("result")
+        if isinstance(result_block, dict):
+            exec_info = result_block.get("exec")
+            if isinstance(exec_info, dict):
+                print(
+                    "[INFO] remote exec:"
+                    f" algo_mode={exec_info.get('algo_mode')}"
+                    f" world_size={exec_info.get('world_size')}"
+                    f" device={exec_info.get('device')}"
+                )
     best = None
     if isinstance(final.get("result"), dict):
         result = final["result"]

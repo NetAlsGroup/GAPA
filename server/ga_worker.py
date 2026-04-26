@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import os
 import threading
 import time
@@ -523,49 +522,98 @@ def ga_worker(
             else:
                 controller_obj.observer = on_iter
 
+        def run_public_workflow(method: str) -> bool:
+            nonlocal fitness_goal
+            public_map = {
+                "SixDST": "SixDSTAlgorithm",
+                "CutOff": "CutOffAlgorithm",
+                "TDE": "TDEAlgorithm",
+                "CDA-EDA": "CDAEDAAlgorithm",
+                "CGN": "CGNAlgorithm",
+                "QAttack": "QAttackAlgorithm",
+                "LPA-EDA": "LPAEDAAlgorithm",
+                "LPA-GA": "LPAGAAlgorithm",
+                "NCA-GA": "NCAGAAlgorithm",
+                "GANI": "GANIAlgorithm",
+            }
+            class_name = public_map.get(method)
+            if not class_name:
+                return False
+            from gapa import algorithms as public_algorithms
+            from gapa.data_loader import DataLoader as PublicDataLoader
+            from gapa.workflow import Monitor as PublicMonitor, Workflow as PublicWorkflow
+
+            algo_cls = getattr(public_algorithms, class_name, None)
+            if algo_cls is None:
+                return False
+
+            ctor_kwargs: Dict[str, Any] = {
+                "pop_size": int(result["hyperparams"]["pop_size"]),
+                "crossover_rate": float(crossover_rate),
+                "mutate_rate": float(mutate_rate),
+            }
+            if method in ("SixDST", "CutOff"):
+                ctor_kwargs["cutoff_tag"] = "popGreedy_cutoff_"
+            public_algorithm = algo_cls(**ctor_kwargs)
+            public_loader = PublicDataLoader.load(dataset, device=device)
+            public_monitor = PublicMonitor()
+            workflow_kwargs: Dict[str, Any] = {
+                "algorithm": public_algorithm,
+                "data_loader": public_loader,
+                "monitor": public_monitor,
+                "mode": algo_mode,
+                "verbose": False,
+            }
+            if distributed_fitness:
+                workflow_kwargs["servers"] = list(selected.get("remote_servers") or selected.get("allowed_server_ids") or [])
+            workflow = PublicWorkflow(**workflow_kwargs)
+            emit({"type": "log", "line": f"[INFO] Start {method}: mode={algo_mode} device={device} world_size={world_size} via=public-workflow"})
+            result["metrics"].append({"stage": "init", **snapshot()})
+            workflow.run(steps=int(iterations))
+
+            local_result = public_monitor.result()
+            history = public_monitor.history()
+            metrics_block = local_result.get("metrics") if isinstance(local_result.get("metrics"), dict) else {}
+            best_metrics = {}
+            primary_name = objective.get("primary")
+            secondary_name = objective.get("secondary")
+            if primary_name and isinstance(metrics_block.get(primary_name), (int, float)):
+                best_metrics[primary_name] = float(metrics_block[primary_name])
+            if secondary_name and isinstance(metrics_block.get(secondary_name), (int, float)):
+                best_metrics[secondary_name] = float(metrics_block[secondary_name])
+            if best_metrics:
+                result["best_metrics"] = best_metrics
+                result["best_score"] = float(best_metrics[primary_name]) if primary_name in best_metrics else None
+                emit({"type": "log", "line": f"[INFO] Final best from workflow: {primary_name}={best_metrics.get(primary_name)} {secondary_name}={best_metrics.get(secondary_name)}"})
+            result["best_gene"] = local_result.get("best_gene")
+            if isinstance(local_result.get("elapsed_seconds"), (int, float)):
+                result.setdefault("timing", {})
+                result["timing"]["iter_seconds"] = float(local_result["elapsed_seconds"])
+            if isinstance(local_result.get("iterations"), int):
+                result["iterations"] = int(local_result["iterations"])
+            extra_history = history.get("extra") if isinstance(history.get("extra"), list) else []
+            result["points"] = [item for item in extra_history if isinstance(item, dict)]
+            curves: Dict[str, List[float]] = {}
+            if primary_name:
+                curves[primary_name] = []
+            if secondary_name:
+                curves[secondary_name] = []
+            for item in result["points"]:
+                if primary_name and isinstance(item.get(primary_name), (int, float)):
+                    curves[primary_name].append(float(item[primary_name]))
+                if secondary_name and isinstance(item.get(secondary_name), (int, float)):
+                    curves[secondary_name].append(float(item[secondary_name]))
+            result["curves"] = curves
+            result["convergence"] = list(curves.get(primary_name) or [])
+            result["metrics"].extend({"stage": "iter", "iter": int(item.get("generation") or item.get("iter") or 0), "objectives": item, **snapshot()} for item in result["points"])
+            fitness_goal = getattr(public_algorithm, "side", None)
+            result["exec"] = {"algo_mode": workflow.mode, "world_size": workflow.world_size, "device": str(workflow.device)}
+            return True
+
         def run_cnd(method: str) -> None:
             nonlocal fitness_goal
             nonlocal comm_tracker
-            if method == "SixDST":
-                from gapa.algorithm.CND.SixDST import SixDST, SixDSTController, SixDSTEvaluator  # type: ignore
-                from gapa.utils.functions import set_seed
-                
-                # SixDST setup (popGreedy_cutoff) is stochastic. We must seed consistent state for distributed setup.
-                set_seed(1024)
-
-                loaded = _load_adjlist(dataset, sort_nodes=True)
-                data_loader = Loader(dataset=dataset, device=device)
-                data_loader.G = loaded["G"]
-                data_loader.A = loaded["A"]
-                data_loader.nodes_num = int(data_loader.A.shape[0])
-                data_loader.nodes = torch.tensor(loaded["nodelist"], device=device)
-                data_loader.selected_genes_num = int(0.4 * data_loader.nodes_num)
-                data_loader.k = int(0.1 * data_loader.nodes_num)
-                data_loader.mode = algo_mode
-                data_loader.world_size = world_size
-
-                controller = SixDSTController(
-                    path=str(results_dir) + "/",
-                    pattern="write",
-                    cutoff_tag="popGreedy_cutoff_",
-                    data_loader=data_loader,
-                    loops=1,
-                    crossover_rate=float(crossover_rate),
-                    mutate_rate=float(mutate_rate),
-                    pop_size=int(result["hyperparams"]["pop_size"]),
-                    device=device,
-                )
-                if comm_path:
-                    controller.comm_path = str(comm_path)
-                evaluator = SixDSTEvaluator(pop_size=int(result["hyperparams"]["pop_size"]), adj=data_loader.A, device=device)
-                evaluator = maybe_wrap_distributed(evaluator)
-                if hasattr(evaluator, "comm_stats"):
-                    comm_tracker = evaluator
-                fitness_goal = getattr(controller, "fit_side", None)
-                attach_observer(controller)
-                emit({"type": "log", "line": f"[INFO] Start SixDST: mode={algo_mode} device={device} world_size={world_size}"})
-                result["metrics"].append({"stage": "init", **snapshot()})
-                SixDST(mode=algo_mode, max_generation=int(iterations), data_loader=data_loader, controller=controller, evaluator=evaluator, world_size=world_size, verbose=False)
+            if run_public_workflow(method):
                 return
 
             if method == "CutOff":
@@ -648,6 +696,8 @@ def ga_worker(
         def run_cda(method: str) -> None:
             nonlocal fitness_goal
             nonlocal comm_tracker
+            if run_public_workflow(method):
+                return
             attack_rate = float(os.getenv("GAPA_CDA_ATTACK_RATE", "0.1"))
             loaded = _load_gml(dataset, sort_nodes=True, rebuild_from_adj=False)
             data_loader = Loader(dataset=dataset, device=device)
@@ -743,6 +793,8 @@ def ga_worker(
         def run_lpa(method: str) -> None:
             nonlocal fitness_goal
             nonlocal comm_tracker
+            if run_public_workflow(method):
+                return
             attack_rate = float(os.getenv("GAPA_LPA_ATTACK_RATE", "0.1"))
             try:
                 loaded = _load_gml(dataset, sort_nodes=True, rebuild_from_adj=True)
@@ -817,6 +869,8 @@ def ga_worker(
 
         def run_nca(method: str) -> None:
             nonlocal fitness_goal
+            if method != "SGA" and run_public_workflow(method):
+                return
             from gapa.utils.dataset import load_dataset  # type: ignore
             from gapa.DeepLearning.Classifier import Classifier, load_set  # type: ignore
 
@@ -1094,24 +1148,25 @@ def ga_worker(
         tail_stop = True
         primary = objective.get("primary") or "fitness"
         secondary = objective.get("secondary")
-        primary_vals = (result.get("curves") or {}).get(primary) or []
-        secondary_vals = (result.get("curves") or {}).get(secondary) or []
-        if primary_vals:
-            if objective.get("primary_goal") == "max":
-                idx = max(range(len(primary_vals)), key=lambda i: primary_vals[i])
+        if not isinstance(result.get("best_metrics"), dict):
+            primary_vals = (result.get("curves") or {}).get(primary) or []
+            secondary_vals = (result.get("curves") or {}).get(secondary) or []
+            if primary_vals:
+                if objective.get("primary_goal") == "max":
+                    idx = max(range(len(primary_vals)), key=lambda i: primary_vals[i])
+                else:
+                    idx = min(range(len(primary_vals)), key=lambda i: primary_vals[i])
+                best = {primary: primary_vals[idx]}
+                if secondary and idx < len(secondary_vals):
+                    best[secondary] = secondary_vals[idx]
+                result["best_metrics"] = best
+                if secondary and secondary in best:
+                    result["best_score"] = f"{primary}={best[primary]:.6g}, {secondary}={best[secondary]:.6g}"
+                else:
+                    result["best_score"] = f"{primary}={best[primary]:.6g}"
             else:
-                idx = min(range(len(primary_vals)), key=lambda i: primary_vals[i])
-            best = {primary: primary_vals[idx]}
-            if secondary and idx < len(secondary_vals):
-                best[secondary] = secondary_vals[idx]
-            result["best_metrics"] = best
-            if secondary and secondary in best:
-                result["best_score"] = f"{primary}={best[primary]:.6g}, {secondary}={best[secondary]:.6g}"
-            else:
-                result["best_score"] = f"{primary}={best[primary]:.6g}"
-        else:
-            result["best_metrics"] = None
-            result["best_score"] = None
+                result["best_metrics"] = None
+                result["best_score"] = None
 
         emit({"type": "log", "line": "[INFO] 分析完成。"})
         

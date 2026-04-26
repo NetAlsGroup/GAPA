@@ -188,8 +188,10 @@ class SixDSTController(BasicController):
             population = torch.cat(population)
             fitness_list = torch.cat(fitness_list)
 
-            with tqdm(total=max_generation, position=rank) as pbar:
-                pbar.set_description(f'Rank {rank} in {self.dataset} in Loop: {loop}')
+            disable_pbar = rank != 0
+            with tqdm(total=max_generation, position=rank, disable=disable_pbar) as pbar:
+                if not disable_pbar:
+                    pbar.set_description(f'Rank {rank} in {self.dataset} in Loop: {loop}')
                 for generation in range(max_generation):
                     if rank == 0:
                         new_population1 = population.clone()
@@ -271,8 +273,9 @@ class SixDSTController(BasicController):
                                 )
                             except Exception:
                                 pass
-                    pbar.set_postfix(MCN=min(component_fitness_list).item(), PCG=min(best_PCG))
-                    pbar.update(1)
+                    if not disable_pbar:
+                        pbar.set_postfix(MCN=min(component_fitness_list).item(), PCG=min(best_PCG))
+                        pbar.update(1)
             best_genes = torch.stack(best_genes)
             best_PCG = torch.tensor(best_PCG, device=device)
             best_MCN = torch.tensor(best_MCN, device=device)

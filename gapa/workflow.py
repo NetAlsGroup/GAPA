@@ -152,6 +152,21 @@ def _to_float(value: Any) -> Optional[float]:
         return None
 
 
+def _resolve_remote_primary_score(result: Dict[str, Any]) -> Optional[float]:
+    best = result.get("best_score")
+    if isinstance(best, (int, float)):
+        return float(best)
+    objectives = result.get("objectives") if isinstance(result.get("objectives"), dict) else {}
+    best_metrics = result.get("best_metrics") if isinstance(result.get("best_metrics"), dict) else {}
+    primary = objectives.get("primary")
+    if primary and primary in best_metrics:
+        return _to_float(best_metrics.get(primary))
+    curves = result.get("curves") if isinstance(result.get("curves"), dict) else {}
+    if primary and isinstance(curves.get(primary), list) and curves.get(primary):
+        return _to_float(curves.get(primary)[-1])
+    return None
+
+
 def _aggregate_run_trends(
     rows: List[Dict[str, Any]],
     *,
@@ -894,6 +909,7 @@ class Workflow:
         auto_select: bool = False,
         servers: Optional[List[str]] = None,
         remote_server: Optional[str] = None,
+        remote_devices: Optional[List[int]] = None,
         remote_use_strategy_plan: Optional[bool] = None,
         server_url: str = "",
         fallback_policy: str = "best_effort",
@@ -911,6 +927,7 @@ class Workflow:
             auto_select: Auto-select remote servers (for MNM mode)
             servers: List of remote server IDs (for MNM mode)
             remote_server: Single remote server id/name for s/sm/m remote execution
+            remote_devices: Explicit remote GPU ids for s/sm/m remote execution
             remote_use_strategy_plan: Whether remote s/sm/m should use StrategyPlan device selection
             server_url: Local GAPA API URL (for MNM mode resource discovery)
             fallback_policy: "best_effort" or "strict" for mode fallback behavior
@@ -936,6 +953,7 @@ class Workflow:
         self.auto_select = auto_select
         self.servers = servers or []
         self.remote_server = remote_server
+        self.remote_devices = list(remote_devices or [])
         self.remote_use_strategy_plan = remote_use_strategy_plan
         self._server_url_explicit = bool(server_url)
         self.server_url = (server_url or _resolve_default_api_base()).rstrip("/")
@@ -1089,6 +1107,7 @@ class Workflow:
             "resolved_mode": self.mode,
             "fallback_policy": self.fallback_policy,
             "remote_server": self.remote_server,
+            "remote_devices": list(self.remote_devices),
             "remote_use_strategy_plan": self.remote_use_strategy_plan,
             "servers": list(self.servers),
             "capabilities": self.algorithm_capabilities,
@@ -1281,16 +1300,42 @@ class Workflow:
                     crossover_rate=float(getattr(self.algorithm, "crossover_rate", 0.8)),
                     mutate_rate=float(getattr(self.algorithm, "mutate_rate", 0.2)),
                     pop_size=int(getattr(self.algorithm, "pop_size", 100)) if hasattr(self.algorithm, "pop_size") else None,
+                    devices=list(self.remote_devices) if self.remote_devices else None,
                     use_strategy_plan=self.remote_use_strategy_plan,
                     start_timeout_s=max(20.0, float(os.getenv("GAPA_REMOTE_START_TIMEOUT", "120") or 120)),
                 )
                 if isinstance(result, dict) and result.get("error"):
                     raise RuntimeError(f"remote run failed: {result}")
-                best = result.get("result", {}).get("best_score") if isinstance(result.get("result"), dict) else None
-                if isinstance(best, (int, float)):
-                    self.monitor._best_fitness = float(best)
-                if isinstance(result.get("result"), dict):
-                    self.monitor._remote_result = result["result"]
+                remote_result = result.get("result") if isinstance(result.get("result"), dict) else None
+                if isinstance(remote_result, dict):
+                    best = _resolve_remote_primary_score(remote_result)
+                    if isinstance(best, (int, float)):
+                        self.monitor._best_fitness = float(best)
+                    best_gene = remote_result.get("best_gene")
+                    if best_gene is not None:
+                        try:
+                            self.monitor._best_solution = torch.as_tensor(best_gene)
+                        except Exception:
+                            self.monitor._best_solution = None
+                    points = remote_result.get("points")
+                    if isinstance(points, list) and points:
+                        last_iter = None
+                        for item in points:
+                            if isinstance(item, dict) and isinstance(item.get("iter"), int):
+                                last_iter = int(item["iter"])
+                        if last_iter is not None:
+                            self.monitor._generation = last_iter
+                        self.monitor._extra_history = [item for item in points if isinstance(item, dict)]
+                    elif isinstance(remote_result.get("hyperparams"), dict):
+                        hp_iters = remote_result["hyperparams"].get("iterations")
+                        if isinstance(hp_iters, int):
+                            self.monitor._generation = hp_iters
+                    objectives = remote_result.get("objectives") if isinstance(remote_result.get("objectives"), dict) else {}
+                    primary = objectives.get("primary")
+                    curves = remote_result.get("curves") if isinstance(remote_result.get("curves"), dict) else {}
+                    if primary and isinstance(curves.get(primary), list):
+                        self.monitor._fitness_history = [float(v) for v in curves.get(primary) if isinstance(v, (int, float))]
+                    self.monitor._remote_result = remote_result
                 run_ctx["ended_at"] = datetime.utcnow().isoformat() + "Z"
                 report_meta = self._emit_run_reports(run_ctx)
                 run_ctx["reports"] = report_meta

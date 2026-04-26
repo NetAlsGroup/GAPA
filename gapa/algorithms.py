@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from copy import deepcopy
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, Optional, Sequence
+import uuid
 
 import networkx as nx
 import numpy as np
@@ -27,6 +29,15 @@ class _CaptureSaveMixin:
             "method": method,
             "extra": dict(kwargs),
         }
+        capture_path = getattr(self, "capture_path", None)
+        if capture_path:
+            try:
+                Path(str(capture_path)).write_text(
+                    json.dumps(_json_safe(self.captured_result), ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
         return super().save(dataset, gene, best_metric, time_list, method, **kwargs)
 
 
@@ -35,6 +46,20 @@ def _datasets_root() -> Path:
     if repo_root.exists():
         return repo_root
     return Path(__file__).resolve().parent / "datasets"
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value.detach().cpu().tolist()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 class _LegacyAlgorithm(Algorithm):
@@ -71,6 +96,66 @@ class _LegacyAlgorithm(Algorithm):
             elif isinstance(payload, (int, float)):
                 monitor._fitness_history.append(float(payload))
         return on_iter
+
+    @classmethod
+    def _observer_spec(cls, workflow: Any, name: str):
+        if getattr(workflow, "mode", None) in ("m", "mnm"):
+            path = cls._results_dir(name) / f"observer_{uuid.uuid4().hex}.jsonl"
+            return {"type": "jsonl", "path": str(path)}
+        return cls._observer(workflow.monitor)
+
+    @staticmethod
+    def _capture_path(name: str) -> Path:
+        return _LegacyAlgorithm._results_dir(name) / f"capture_{uuid.uuid4().hex}.json"
+
+    @staticmethod
+    def _load_capture(path: Optional[Path]) -> Optional[Dict[str, Any]]:
+        if path is None or not path.exists():
+            return None
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else None
+        except Exception:
+            return None
+
+    @classmethod
+    def _consume_observer_spec(cls, monitor: Monitor, observer: Any) -> None:
+        if not isinstance(observer, dict) or observer.get("type") != "jsonl" or not observer.get("path"):
+            return
+        path = Path(str(observer.get("path")))
+        if not path.exists():
+            return
+        try:
+            rows = []
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                if isinstance(obj, dict):
+                    rows.append(obj)
+        except Exception:
+            return
+        if not rows:
+            return
+        monitor._extra_history = []
+        monitor._fitness_history = []
+        last_gen = 0
+        for row in rows:
+            gen = int(row.get("generation") or 0)
+            last_gen = max(last_gen, gen)
+            metrics = row.get("metrics")
+            if isinstance(metrics, dict):
+                enriched = {"generation": gen, "max_generation": int(row.get("max_generation") or 0), **metrics}
+                monitor._extra_history.append(enriched)
+                fit = metrics.get("fitness")
+                if isinstance(fit, (int, float)):
+                    monitor._fitness_history.append(float(fit))
+            else:
+                fit = row.get("best_fitness")
+                if isinstance(fit, (int, float)):
+                    monitor._fitness_history.append(float(fit))
+        monitor._generation = last_gen
 
     @staticmethod
     def _as_tensor(gene: Any) -> Optional[torch.Tensor]:
@@ -154,6 +239,42 @@ class _LegacyAlgorithm(Algorithm):
         return None
 
 
+class CaptureSixDSTController(_CaptureSaveMixin):
+    pass
+
+
+_CAPTURE_CONTROLLER_SPECS = {
+    "CaptureSixDSTControllerRuntime": ("gapa.algorithm.CND.SixDST", "SixDSTController"),
+    "CaptureCutoffControllerRuntime": ("gapa.algorithm.CND.Cutoff", "CutoffController"),
+    "CaptureTDEControllerRuntime": ("gapa.algorithm.CND.TDE", "TDEController"),
+    "CaptureCGNControllerRuntime": ("gapa.algorithm.CDA.CGN", "CGNController"),
+    "CaptureQAttackControllerRuntime": ("gapa.algorithm.CDA.QAttack", "QAttackController"),
+    "CaptureCDAEDAControllerRuntime": ("gapa.algorithm.CDA.EDA", "EDAController"),
+    "CaptureLPAGAControllerRuntime": ("gapa.algorithm.LPA.LPA_GA", "GAController"),
+    "CaptureLPAEDAControllerRuntime": ("gapa.algorithm.LPA.EDA", "EDAController"),
+    "CaptureNCAGAControllerRuntime": ("gapa.algorithm.NCA.NCA_GA", "NCA_GAController"),
+}
+
+
+def _capture_controller_class(name: str, module_name: str, base_name: str) -> type:
+    existing = globals().get(name)
+    if isinstance(existing, type):
+        return existing
+    module = __import__(module_name, fromlist=[base_name])
+    base = getattr(module, base_name)
+    cls = type(name, (_CaptureSaveMixin, base), {})
+    cls.__module__ = __name__
+    globals()[name] = cls
+    return cls
+
+
+def __getattr__(name: str):
+    spec = _CAPTURE_CONTROLLER_SPECS.get(name)
+    if spec is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return _capture_controller_class(name, spec[0], spec[1])
+
+
 class SixDSTAlgorithm(_LegacyAlgorithm):
     def __init__(self, pop_size: int = 80, crossover_rate: float = 0.6, mutate_rate: float = 0.2, cutoff_tag: str = "popGreedy_cutoff_"):
         super().__init__()
@@ -166,12 +287,12 @@ class SixDSTAlgorithm(_LegacyAlgorithm):
     def run_full(self, workflow, steps: int) -> None:
         from gapa.algorithm.CND.SixDST import SixDST, SixDSTController, SixDSTEvaluator
         from gapa.utils.functions import set_seed
-
-        class CaptureController(_CaptureSaveMixin, SixDSTController):
-            pass
+        CaptureController = _capture_controller_class("CaptureSixDSTControllerRuntime", "gapa.algorithm.CND.SixDST", "SixDSTController")
 
         set_seed(1024)
         loader = self._clone_loader(workflow.data_loader, mode=workflow.mode, world_size=workflow.world_size)
+        observer = self._observer_spec(workflow, "sixdst")
+        capture_path = self._capture_path("sixdst")
         controller = CaptureController(
             path=str(self._results_dir("sixdst")) + "/",
             pattern="write",
@@ -183,11 +304,13 @@ class SixDSTAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer(workflow.monitor)
+        controller.observer = observer
+        controller.capture_path = str(capture_path)
         evaluator = SixDSTEvaluator(pop_size=self.pop_size, adj=loader.A, device=workflow.device)
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         SixDST(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
-        self._apply_capture(workflow.monitor, controller.captured_result, ("PCG", "MCN"))
+        self._consume_observer_spec(workflow.monitor, observer)
+        self._apply_capture(workflow.monitor, controller.captured_result or self._load_capture(capture_path), ("PCG", "MCN"))
 
 
 class CutOffAlgorithm(_LegacyAlgorithm):
@@ -201,9 +324,7 @@ class CutOffAlgorithm(_LegacyAlgorithm):
 
     def run_full(self, workflow, steps: int) -> None:
         from gapa.algorithm.CND.Cutoff import Cutoff, CutoffController, CutoffEvaluator
-
-        class CaptureController(_CaptureSaveMixin, CutoffController):
-            pass
+        CaptureController = _capture_controller_class("CaptureCutoffControllerRuntime", "gapa.algorithm.CND.Cutoff", "CutoffController")
 
         loader = self._clone_loader(workflow.data_loader, mode=workflow.mode, world_size=workflow.world_size)
         controller = CaptureController(
@@ -217,7 +338,7 @@ class CutOffAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer(workflow.monitor)
+        controller.observer = self._observer_spec(workflow, "cutoff")
         evaluator = CutoffEvaluator(pop_size=self.pop_size, graph=loader.G, nodes=loader.nodes, device=workflow.device)
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         Cutoff(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
@@ -234,9 +355,7 @@ class TDEAlgorithm(_LegacyAlgorithm):
 
     def run_full(self, workflow, steps: int) -> None:
         from gapa.algorithm.CND.TDE import TDE, TDEController, TDEEvaluator
-
-        class CaptureController(_CaptureSaveMixin, TDEController):
-            pass
+        CaptureController = _capture_controller_class("CaptureTDEControllerRuntime", "gapa.algorithm.CND.TDE", "TDEController")
 
         loader = self._clone_loader(workflow.data_loader, mode=workflow.mode, world_size=workflow.world_size)
         controller = CaptureController(
@@ -249,7 +368,7 @@ class TDEAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer(workflow.monitor)
+        controller.observer = self._observer_spec(workflow, "tde")
         evaluator = TDEEvaluator(pop_size=self.pop_size, graph=loader.G, budget=loader.k, device=workflow.device)
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         TDE(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
@@ -266,9 +385,7 @@ class CGNAlgorithm(_LegacyAlgorithm):
 
     def run_full(self, workflow, steps: int) -> None:
         from gapa.algorithm.CDA.CGN import CGN, CGNController, CGNEvaluator
-
-        class CaptureController(_CaptureSaveMixin, CGNController):
-            pass
+        CaptureController = _capture_controller_class("CaptureCGNControllerRuntime", "gapa.algorithm.CDA.CGN", "CGNController")
 
         loader = self._clone_loader(workflow.data_loader, mode=workflow.mode, world_size=workflow.world_size)
         controller = CaptureController(
@@ -281,7 +398,7 @@ class CGNAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer(workflow.monitor)
+        controller.observer = self._observer_spec(workflow, "cgn")
         evaluator = CGNEvaluator(pop_size=self.pop_size, graph=loader.G.copy(), device=workflow.device)
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         CGN(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
@@ -298,9 +415,7 @@ class QAttackAlgorithm(_LegacyAlgorithm):
 
     def run_full(self, workflow, steps: int) -> None:
         from gapa.algorithm.CDA.QAttack import QAttack, QAttackController, QAttackEvaluator
-
-        class CaptureController(_CaptureSaveMixin, QAttackController):
-            pass
+        CaptureController = _capture_controller_class("CaptureQAttackControllerRuntime", "gapa.algorithm.CDA.QAttack", "QAttackController")
 
         loader = self._clone_loader(workflow.data_loader, mode=workflow.mode, world_size=workflow.world_size)
         controller = CaptureController(
@@ -313,7 +428,7 @@ class QAttackAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer(workflow.monitor)
+        controller.observer = self._observer_spec(workflow, "qattack")
         evaluator = QAttackEvaluator(pop_size=self.pop_size, graph=loader.G.copy(), device=workflow.device)
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         QAttack(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
@@ -330,9 +445,7 @@ class CDAEDAAlgorithm(_LegacyAlgorithm):
 
     def run_full(self, workflow, steps: int) -> None:
         from gapa.algorithm.CDA.EDA import EDA, EDAController, EDAEvaluator
-
-        class CaptureController(_CaptureSaveMixin, EDAController):
-            pass
+        CaptureController = _capture_controller_class("CaptureCDAEDAControllerRuntime", "gapa.algorithm.CDA.EDA", "EDAController")
 
         loader = self._clone_loader(workflow.data_loader, mode=workflow.mode, world_size=workflow.world_size)
         controller = CaptureController(
@@ -345,7 +458,7 @@ class CDAEDAAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer(workflow.monitor)
+        controller.observer = self._observer_spec(workflow, "cda_eda")
         evaluator = EDAEvaluator(pop_size=self.pop_size, graph=loader.G.copy(), adj=loader.A, nodes_num=loader.nodes_num, device=workflow.device)
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         EDA(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
@@ -363,9 +476,7 @@ class LPAGAAlgorithm(_LegacyAlgorithm):
 
     def run_full(self, workflow, steps: int) -> None:
         from gapa.algorithm.LPA.LPA_GA import GAEvaluator, GAController, LPA_GA
-
-        class CaptureController(_CaptureSaveMixin, GAController):
-            pass
+        CaptureController = _capture_controller_class("CaptureLPAGAControllerRuntime", "gapa.algorithm.LPA.LPA_GA", "GAController")
 
         edges = torch.tensor(list(workflow.data_loader.G.edges), device=workflow.device)
         loader = self._clone_loader(
@@ -386,7 +497,7 @@ class LPAGAAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer(workflow.monitor)
+        controller.observer = self._observer_spec(workflow, "lpa_ga")
         evaluator = GAEvaluator(pop_size=self.pop_size, graph=loader.G, ratio=0, device=workflow.device)
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         LPA_GA(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
@@ -403,9 +514,7 @@ class LPAEDAAlgorithm(_LegacyAlgorithm):
 
     def run_full(self, workflow, steps: int) -> None:
         from gapa.algorithm.LPA.EDA import EDA, EDAController, EDAEvaluator
-
-        class CaptureController(_CaptureSaveMixin, EDAController):
-            pass
+        CaptureController = _capture_controller_class("CaptureLPAEDAControllerRuntime", "gapa.algorithm.LPA.EDA", "EDAController")
 
         edges = torch.tensor(list(workflow.data_loader.G.edges), device=workflow.device)
         loader = self._clone_loader(
@@ -426,7 +535,7 @@ class LPAEDAAlgorithm(_LegacyAlgorithm):
             num_eda_pop=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer(workflow.monitor)
+        controller.observer = self._observer_spec(workflow, "lpa_eda")
         evaluator = EDAEvaluator(pop_size=self.pop_size, graph=loader.G, ratio=0, device=workflow.device)
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         EDA(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
@@ -489,9 +598,7 @@ class NCAGAAlgorithm(_LegacyAlgorithm):
     def run_full(self, workflow, steps: int) -> None:
         from gapa.algorithm.NCA.NCA_GA import NCA_GA, NCA_GAController, NCA_GAEvaluator
         from gapa.DeepLearning.Classifier import Classifier, load_set
-
-        class CaptureController(_CaptureSaveMixin, NCA_GAController):
-            pass
+        CaptureController = _capture_controller_class("CaptureNCAGAControllerRuntime", "gapa.algorithm.NCA.NCA_GA", "NCA_GAController")
 
         loader = self._load_nca_payload(workflow.data_loader, workflow.device)
         loader.k = max(1, int(self.attack_rate * loader.num_edge))
@@ -510,7 +617,7 @@ class NCAGAAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer(workflow.monitor)
+        controller.observer = self._observer_spec(workflow, "nca_ga")
         evaluator = NCA_GAEvaluator(
             classifier=classifier,
             feats=loader.feats,
@@ -569,7 +676,7 @@ class GANIAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer(workflow.monitor)
+        controller.observer = self._observer_spec(workflow, "gani")
         capture: Dict[str, Any] = {}
         original_save = sga_module.SGAAlgorithm.save
 
