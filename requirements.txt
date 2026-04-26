@@ -1,7 +1,6 @@
 # Beginner/core dependency set.
-# For heavier source installs use:
+# For all runtime features use:
 #   pip install -r requirements/full.txt
-#   pip install -r requirements/attack.txt
-#   pip install -r requirements/distributed.txt
+# For development tools as well use:
 #   pip install -r requirements/dev.txt
 -r requirements/core.txt

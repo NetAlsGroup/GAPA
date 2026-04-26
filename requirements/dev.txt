@@ -1,5 +1,4 @@
--r attack.txt
--r distributed.txt
+-r full.txt
 
 pytest>=7.0.0
 black>=23.0.0
