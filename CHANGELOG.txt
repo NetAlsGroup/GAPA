@@ -1,6 +1,12 @@
 GAPA Changelog
 ==============
 
+2026-04
+-------
+- Iteration 19: Fixed remote execution alignment with local runtime (server_agent.py protocol mismatch)
+- Added 148 server bare repo with automatic deployment hook for TestGAPA branch
+- Configured server-command SKILL for 148 server management
+
 2026-03
 -------
 - Iteration 01: Refactored cross-platform mode runtime selection with deterministic degrade chain and explicit reason/code exposure.

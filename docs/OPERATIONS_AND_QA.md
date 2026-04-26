@@ -31,6 +31,19 @@ For MNM validation in the public workflow, start from the local resource view an
 
 Release-grade MNM communication benchmarking and QA packaging remain internal.
 
+## Server Deployment Hook Configuration
+
+**148 Server Setup:**
+- Bare repo: `/public2/zhoumeng/repos/GAPA.git`
+- Working tree: `/public2/zhoumeng/GAPA/`
+- Hook: `post-receive` with `TARGET_BRANCH="TestGAPA"`
+- Push command: `GIT_SSH=/tmp/git-ssh-148.sh git push 148 TestGAPA`
+
+**Common Issue:** Hook only listens to configured branch. If push doesn't trigger deploy, check:
+1. Hook `TARGET_BRANCH` matches pushed branch name
+2. Bare repo is bare (not a working repo)
+3. Working tree path exists with correct permissions
+
 ## Release Candidate Package
 
 - RC checklist: `docs/RC_CHECKLIST_ITERATION_15.md`
