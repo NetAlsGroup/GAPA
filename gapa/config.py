@@ -5,7 +5,6 @@ import os
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List
-from urllib.parse import urlparse
 
 
 def _project_root() -> Path:
@@ -14,6 +13,10 @@ def _project_root() -> Path:
 
 def _dotenv_path() -> Path:
     return _project_root() / ".env"
+
+
+def _servers_json_path() -> Path:
+    return _project_root() / "servers.json"
 
 
 @lru_cache(maxsize=1)
@@ -61,19 +64,6 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-def _env_json_list(name: str, default: List[str] | None = None) -> List[str]:
-    value = _setting(name)
-    if value is None or not str(value).strip():
-        return list(default or [])
-    try:
-        parsed = json.loads(value)
-    except Exception:
-        return list(default or [])
-    if not isinstance(parsed, list):
-        return list(default or [])
-    return [str(item).strip() for item in parsed if str(item).strip()]
-
-
 def get_app_host() -> str:
     return str(_setting("GAPA_APP_HOST") or "127.0.0.1").strip() or "127.0.0.1"
 
@@ -101,8 +91,24 @@ def get_results_dir(base_dir: Path | None = None) -> Path:
     return path.resolve()
 
 
-def get_remote_servers() -> List[str]:
-    return _env_json_list("GAPA_REMOTE_SERVERS", [])
+def get_dataset_dir(base_dir: Path | None = None) -> Path:
+    root = base_dir or _project_root()
+    raw = _setting("GAPA_DATASET_DIR")
+    if raw:
+        path = Path(str(raw)).expanduser()
+        if not path.is_absolute():
+            path = root / path
+        return path.resolve()
+
+    candidates = [
+        root / "datasets",
+        root / "dataset",
+        root / "gapa" / "datasets",
+    ]
+    for path in candidates:
+        if path.exists():
+            return path.resolve()
+    return (root / "datasets").resolve()
 
 
 def get_resource_filters() -> Dict[str, Any]:
@@ -120,26 +126,46 @@ def get_app_base_url() -> str:
 def build_remote_server_entries() -> List[Dict[str, Any]]:
     entries: List[Dict[str, Any]] = []
     seen: set[str] = set()
-    for index, url in enumerate(get_remote_servers(), start=1):
-        base_url = str(url).rstrip("/")
-        if not base_url or base_url in seen:
+    for item in _load_servers_json_entries():
+        if not isinstance(item, dict):
+            continue
+        entry = dict(item)
+        base_url = str(entry.get("base_url") or "").strip()
+        host = str(entry.get("ip") or entry.get("host") or "").strip()
+        port = entry.get("port")
+        protocol = str(entry.get("protocol") or "http").strip() or "http"
+        if not base_url and host:
+            base_url = f"{protocol}://{host}{f':{port}' if port else ''}"
+        if not base_url:
+            continue
+        if base_url in seen:
             continue
         seen.add(base_url)
-        parsed = urlparse(base_url)
-        host = parsed.hostname or ""
-        port = parsed.port
-        protocol = parsed.scheme or "http"
-        server_id = f"{host}-{port}" if host and port else (host or f"remote-{index}")
-        entries.append(
-            {
-                "id": server_id,
-                "name": host or f"remote-{index}",
-                "host": host,
-                "ip": host,
-                "port": port,
-                "protocol": protocol,
-                "base_url": base_url,
-                "type": "remote",
-            }
-        )
+        entry["base_url"] = base_url.rstrip("/")
+        entry.setdefault("protocol", protocol)
+        entry.setdefault("host", host)
+        entry.setdefault("ip", host)
+        entry.setdefault("type", "remote")
+        if port is not None:
+            entry["port"] = port
+        entry.setdefault("id", f"{host}-{port}" if host and port else (host or entry["base_url"]))
+        entry.setdefault("name", host or entry["id"])
+        entries.append(entry)
     return entries
+
+
+def _load_servers_json_entries() -> List[Dict[str, Any]]:
+    path = _servers_json_path()
+    if not path.exists():
+        return []
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if isinstance(parsed, dict):
+        servers = parsed.get("servers")
+    else:
+        servers = parsed
+    if not isinstance(servers, list):
+        return []
+    return [item for item in servers if isinstance(item, dict)]

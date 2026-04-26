@@ -191,6 +191,7 @@ def _ga_entry(
     iterations: int,
     pc: float,
     pm: float,
+    pop_size: int | None,
     selected: dict,
     q: mp.Queue,
     resume_id: str | None = None,
@@ -208,6 +209,7 @@ def _ga_entry(
             iterations,
             pc,
             pm,
+            pop_size,
             selected,
             q,
             resume_state=resume_state,
@@ -928,6 +930,7 @@ def api_analysis_start():
                     "iterations": payload.get("iterations"),
                     "crossover_rate": payload.get("crossover_rate"),
                     "mutate_rate": payload.get("mutate_rate"),
+                    "pop_size": payload.get("pop_size"),
                     "mode": payload.get("mode"),
                     "devices": payload.get("devices"),
                     "use_strategy_plan": payload.get("use_strategy_plan"),
@@ -955,6 +958,7 @@ def api_analysis_start():
             iterations = int(payload.get("iterations") or payload.get("max_generation") or 20)
             pc = float(payload.get("crossover_rate") or payload.get("pc") or 0.8)
             pm = float(payload.get("mutate_rate") or payload.get("pm") or 0.2)
+            pop_size = int(payload.get("pop_size")) if payload.get("pop_size") is not None else None
             run_id = str(payload.get("run_id") or uuid.uuid4())
             retry_last = bool(payload.get("retry_last", False))
             resume_id = payload.get("resume_id") or payload.get("checkpoint_ref")
@@ -1041,7 +1045,7 @@ def api_analysis_start():
                 selected["mode_decision"] = mode_decision
                 proc = ctx.Process(
                     target=_ga_entry,
-                    args=(task_id, algorithm, dataset, iterations, pc, pm, selected, q, resume_id),
+                    args=(task_id, algorithm, dataset, iterations, pc, pm, pop_size, selected, q, resume_id),
                 )
                 LOCAL_TASK.queue = q
                 LOCAL_TASK.process = proc

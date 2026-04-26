@@ -6,7 +6,7 @@ servers = manager.server()
 remote_servers = [item for item in servers if item.get("id") != "local"] if isinstance(servers, list) else []
 
 if not remote_servers:
-    print({"error": "no remote server configured in .env / GAPA_REMOTE_SERVERS"})
+    print({"error": "no remote server configured in servers.json"})
 else:
     data = DataLoader.load("Circuit")
     monitor = Monitor()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -28,6 +29,14 @@ def _err(code: str, message: str, **extra: Any) -> Dict[str, Any]:
     }
     out.update(extra)
     return out
+
+
+def _remote_start_timeout() -> float:
+    raw = os.getenv("GAPA_REMOTE_START_TIMEOUT", "120")
+    try:
+        return max(20.0, float(raw))
+    except Exception:
+        return 120.0
 
 
 def resolve_algorithm_id(algorithm: Any) -> str:
@@ -94,8 +103,9 @@ def start_remote_run(
     mode: str,
     crossover_rate: float,
     mutate_rate: float,
+    pop_size: Optional[int] = None,
     use_strategy_plan: Optional[bool] = None,
-    timeout_s: float = 20.0,
+    timeout_s: Optional[float] = None,
 ) -> Dict[str, Any]:
     base_url = (server.get("base_url") or "").rstrip("/")
     if not base_url:
@@ -109,6 +119,8 @@ def start_remote_run(
         "mutate_rate": float(mutate_rate),
         "mode": str(mode or "").upper(),
     }
+    if pop_size is not None:
+        payload["pop_size"] = int(pop_size)
     if use_strategy_plan is not None:
         payload["use_strategy_plan"] = bool(use_strategy_plan)
     if getattr(requests, "post", None) is None:
@@ -116,7 +128,8 @@ def start_remote_run(
     try:
         session = requests.Session()
         session.trust_env = False
-        resp = session.post(url, json=payload, timeout=timeout_s)
+        read_timeout = float(timeout_s if timeout_s is not None else _remote_start_timeout())
+        resp = session.post(url, json=payload, timeout=(3.0, read_timeout))
     except Exception as exc:
         return _err("HTTP_REQUEST_FAILED", str(exc), url=url)
     if not resp.ok:
@@ -187,7 +200,9 @@ def run_remote_task(
     mode: str,
     crossover_rate: float,
     mutate_rate: float,
+    pop_size: Optional[int] = None,
     use_strategy_plan: Optional[bool] = None,
+    start_timeout_s: Optional[float] = None,
     max_polls: int = 600,
     interval_s: float = 1.0,
 ) -> Dict[str, Any]:
@@ -202,7 +217,9 @@ def run_remote_task(
         mode=mode,
         crossover_rate=crossover_rate,
         mutate_rate=mutate_rate,
+        pop_size=pop_size,
         use_strategy_plan=use_strategy_plan,
+        timeout_s=start_timeout_s,
     )
     if started.get("error"):
         return started

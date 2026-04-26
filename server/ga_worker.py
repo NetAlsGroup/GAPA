@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from time import perf_counter
 
+from gapa.config import get_dataset_dir
 
 def select_run_mode(mode: str | None, devices: Any) -> Dict[str, Any]:
     """Select requested mode/devices without mutating environment.
@@ -51,6 +52,7 @@ def ga_worker(
     iterations: int,
     crossover_rate: float,
     mutate_rate: float,
+    pop_size: Optional[int],
     selected: Dict[str, Any],
     q: Any,
     resume_state: Optional[Dict[str, Any]] = None,
@@ -73,8 +75,8 @@ def ga_worker(
         except Exception:
             _pynvml = None
 
-        dataset_dir = Path(os.getenv("GAPA_DATASET_DIR", str(Path(__file__).resolve().parent.parent / "dataset")))
         repo_root = Path(__file__).resolve().parent.parent
+        dataset_dir = get_dataset_dir(repo_root)
 
         def _find_dataset_file(name: str) -> Optional[Path]:
             if not name:
@@ -354,7 +356,7 @@ def ga_worker(
                 "iterations": int(iterations),
                 "crossover_rate": float(crossover_rate),
                 "mutate_rate": float(mutate_rate),
-                "pop_size": int(os.getenv("GAPA_GA_POP_SIZE", "100")),
+                "pop_size": int(pop_size if pop_size is not None else os.getenv("GAPA_GA_POP_SIZE", "100")),
             },
             "selected": {
                 "mode": ui_mode,

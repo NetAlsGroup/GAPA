@@ -783,11 +783,13 @@ class ResourceManager:
         mode: str = "S",
         crossover_rate: float = 0.8,
         mutate_rate: float = 0.2,
+        pop_size: Optional[int] = None,
         server_id: Optional[str] = None,
         queue_if_busy: bool = False,
         owner: str = "",
         priority: int = 0,
         release_lock_on_finish: bool = True,
+        timeout_s: Optional[float] = None,
         extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         base = self._resolve_api_base()
@@ -803,11 +805,19 @@ class ResourceManager:
             "priority": int(priority),
             "release_lock_on_finish": bool(release_lock_on_finish),
         }
+        if pop_size is not None:
+            payload["pop_size"] = int(pop_size)
         if server_id:
             payload["server_id"] = server_id
+        if timeout_s is not None:
+            payload["timeout_s"] = float(timeout_s)
         if isinstance(extra, dict):
             payload.update(extra)
-        return self._http_post_json(f"{base}/api/analysis/start", payload)
+        return self._http_post_json(
+            f"{base}/api/analysis/start",
+            payload,
+            timeout_s=max(float(timeout_s or self.timeout_s), 30.0),
+        )
 
     def analysis_stop(self, server_id: Optional[str] = None) -> Dict[str, Any]:
         base = self._resolve_api_base()

@@ -128,6 +128,7 @@ def _ga_entry(
     iterations: int,
     crossover_rate: float,
     mutate_rate: float,
+    pop_size: int | None,
     selected: Dict[str, Any],
     q: Any,
     resume_id: str | None = None,
@@ -143,7 +144,7 @@ def _ga_entry(
             resume_state = db_manager.get_ga_state(resume_id)
         except Exception:
             resume_state = None
-    ga_worker(task_id, algorithm, dataset, iterations, crossover_rate, mutate_rate, selected, q, resume_state=resume_state)
+    ga_worker(task_id, algorithm, dataset, iterations, crossover_rate, mutate_rate, pop_size, selected, q, resume_state=resume_state)
 
 
 def _resolve_selected(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -340,6 +341,7 @@ def _start_task_locked(
     iterations: int,
     crossover_rate: float,
     mutate_rate: float,
+    pop_size: int | None,
     selected: Dict[str, Any],
     mode_decision: Dict[str, Any],
     schema_version: str,
@@ -375,7 +377,7 @@ def _start_task_locked(
     q = ctx.Queue()
     proc = ctx.Process(
         target=_ga_entry,
-        args=(task_id, algorithm, dataset, iterations, crossover_rate, mutate_rate, selected, q, resume_id),
+        args=(task_id, algorithm, dataset, iterations, crossover_rate, mutate_rate, pop_size, selected, q, resume_id),
     )
     TASK.queue = q
     TASK.process = proc
@@ -425,6 +427,7 @@ def _try_dispatch_next_task() -> None:
             iterations=int(payload.get("iterations") or payload.get("max_generation") or 20),
             crossover_rate=float(payload.get("crossover_rate") or payload.get("pc") or 0.8),
             mutate_rate=float(payload.get("mutate_rate") or payload.get("pm") or 0.2),
+            pop_size=int(payload.get("pop_size")) if payload.get("pop_size") is not None else None,
             selected=selected,
             mode_decision=mode_decision,
             schema_version=schema_version,
@@ -444,6 +447,7 @@ def api_analysis_start(payload: Dict[str, Any]) -> Dict[str, Any]:
     iterations = int(payload.get("iterations") or payload.get("max_generation") or 20)
     crossover_rate = float(payload.get("crossover_rate") or payload.get("pc") or 0.8)
     mutate_rate = float(payload.get("mutate_rate") or payload.get("pm") or 0.2)
+    pop_size = int(payload.get("pop_size")) if payload.get("pop_size") is not None else None
     run_id = str(payload.get("run_id") or uuid.uuid4())
     retry_last = bool(payload.get("retry_last", False))
     resume_id = str(payload.get("resume_id") or payload.get("checkpoint_ref") or "")
@@ -513,6 +517,7 @@ def api_analysis_start(payload: Dict[str, Any]) -> Dict[str, Any]:
             iterations=iterations,
             crossover_rate=crossover_rate,
             mutate_rate=mutate_rate,
+            pop_size=pop_size,
             selected=selected,
             mode_decision=mode_decision,
             schema_version=schema_version,

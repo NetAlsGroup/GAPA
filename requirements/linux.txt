@@ -6,5 +6,20 @@
 # Verified step 1: install PyTorch CUDA 11.8 runtime.
 #   pip install -r requirements/linux-cu118-torch.txt
 #
-# Non-Torch dependencies will be added here after server-side installation
-# testing confirms compatible versions.
+# Verified step 2: server/runtime support.
+fastapi
+requests
+psutil
+pynvml
+tqdm
+scipy
+igraph==0.11.6
+deeprobust
+pandas
+yacs
+#
+# Verified step 3: graph runtime packages with custom wheel source.
+#   pip install dgl -f https://data.dgl.ai/wheels/torch-2.6/cu118/repo.html
+#
+# Additional algorithm dependencies will be added here after server-side
+# installation testing confirms compatible versions.

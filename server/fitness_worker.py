@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Optional, Tuple
 
+from gapa.config import get_dataset_dir
 
 torch = None
 
@@ -35,7 +36,7 @@ def _repo_root() -> Path:
 
 
 def _dataset_dir() -> Path:
-    return Path(os.getenv("GAPA_DATASET_DIR", str(_repo_root() / "dataset")))
+    return get_dataset_dir(_repo_root())
 
 
 def _find_dataset_file(name: str) -> Optional[Path]:

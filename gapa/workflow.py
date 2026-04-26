@@ -404,6 +404,7 @@ class _MonitorResourceCompatibility:
         owner: str = "",
         priority: int = 0,
         release_lock_on_finish: bool = True,
+        timeout_s: Optional[float] = None,
         extra: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         return self._resource().analysis_start(
@@ -418,6 +419,7 @@ class _MonitorResourceCompatibility:
             owner=owner,
             priority=priority,
             release_lock_on_finish=release_lock_on_finish,
+            timeout_s=timeout_s,
             extra=extra,
         )
 
@@ -1276,9 +1278,11 @@ class Workflow:
                     dataset=dataset_name,
                     iterations=steps,
                     mode=self.mode,
-                    crossover_rate=0.8,
-                    mutate_rate=0.2,
+                    crossover_rate=float(getattr(self.algorithm, "crossover_rate", 0.8)),
+                    mutate_rate=float(getattr(self.algorithm, "mutate_rate", 0.2)),
+                    pop_size=int(getattr(self.algorithm, "pop_size", 100)) if hasattr(self.algorithm, "pop_size") else None,
                     use_strategy_plan=self.remote_use_strategy_plan,
+                    start_timeout_s=max(20.0, float(os.getenv("GAPA_REMOTE_START_TIMEOUT", "120") or 120)),
                 )
                 if isinstance(result, dict) and result.get("error"):
                     raise RuntimeError(f"remote run failed: {result}")

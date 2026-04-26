@@ -48,6 +48,7 @@
 
 # Always ignore generated/local/private files, even under allowed dirs.
 **/.DS_Store
+__pycache__/
 **/__pycache__/
 *.py[cod]
 *.pyo
@@ -76,6 +77,7 @@ htmlcov/
 /.env.*
 !/.env.example
 /servers.json
+!/servers.json.example
 
 # Non-core project surfaces.
 /app.py
