@@ -675,12 +675,21 @@ class Monitor(_MonitorResourceCompatibility):
                 metrics.update(metrics_block)
             if isinstance(objectives, dict):
                 metrics["objectives"] = objectives
+        comm: Dict[str, Any] = {}
+        if self._remote_result:
+            comm_block = self._remote_result.get("comm")
+            comm_detailed = self._remote_result.get("comm_detailed")
+            if isinstance(comm_block, dict):
+                comm.update(comm_block)
+            if isinstance(comm_detailed, dict):
+                comm["detailed"] = comm_detailed
         return {
             "best_fitness": self._best_fitness,
             "best_gene": self._serialize_gene(self._best_solution),
             "iterations": self._iteration_count(),
             "elapsed_seconds": timing.get("iter_seconds"),
             "metrics": metrics,
+            "comm": comm,
             "report_path": report_meta.get("summary_path"),
         }
 
@@ -1147,6 +1156,22 @@ class Workflow:
         if not self.verbose or not isinstance(report_meta, dict) or not report_meta.get("enabled"):
             return
         print(f"[GAPA] Report saved: {report_meta.get('summary_path')}")
+        summary = report_meta.get("summary") if isinstance(report_meta.get("summary"), dict) else {}
+        comm_avg = summary.get("comm_avg_ms")
+        comm_total = summary.get("comm_total_ms")
+        comm_calls = summary.get("comm_calls")
+        if any(v is not None for v in (comm_avg, comm_total, comm_calls)):
+            print(
+                "[GAPA] Comm: "
+                f"type={summary.get('comm_type')} "
+                f"avg_ms={comm_avg} total_ms={comm_total} calls={comm_calls}"
+            )
+        per_rank = summary.get("comm_per_rank_avg_ms")
+        if isinstance(per_rank, dict) and per_rank:
+            print(f"[GAPA] Comm per-rank avg ms: {per_rank}")
+        transport = summary.get("transport_metrics")
+        if isinstance(transport, dict) and transport:
+            print(f"[GAPA] Transport metrics: {transport}")
         bench = report_meta.get("benchmark") if isinstance(report_meta.get("benchmark"), dict) else {}
         if bench.get("regressed"):
             print(f"[WARN] Benchmark regression detected: ratio={bench.get('ratio'):.3f} threshold={bench.get('threshold'):.3f}")
@@ -1226,7 +1251,17 @@ class Workflow:
             "iter_seconds": timing.get("iter_seconds"),
             "iter_avg_ms": timing.get("iter_avg_ms"),
             "throughput_ips": timing.get("throughput_ips"),
+            "comm_type": comm.get("type"),
             "comm_avg_ms": comm.get("avg_ms"),
+            "comm_total_ms": comm.get("total_ms") or comm.get("total_comm_ms"),
+            "comm_calls": comm.get("calls"),
+            "comm_wall_clock_ms": comm.get("wall_clock_ms"),
+            "comm_per_rank_avg_ms": comm.get("per_rank_avg_ms") or comm.get("per_rank_ms"),
+            "transport_metrics": (
+                report.get("raw_result", {}).get("comm_detailed", {}).get("transport")
+                if isinstance(report.get("raw_result"), dict)
+                else None
+            ),
             "started_at": run_ctx.get("started_at"),
             "ended_at": run_ctx.get("ended_at"),
         }
@@ -1257,6 +1292,7 @@ class Workflow:
             "full_path": str(full_path),
             "summary_path": str(summary_path),
             "jsonl_path": str(jsonl_path),
+            "summary": summary,
             "benchmark": benchmark,
         }
     
