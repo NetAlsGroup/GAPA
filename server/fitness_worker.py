@@ -133,16 +133,8 @@ class _FitnessContext:
 
     def _prepare(self) -> None:
         torch = _require_torch()
-        try:
-            import networkx as nx  # type: ignore
-        except Exception as exc:
-            raise RuntimeError(f"networkx is required for {self.algorithm}: {exc}") from exc
         import io
         import contextlib
-
-        ds_file = _find_dataset_file(self.dataset)
-        if ds_file is None:
-            raise FileNotFoundError(f"dataset .txt not found for '{self.dataset}' under {_dataset_dir()}")
 
         algo = (self.algorithm or "").strip()
         try:
@@ -151,159 +143,9 @@ class _FitnessContext:
         except Exception:
             pass
 
-        def _adjlist(sort_nodes: bool) -> Dict[str, Any]:
-            g0 = nx.read_adjlist(str(ds_file), nodetype=int)
-            nodelist0 = sorted(list(g0.nodes())) if sort_nodes else list(g0.nodes())
-            a0 = torch.tensor(nx.to_numpy_array(g0, nodelist=nodelist0), dtype=torch.float32)
-            if sort_nodes:
-                g1 = nx.from_numpy_array(a0.cpu().numpy())
-                return {"G": g1, "A": a0.to(self.device) if self.device != "cpu" else a0, "nodelist": list(g1.nodes())}
-            return {"G": g0, "A": a0.to(self.device) if self.device != "cpu" else a0, "nodelist": nodelist0}
-
-        if algo == "SixDST":
-            from gapa.algorithm.CND.SixDST import SixDSTController, SixDSTEvaluator  # type: ignore
-
-            loaded = _adjlist(sort_nodes=True)
-            data_loader = SimpleNamespace(dataset=self.dataset, device=self.device)
-            data_loader.G = loaded["G"]
-            data_loader.A = loaded["A"]
-            data_loader.nodes_num = int(data_loader.A.shape[0])
-            data_loader.nodes = torch.tensor(loaded["nodelist"], device=self.device)
-            data_loader.selected_genes_num = int(0.4 * data_loader.nodes_num)
-            data_loader.k = int(0.1 * data_loader.nodes_num)
-
-            controller = SixDSTController(
-                path=None,
-                pattern=None,
-                cutoff_tag="popGreedy_cutoff_",
-                data_loader=data_loader,
-                loops=1,
-                crossover_rate=0.8,
-                mutate_rate=0.2,
-                pop_size=1,
-                device=self.device,
-            )
-
-            def _setup(pop_size: int):
-                evaluator = SixDSTEvaluator(pop_size=pop_size, adj=data_loader.A, device=self.device)
-                from gapa.utils.functions import set_seed
-                set_seed(1024)
-                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    return controller.setup(data_loader=data_loader, evaluator=evaluator)
-
-            self._data = data_loader
-            self._evaluator_setup = _setup
-            return
-
-        if algo == "CutOff":
-            from gapa.algorithm.CND.Cutoff import CutoffController, CutoffEvaluator  # type: ignore
-
-            loaded = _adjlist(sort_nodes=True)
-            data_loader = SimpleNamespace(dataset=self.dataset, device=self.device)
-            data_loader.G = loaded["G"]
-            data_loader.A = loaded["A"]
-            data_loader.nodes_num = int(data_loader.A.shape[0])
-            data_loader.nodes = torch.tensor(loaded["nodelist"], device=self.device)
-            data_loader.selected_genes_num = int(0.4 * data_loader.nodes_num)
-            data_loader.k = int(0.1 * data_loader.nodes_num)
-
-            controller = CutoffController(
-                path=None,
-                pattern=None,
-                data_loader=data_loader,
-                loops=1,
-                crossover_rate=0.8,
-                mutate_rate=0.2,
-                pop_size=1,
-                device=self.device,
-            )
-
-            def _setup(pop_size: int):
-                evaluator = CutoffEvaluator(pop_size=pop_size, graph=data_loader.G, nodes=data_loader.nodes, device=self.device)
-                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    return controller.setup(data_loader=data_loader, evaluator=evaluator)
-
-            self._data = data_loader
-            self._evaluator_setup = _setup
-            return
-
-        if algo == "TDE":
-            from gapa.algorithm.CND.TDE import TDEController, TDEEvaluator  # type: ignore
-
-            loaded = _adjlist(sort_nodes=True)
-            data_loader = SimpleNamespace(dataset=self.dataset, device=self.device)
-            data_loader.G = loaded["G"]
-            data_loader.A = loaded["A"]
-            data_loader.nodes_num = int(data_loader.A.shape[0])
-            data_loader.nodes = torch.tensor(loaded["nodelist"], device=self.device)
-            data_loader.selected_genes_num = int(0.4 * data_loader.nodes_num)
-            data_loader.k = int(0.1 * data_loader.nodes_num)
-
-            controller = TDEController(
-                path=None,
-                pattern=None,
-                data_loader=data_loader,
-                loops=1,
-                crossover_rate=0.8,
-                mutate_rate=0.2,
-                pop_size=1,
-                device=self.device,
-            )
-
-            def _setup(pop_size: int):
-                evaluator = TDEEvaluator(pop_size=pop_size, graph=data_loader.G, budget=data_loader.k, device=self.device)
-                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    return controller.setup(data_loader=data_loader, evaluator=evaluator)
-
-            self._data = data_loader
-            self._evaluator_setup = _setup
-            self._data = data_loader
-            self._evaluator_setup = _setup
-            return
-
-        if algo == "QAttack":
-            from gapa.algorithm.CDA.QAttack import QAttackController, QAttackEvaluator  # type: ignore
-
-            loaded = _load_gml(self.dataset, sort_nodes=True, rebuild_from_adj=False, device=self.device)
-            data_loader = SimpleNamespace(dataset=self.dataset, device=self.device)
-            data_loader.G = loaded["G"]
-            data_loader.A = loaded["A"]
-            data_loader.nodes_num = int(data_loader.A.shape[0])
-            data_loader.nodes = torch.tensor(loaded["nodelist"], device=self.device)
-            
-            # Replicate ga_worker logic for attack rate
-            attack_rate = float(os.getenv("GAPA_CDA_ATTACK_RATE", "0.1"))
-            data_loader.selected_genes_num = int(attack_rate * 4 * data_loader.nodes_num)
-            data_loader.k = int(attack_rate * data_loader.nodes_num)
-
-            controller = QAttackController(
-                path=None,
-                pattern=None,
-                data_loader=data_loader,
-                loops=1,
-                crossover_rate=0.8,
-                mutate_rate=0.2,
-                pop_size=1,
-                device=self.device,
-            )
-
-            def _setup(pop_size: int):
-                # QAttackEvaluator modifies graph, so pass a copy if needed, though here we create fresh one per worker usually
-                # But fitness_worker reuses context. data_loader.G is shared.
-                # QAttackEvaluator init: self.G = graph
-                # Check QAttackEvaluator source if it modifies G. Usually Evaluators might.
-                # ga_worker passes graph=data_loader.G.copy()
-                evaluator = QAttackEvaluator(pop_size=pop_size, graph=data_loader.G.copy(), device=self.device)
-                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                    return controller.setup(data_loader=data_loader, evaluator=evaluator)
-
-            self._data = data_loader
-            self._evaluator_setup = _setup
-            return
-
         # Generic registry path:
-        # If algorithm is registered in algorithms.json with an import entry,
-        # build evaluator/controller dynamically without hard-coding branches.
+        # Build distributed-fitness evaluator from the public algorithm wrapper,
+        # so remote/MNM workers share the same setup logic as local execution.
         try:
             from .algorithm_registry import load_algorithm_entries, load_algorithm_registry
             from gapa import DataLoader
@@ -353,6 +195,9 @@ class _FitnessContext:
 
                 def _setup(pop_size: int):
                     inst = _build_algorithm(pop_size)
+                    if hasattr(inst, "build_distributed_evaluator"):
+                        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                            return inst.build_distributed_evaluator(data_loader, torch_device, int(pop_size))
                     evaluator = inst.create_evaluator(data_loader)
                     controller = inst.create_controller(data_loader, mode="s", device=torch_device)
                     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):

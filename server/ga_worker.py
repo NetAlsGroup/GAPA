@@ -463,7 +463,6 @@ def ga_worker(
             "LPA-GA",
             "NCA-GA",
             "SGA",
-            "GANI",
         }
 
         def maybe_wrap_distributed(evaluator_obj: Any) -> Any:

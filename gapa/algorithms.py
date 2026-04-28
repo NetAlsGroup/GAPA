@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 import json
 from pathlib import Path
+import random
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, Optional, Sequence
 import uuid
@@ -70,6 +71,17 @@ class _LegacyAlgorithm(Algorithm):
 
     def create_controller(self, data_loader: DataLoader, mode: str, device: torch.device):
         raise NotImplementedError("Legacy algorithms use run_full() and do not expose incremental controllers.")
+
+    def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
+        raise NotImplementedError("Legacy algorithm does not expose distributed fitness setup.")
+
+    @staticmethod
+    def _seed_distributed_setup(seed: int = 1024) -> None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
 
     @staticmethod
     def _results_dir(name: str) -> Path:
@@ -312,6 +324,26 @@ class SixDSTAlgorithm(_LegacyAlgorithm):
         self._consume_observer_spec(workflow.monitor, observer)
         self._apply_capture(workflow.monitor, controller.captured_result or self._load_capture(capture_path), ("PCG", "MCN"))
 
+    def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
+        from gapa.algorithm.CND.SixDST import SixDSTController, SixDSTEvaluator
+        from gapa.utils.functions import set_seed
+
+        loader = self._clone_loader(data_loader, mode="s", world_size=1)
+        controller = SixDSTController(
+            path=None,
+            pattern=None,
+            cutoff_tag=self.cutoff_tag,
+            data_loader=loader,
+            loops=1,
+            crossover_rate=self.crossover_rate,
+            mutate_rate=self.mutate_rate,
+            pop_size=int(pop_size),
+            device=device,
+        )
+        evaluator = SixDSTEvaluator(pop_size=int(pop_size), adj=loader.A, device=device)
+        set_seed(1024)
+        return controller.setup(data_loader=loader, evaluator=evaluator)
+
 
 class CutOffAlgorithm(_LegacyAlgorithm):
     def __init__(self, pop_size: int = 40, crossover_rate: float = 0.7, mutate_rate: float = 0.2, cutoff_tag: str = "popGreedy_cutoff_"):
@@ -344,6 +376,25 @@ class CutOffAlgorithm(_LegacyAlgorithm):
         Cutoff(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("PCG", "MCN"))
 
+    def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
+        from gapa.algorithm.CND.Cutoff import CutoffController, CutoffEvaluator
+
+        self._seed_distributed_setup()
+        loader = self._clone_loader(data_loader, mode="s", world_size=1)
+        controller = CutoffController(
+            path=None,
+            pattern=None,
+            cutoff_tag=self.cutoff_tag,
+            data_loader=loader,
+            loops=1,
+            crossover_rate=self.crossover_rate,
+            mutate_rate=self.mutate_rate,
+            pop_size=int(pop_size),
+            device=device,
+        )
+        evaluator = CutoffEvaluator(pop_size=int(pop_size), graph=loader.G, nodes=loader.nodes, device=device)
+        return controller.setup(data_loader=loader, evaluator=evaluator)
+
 
 class TDEAlgorithm(_LegacyAlgorithm):
     def __init__(self, pop_size: int = 40, crossover_rate: float = 0.7, mutate_rate: float = 0.2):
@@ -373,6 +424,24 @@ class TDEAlgorithm(_LegacyAlgorithm):
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         TDE(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("PCG", "MCN"))
+
+    def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
+        from gapa.algorithm.CND.TDE import TDEController, TDEEvaluator
+
+        self._seed_distributed_setup()
+        loader = self._clone_loader(data_loader, mode="s", world_size=1)
+        controller = TDEController(
+            path=None,
+            pattern=None,
+            data_loader=loader,
+            loops=1,
+            crossover_rate=self.crossover_rate,
+            mutate_rate=self.mutate_rate,
+            pop_size=int(pop_size),
+            device=device,
+        )
+        evaluator = TDEEvaluator(pop_size=int(pop_size), graph=loader.G, budget=loader.k, device=device)
+        return controller.setup(data_loader=loader, evaluator=evaluator)
 
 
 class CGNAlgorithm(_LegacyAlgorithm):
@@ -404,6 +473,24 @@ class CGNAlgorithm(_LegacyAlgorithm):
         CGN(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("Q", "NMI"))
 
+    def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
+        from gapa.algorithm.CDA.CGN import CGNController, CGNEvaluator
+
+        self._seed_distributed_setup()
+        loader = self._clone_loader(data_loader, mode="s", world_size=1)
+        controller = CGNController(
+            path=None,
+            pattern=None,
+            data_loader=loader,
+            loops=1,
+            crossover_rate=self.crossover_rate,
+            mutate_rate=self.mutate_rate,
+            pop_size=int(pop_size),
+            device=device,
+        )
+        evaluator = CGNEvaluator(pop_size=int(pop_size), graph=loader.G.copy(), device=device)
+        return controller.setup(data_loader=loader, evaluator=evaluator)
+
 
 class QAttackAlgorithm(_LegacyAlgorithm):
     def __init__(self, pop_size: int = 40, crossover_rate: float = 0.8, mutate_rate: float = 0.1):
@@ -434,6 +521,24 @@ class QAttackAlgorithm(_LegacyAlgorithm):
         QAttack(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("Q", "NMI"))
 
+    def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
+        from gapa.algorithm.CDA.QAttack import QAttackController, QAttackEvaluator
+
+        self._seed_distributed_setup()
+        loader = self._clone_loader(data_loader, mode="s", world_size=1)
+        controller = QAttackController(
+            path=None,
+            pattern=None,
+            data_loader=loader,
+            loops=1,
+            crossover_rate=self.crossover_rate,
+            mutate_rate=self.mutate_rate,
+            pop_size=int(pop_size),
+            device=device,
+        )
+        evaluator = QAttackEvaluator(pop_size=int(pop_size), graph=loader.G.copy(), device=device)
+        return controller.setup(data_loader=loader, evaluator=evaluator)
+
 
 class CDAEDAAlgorithm(_LegacyAlgorithm):
     def __init__(self, pop_size: int = 40, crossover_rate: float = 0.6, mutate_rate: float = 0.2):
@@ -463,6 +568,24 @@ class CDAEDAAlgorithm(_LegacyAlgorithm):
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         EDA(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("Q", "NMI"))
+
+    def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
+        from gapa.algorithm.CDA.EDA import EDAController, EDAEvaluator
+
+        self._seed_distributed_setup()
+        loader = self._clone_loader(data_loader, mode="s", world_size=1)
+        controller = EDAController(
+            path=None,
+            pattern=None,
+            data_loader=loader,
+            loops=1,
+            crossover_rate=self.crossover_rate,
+            mutate_rate=self.mutate_rate,
+            pop_size=int(pop_size),
+            device=device,
+        )
+        evaluator = EDAEvaluator(pop_size=int(pop_size), graph=loader.G.copy(), adj=loader.A, nodes_num=loader.nodes_num, device=device)
+        return controller.setup(data_loader=loader, evaluator=evaluator)
 
 
 class LPAGAAlgorithm(_LegacyAlgorithm):
@@ -503,6 +626,32 @@ class LPAGAAlgorithm(_LegacyAlgorithm):
         LPA_GA(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("Pre", "AUC"))
 
+    def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
+        from gapa.algorithm.LPA.LPA_GA import GAEvaluator, GAController
+
+        self._seed_distributed_setup()
+        edges = torch.tensor(list(data_loader.G.edges), device=device)
+        loader = self._clone_loader(
+            data_loader,
+            k=float(self.attack_rate),
+            edges=edges,
+            edges_num=int(len(edges)),
+            mode="s",
+            world_size=1,
+        )
+        controller = GAController(
+            path=None,
+            pattern=None,
+            data_loader=loader,
+            loops=1,
+            crossover_rate=self.crossover_rate,
+            mutate_rate=self.mutate_rate,
+            pop_size=int(pop_size),
+            device=device,
+        )
+        evaluator = GAEvaluator(pop_size=int(pop_size), graph=loader.G, ratio=0, device=device)
+        return controller.setup(data_loader=loader, evaluator=evaluator)
+
 
 class LPAEDAAlgorithm(_LegacyAlgorithm):
     def __init__(self, pop_size: int = 40, mutate_rate: float = 0.1, attack_rate: float = 0.1):
@@ -540,6 +689,32 @@ class LPAEDAAlgorithm(_LegacyAlgorithm):
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         EDA(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("Pre", "AUC"))
+
+    def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
+        from gapa.algorithm.LPA.EDA import EDAController, EDAEvaluator
+
+        self._seed_distributed_setup()
+        edges = torch.tensor(list(data_loader.G.edges), device=device)
+        loader = self._clone_loader(
+            data_loader,
+            k=float(self.attack_rate),
+            edges=edges,
+            edges_num=int(len(edges)),
+            mode="s",
+            world_size=1,
+        )
+        controller = EDAController(
+            path=None,
+            pattern=None,
+            data_loader=loader,
+            loops=1,
+            mutate_rate=self.mutate_rate,
+            pop_size=int(pop_size),
+            num_eda_pop=int(pop_size),
+            device=device,
+        )
+        evaluator = EDAEvaluator(pop_size=int(pop_size), graph=loader.G, ratio=0, device=device)
+        return controller.setup(data_loader=loader, evaluator=evaluator)
 
 
 class NCAGAAlgorithm(_LegacyAlgorithm):
@@ -630,6 +805,39 @@ class NCAGAAlgorithm(_LegacyAlgorithm):
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         NCA_GA(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._apply_capture(workflow.monitor, controller.captured_result, ("Acc", "ASR"))
+
+    def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
+        from gapa.algorithm.NCA.NCA_GA import NCA_GAController, NCA_GAEvaluator
+        from gapa.DeepLearning.Classifier import Classifier, load_set
+
+        self._seed_distributed_setup()
+        loader = self._load_nca_payload(data_loader, device)
+        loader.k = max(1, int(self.attack_rate * loader.num_edge))
+        load_set(loader.dataset, "gcn", num_nodes=loader.num_nodes, num_edge=loader.num_edge)
+        classifier = Classifier(model_name="gcn", input_dim=loader.num_feats, output_dim=loader.num_classes, device=device)
+        classifier.initialize()
+        classifier.fit(loader.feats, loader.adj, loader.labels, loader.train_index, loader.val_index, verbose=False)
+        controller = NCA_GAController(
+            path=None,
+            pattern=None,
+            data_loader=loader,
+            classifier=classifier,
+            loops=1,
+            crossover_rate=self.crossover_rate,
+            mutate_rate=self.mutate_rate,
+            pop_size=int(pop_size),
+            device=device,
+        )
+        evaluator = NCA_GAEvaluator(
+            classifier=classifier,
+            feats=loader.feats,
+            adj=loader.adj,
+            test_index=loader.test_index,
+            labels=loader.labels,
+            pop_size=int(pop_size),
+            device=device,
+        )
+        return controller.setup(data_loader=loader, evaluator=evaluator)
 
 
 class GANIAlgorithm(_LegacyAlgorithm):

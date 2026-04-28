@@ -60,7 +60,7 @@
       "aliases": ["GANIAlgorithm", "SGAAlgorithm"],
       "entry": "gapa.algorithms:GANIAlgorithm",
       "init_kwargs": {"pop_size": 20, "crossover_rate": 0.7, "mutate_rate": 0.3},
-      "capabilities": {"supported_modes": ["s", "sm", "m", "mnm"], "supports_distributed_fitness": true, "supports_remote": true, "fitness_direction": "min"},
+      "capabilities": {"supported_modes": ["s", "sm", "m"], "supports_distributed_fitness": false, "supports_remote": true, "fitness_direction": "min"},
       "category": "NCA"
     },
     {
