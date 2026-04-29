@@ -1389,7 +1389,8 @@ class Workflow:
                 start_ts = time.perf_counter()
                 self.algorithm.run_full(self, int(steps))
                 end_ts = time.perf_counter()
-                self._update_local_timing(end_ts - start_ts, steps)
+                if not self.monitor._local_timing or self.monitor._local_timing.get("iter_seconds") is None:
+                    self._update_local_timing(end_ts - start_ts, steps)
                 run_ctx["ended_at"] = datetime.utcnow().isoformat() + "Z"
                 report_meta = self._emit_run_reports(run_ctx)
                 run_ctx["reports"] = report_meta

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import time
 import threading
 import inspect
 from dataclasses import dataclass
@@ -238,9 +239,29 @@ class _FitnessContext:
                              target_val = target_val.to(self.device)
                          setattr(evaluator, key, target_val)
 
+            t_copy_start = time.perf_counter()
             pop = population_cpu.to(self.device)
+            if self.device.startswith("cuda"):
+                try:
+                    torch.cuda.synchronize()
+                except Exception:
+                    pass
+            copy_to_device_ms = (time.perf_counter() - t_copy_start) * 1000.0
+
+            t_forward_start = time.perf_counter()
             out = evaluator(pop)
-            return out.detach().to("cpu"), {"device": self.device, "pop_size": pop_size}
+            if self.device.startswith("cuda"):
+                try:
+                    torch.cuda.synchronize()
+                except Exception:
+                    pass
+            forward_ms = (time.perf_counter() - t_forward_start) * 1000.0
+            return out.detach().to("cpu"), {
+                "device": self.device,
+                "pop_size": pop_size,
+                "copy_to_device_ms": copy_to_device_ms,
+                "forward_ms": forward_ms,
+            }
 
 
 _CTX: Dict[_ContextKey, _FitnessContext] = {}

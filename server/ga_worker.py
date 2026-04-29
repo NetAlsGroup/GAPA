@@ -568,11 +568,53 @@ def ga_worker(
             workflow = PublicWorkflow(**workflow_kwargs)
             emit({"type": "log", "line": f"[INFO] Start {method}: mode={algo_mode} device={device} world_size={world_size} via=public-workflow"})
             result["metrics"].append({"stage": "init", **snapshot()})
-            workflow.run(steps=int(iterations))
+            workflow_error: Dict[str, Any] = {}
+
+            def _workflow_runner() -> None:
+                try:
+                    workflow.run(steps=int(iterations))
+                except Exception as exc:
+                    workflow_error["exc"] = exc
+
+            runner = threading.Thread(target=_workflow_runner, daemon=True)
+            runner.start()
+            started_at = perf_counter()
+            last_generation = -1
+            last_log_at = started_at
+            while runner.is_alive():
+                runner.join(timeout=1.0)
+                current_generation = int(getattr(public_monitor, "_generation", 0) or 0)
+                now = perf_counter()
+                if current_generation > last_generation:
+                    last_generation = current_generation
+                    emit({"type": "progress", "value": int(current_generation / max(1, int(iterations)) * 100)})
+                    emit(
+                        {
+                            "type": "log",
+                            "line": f"[INFO] progress: gen={current_generation}/{int(iterations)} elapsed={now - started_at:.1f}s",
+                        }
+                    )
+                    last_log_at = now
+                elif now - last_log_at >= 5.0:
+                    emit(
+                        {
+                            "type": "log",
+                            "line": f"[INFO] running: gen={current_generation}/{int(iterations)} elapsed={now - started_at:.1f}s",
+                        }
+                    )
+                    last_log_at = now
+            if workflow_error.get("exc") is not None:
+                raise workflow_error["exc"]
 
             local_result = public_monitor.result()
             history = public_monitor.history()
             metrics_block = local_result.get("metrics") if isinstance(local_result.get("metrics"), dict) else {}
+            if isinstance(local_result.get("comm"), dict):
+                result["comm"] = local_result.get("comm")
+            if isinstance(local_result.get("comm"), dict):
+                detailed = local_result["comm"].get("detailed")
+                if isinstance(detailed, dict):
+                    result["comm_detailed"] = detailed
             best_metrics = {}
             primary_name = objective.get("primary")
             secondary_name = objective.get("secondary")
@@ -584,6 +626,8 @@ def ga_worker(
                 result["best_metrics"] = best_metrics
                 result["best_score"] = float(best_metrics[primary_name]) if primary_name in best_metrics else None
                 emit({"type": "log", "line": f"[INFO] Final best from workflow: {primary_name}={best_metrics.get(primary_name)} {secondary_name}={best_metrics.get(secondary_name)}"})
+            elif isinstance(local_result.get("best_fitness"), (int, float)):
+                result["best_score"] = float(local_result["best_fitness"])
             result["best_gene"] = local_result.get("best_gene")
             if isinstance(local_result.get("elapsed_seconds"), (int, float)):
                 result.setdefault("timing", {})

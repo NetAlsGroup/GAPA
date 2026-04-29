@@ -487,6 +487,9 @@ class AdaptiveWorkerPool:
         
         # Extract remote compute time if provided by worker
         compute_ms = float(data.get("compute_ms", 0.0))
+        meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+        copy_to_device_ms = float(meta.get("copy_to_device_ms", 0.0))
+        forward_ms = float(meta.get("forward_ms", max(0.0, compute_ms - copy_to_device_ms)))
         # Network time = total round-trip - remote compute time
         network_ms = max(0.0, network_total_ms - compute_ms)
         
@@ -498,6 +501,8 @@ class AdaptiveWorkerPool:
             serialize_ms=serialize_ms,
             network_ms=network_ms,
             compute_ms=compute_ms,
+            copy_to_device_ms=copy_to_device_ms,
+            forward_ms=forward_ms,
             deserialize_ms=deserialize_ms,
             total_ms=total_ms,
             payload_bytes=payload_bytes,
@@ -513,6 +518,8 @@ class DetailedCallResult:
     serialize_ms: float
     network_ms: float
     compute_ms: float
+    copy_to_device_ms: float
+    forward_ms: float
     deserialize_ms: float
     total_ms: float
     payload_bytes: int
@@ -619,7 +626,7 @@ class DistributedEvaluator(nn.Module):
         if wid not in self._per_worker_stats:
             self._per_worker_stats[wid] = {
                 "total_ms": 0.0, "calls": 0, "serialize_ms": 0.0,
-                "network_ms": 0.0, "compute_ms": 0.0, "deserialize_ms": 0.0,
+                "network_ms": 0.0, "compute_ms": 0.0, "copy_to_device_ms": 0.0, "forward_ms": 0.0, "deserialize_ms": 0.0,
                 "total_bytes": 0, "success_calls": 0, "failure_calls": 0
             }
         ws = self._per_worker_stats[wid]
@@ -629,6 +636,8 @@ class DistributedEvaluator(nn.Module):
         ws["serialize_ms"] += result.serialize_ms
         ws["network_ms"] += result.network_ms
         ws["compute_ms"] += result.compute_ms
+        ws["copy_to_device_ms"] += result.copy_to_device_ms
+        ws["forward_ms"] += result.forward_ms
         ws["deserialize_ms"] += result.deserialize_ms
         ws["total_bytes"] += result.payload_bytes
 
@@ -637,7 +646,7 @@ class DistributedEvaluator(nn.Module):
         if wid not in self._per_worker_stats:
             self._per_worker_stats[wid] = {
                 "total_ms": 0.0, "calls": 0, "serialize_ms": 0.0,
-                "network_ms": 0.0, "compute_ms": 0.0, "deserialize_ms": 0.0,
+                "network_ms": 0.0, "compute_ms": 0.0, "copy_to_device_ms": 0.0, "forward_ms": 0.0, "deserialize_ms": 0.0,
                 "total_bytes": 0, "success_calls": 0, "failure_calls": 0
             }
         self._per_worker_stats[wid]["failure_calls"] += 1
@@ -852,6 +861,8 @@ class DistributedEvaluator(nn.Module):
                             serialize_ms=0.0,
                             network_ms=0.0,
                             compute_ms=compute_ms,
+                            copy_to_device_ms=0.0,
+                            forward_ms=compute_ms,
                             deserialize_ms=0.0,
                             total_ms=compute_ms,
                             payload_bytes=0,
@@ -907,7 +918,11 @@ class DistributedEvaluator(nn.Module):
 
         iter_cumulative = sum(c.total_ms for c in iter_calls)
         iter_compute = sum(c.compute_ms for c in iter_calls)
+        iter_copy_to_device = sum(c.copy_to_device_ms for c in iter_calls)
+        iter_forward = sum(c.forward_ms for c in iter_calls)
         iter_overhead = sum((c.serialize_ms + c.network_ms + c.deserialize_ms) for c in iter_calls)
+        iter_max_compute = max((c.compute_ms for c in iter_calls), default=0.0)
+        iter_max_overhead = max((c.serialize_ms + c.network_ms + c.deserialize_ms for c in iter_calls), default=0.0)
         self._per_iter_stats.append(
             {
                 "iter": iter_tick,
@@ -916,7 +931,11 @@ class DistributedEvaluator(nn.Module):
                 "workers": [c.worker_id for c in iter_calls],
                 "calls": len(iter_calls),
                 "compute_ms": iter_compute,
+                "copy_to_device_ms": iter_copy_to_device,
+                "forward_ms": iter_forward,
                 "overhead_ms": iter_overhead,
+                "max_compute_ms": iter_max_compute,
+                "max_overhead_ms": iter_max_overhead,
             }
         )
         self._guard_window.append(
@@ -924,6 +943,8 @@ class DistributedEvaluator(nn.Module):
                 "iter": float(iter_tick),
                 "calls": float(len(iter_calls)),
                 "compute_ms": float(iter_compute),
+                "copy_to_device_ms": float(iter_copy_to_device),
+                "forward_ms": float(iter_forward),
                 "overhead_ms": float(iter_overhead),
             }
         )
@@ -1035,9 +1056,13 @@ class DistributedEvaluator(nn.Module):
         total_serialize = sum(c.serialize_ms for c in self._detailed_calls)
         total_network = sum(c.network_ms for c in self._detailed_calls)
         total_compute = sum(c.compute_ms for c in self._detailed_calls)
+        total_copy_to_device = sum(c.copy_to_device_ms for c in self._detailed_calls)
+        total_forward = sum(c.forward_ms for c in self._detailed_calls)
         total_deserialize = sum(c.deserialize_ms for c in self._detailed_calls)
         total_bytes = sum(c.payload_bytes for c in self._detailed_calls)
         total_comm = sum(c.total_ms for c in self._detailed_calls)
+        total_wall_compute = sum(float(item.get("max_compute_ms") or 0.0) for item in self._per_iter_stats)
+        total_wall_overhead = sum(float(item.get("max_overhead_ms") or 0.0) for item in self._per_iter_stats)
         
         # Calculate averages
         n = len(self._detailed_calls)
@@ -1054,6 +1079,8 @@ class DistributedEvaluator(nn.Module):
                 "serialize_ms": ws["serialize_ms"],
                 "network_ms": ws["network_ms"],
                 "compute_ms": ws["compute_ms"],
+                "copy_to_device_ms": ws["copy_to_device_ms"],
+                "forward_ms": ws["forward_ms"],
                 "deserialize_ms": ws["deserialize_ms"],
                 "total_bytes": ws["total_bytes"],
             }
@@ -1090,7 +1117,11 @@ class DistributedEvaluator(nn.Module):
             "total_serialize_ms": total_serialize,
             "total_network_ms": total_network,
             "total_compute_ms": total_compute,
+            "total_copy_to_device_ms": total_copy_to_device,
+            "total_forward_ms": total_forward,
             "total_deserialize_ms": total_deserialize,
+            "total_wall_compute_ms": total_wall_compute,
+            "total_wall_overhead_ms": total_wall_overhead,
             "total_bytes": total_bytes,
             "calls": n,
             "avg_ms": avg_total,

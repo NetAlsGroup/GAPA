@@ -416,6 +416,8 @@ class CutOffAlgorithm(_LegacyAlgorithm):
         CaptureController = _capture_controller_class("CaptureCutoffControllerRuntime", "gapa.algorithm.CND.Cutoff", "CutoffController")
 
         loader = self._clone_loader(workflow.data_loader, mode=workflow.mode, world_size=workflow.world_size)
+        observer = self._observer_spec(workflow, "cutoff")
+        capture_path = self._capture_path("cutoff")
         comm_path = self._comm_path("cutoff") if workflow.mode == "m" else None
         controller = CaptureController(
             path=str(self._results_dir("cutoff")) + "/",
@@ -428,13 +430,15 @@ class CutOffAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer_spec(workflow, "cutoff")
+        controller.observer = observer
+        controller.capture_path = str(capture_path)
         if comm_path is not None:
             controller.comm_path = str(comm_path)
         evaluator = CutoffEvaluator(pop_size=self.pop_size, graph=loader.G, nodes=loader.nodes, device=workflow.device)
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         Cutoff(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
-        self._apply_capture(workflow.monitor, controller.captured_result, ("PCG", "MCN"))
+        self._consume_observer_spec(workflow.monitor, observer)
+        self._apply_capture(workflow.monitor, controller.captured_result or self._load_capture(capture_path), ("PCG", "MCN"))
         self._attach_runtime_report(workflow.monitor, evaluator=evaluator, comm_path=comm_path)
 
     def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
@@ -470,6 +474,8 @@ class TDEAlgorithm(_LegacyAlgorithm):
         CaptureController = _capture_controller_class("CaptureTDEControllerRuntime", "gapa.algorithm.CND.TDE", "TDEController")
 
         loader = self._clone_loader(workflow.data_loader, mode=workflow.mode, world_size=workflow.world_size)
+        observer = self._observer_spec(workflow, "tde")
+        capture_path = self._capture_path("tde")
         comm_path = self._comm_path("tde") if workflow.mode == "m" else None
         controller = CaptureController(
             path=str(self._results_dir("tde")) + "/",
@@ -481,13 +487,15 @@ class TDEAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer_spec(workflow, "tde")
+        controller.observer = observer
+        controller.capture_path = str(capture_path)
         if comm_path is not None:
             controller.comm_path = str(comm_path)
         evaluator = TDEEvaluator(pop_size=self.pop_size, graph=loader.G, budget=loader.k, device=workflow.device)
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         TDE(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
-        self._apply_capture(workflow.monitor, controller.captured_result, ("PCG", "MCN"))
+        self._consume_observer_spec(workflow.monitor, observer)
+        self._apply_capture(workflow.monitor, controller.captured_result or self._load_capture(capture_path), ("PCG", "MCN"))
         self._attach_runtime_report(workflow.monitor, evaluator=evaluator, comm_path=comm_path)
 
     def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
@@ -522,6 +530,8 @@ class CGNAlgorithm(_LegacyAlgorithm):
         CaptureController = _capture_controller_class("CaptureCGNControllerRuntime", "gapa.algorithm.CDA.CGN", "CGNController")
 
         loader = self._clone_loader(workflow.data_loader, mode=workflow.mode, world_size=workflow.world_size)
+        observer = self._observer_spec(workflow, "cgn")
+        capture_path = self._capture_path("cgn")
         comm_path = self._comm_path("cgn") if workflow.mode == "m" else None
         controller = CaptureController(
             path=str(self._results_dir("cgn")) + "/",
@@ -533,13 +543,15 @@ class CGNAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer_spec(workflow, "cgn")
+        controller.observer = observer
+        controller.capture_path = str(capture_path)
         if comm_path is not None:
             controller.comm_path = str(comm_path)
         evaluator = CGNEvaluator(pop_size=self.pop_size, graph=loader.G.copy(), device=workflow.device)
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         CGN(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
-        self._apply_capture(workflow.monitor, controller.captured_result, ("Q", "NMI"))
+        self._consume_observer_spec(workflow.monitor, observer)
+        self._apply_capture(workflow.monitor, controller.captured_result or self._load_capture(capture_path), ("Q", "NMI"))
         self._attach_runtime_report(workflow.monitor, evaluator=evaluator, comm_path=comm_path)
 
     def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
@@ -574,6 +586,8 @@ class QAttackAlgorithm(_LegacyAlgorithm):
         CaptureController = _capture_controller_class("CaptureQAttackControllerRuntime", "gapa.algorithm.CDA.QAttack", "QAttackController")
 
         loader = self._clone_loader(workflow.data_loader, mode=workflow.mode, world_size=workflow.world_size)
+        observer = self._observer_spec(workflow, "qattack")
+        capture_path = self._capture_path("qattack")
         comm_path = self._comm_path("qattack") if workflow.mode == "m" else None
         controller = CaptureController(
             path=str(self._results_dir("qattack")) + "/",
@@ -585,13 +599,15 @@ class QAttackAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer_spec(workflow, "qattack")
+        controller.observer = observer
+        controller.capture_path = str(capture_path)
         if comm_path is not None:
             controller.comm_path = str(comm_path)
         evaluator = QAttackEvaluator(pop_size=self.pop_size, graph=loader.G.copy(), device=workflow.device)
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         QAttack(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
-        self._apply_capture(workflow.monitor, controller.captured_result, ("Q", "NMI"))
+        self._consume_observer_spec(workflow.monitor, observer)
+        self._apply_capture(workflow.monitor, controller.captured_result or self._load_capture(capture_path), ("Q", "NMI"))
         self._attach_runtime_report(workflow.monitor, evaluator=evaluator, comm_path=comm_path)
 
     def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
@@ -626,6 +642,8 @@ class CDAEDAAlgorithm(_LegacyAlgorithm):
         CaptureController = _capture_controller_class("CaptureCDAEDAControllerRuntime", "gapa.algorithm.CDA.EDA", "EDAController")
 
         loader = self._clone_loader(workflow.data_loader, mode=workflow.mode, world_size=workflow.world_size)
+        observer = self._observer_spec(workflow, "cda_eda")
+        capture_path = self._capture_path("cda_eda")
         comm_path = self._comm_path("cda_eda") if workflow.mode == "m" else None
         controller = CaptureController(
             path=str(self._results_dir("cda_eda")) + "/",
@@ -637,13 +655,15 @@ class CDAEDAAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer_spec(workflow, "cda_eda")
+        controller.observer = observer
+        controller.capture_path = str(capture_path)
         if comm_path is not None:
             controller.comm_path = str(comm_path)
         evaluator = EDAEvaluator(pop_size=self.pop_size, graph=loader.G.copy(), adj=loader.A, nodes_num=loader.nodes_num, device=workflow.device)
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         EDA(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
-        self._apply_capture(workflow.monitor, controller.captured_result, ("Q", "NMI"))
+        self._consume_observer_spec(workflow.monitor, observer)
+        self._apply_capture(workflow.monitor, controller.captured_result or self._load_capture(capture_path), ("Q", "NMI"))
         self._attach_runtime_report(workflow.monitor, evaluator=evaluator, comm_path=comm_path)
 
     def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
@@ -679,6 +699,8 @@ class LPAGAAlgorithm(_LegacyAlgorithm):
         CaptureController = _capture_controller_class("CaptureLPAGAControllerRuntime", "gapa.algorithm.LPA.LPA_GA", "GAController")
 
         edges = torch.tensor(list(workflow.data_loader.G.edges), device=workflow.device)
+        observer = self._observer_spec(workflow, "lpa_ga")
+        capture_path = self._capture_path("lpa_ga")
         comm_path = self._comm_path("lpa_ga") if workflow.mode == "m" else None
         loader = self._clone_loader(
             workflow.data_loader,
@@ -698,13 +720,15 @@ class LPAGAAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer_spec(workflow, "lpa_ga")
+        controller.observer = observer
+        controller.capture_path = str(capture_path)
         if comm_path is not None:
             controller.comm_path = str(comm_path)
         evaluator = GAEvaluator(pop_size=self.pop_size, graph=loader.G, ratio=0, device=workflow.device)
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         LPA_GA(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
-        self._apply_capture(workflow.monitor, controller.captured_result, ("Pre", "AUC"))
+        self._consume_observer_spec(workflow.monitor, observer)
+        self._apply_capture(workflow.monitor, controller.captured_result or self._load_capture(capture_path), ("Pre", "AUC"))
         self._attach_runtime_report(workflow.monitor, evaluator=evaluator, comm_path=comm_path)
 
     def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
@@ -747,6 +771,8 @@ class LPAEDAAlgorithm(_LegacyAlgorithm):
         CaptureController = _capture_controller_class("CaptureLPAEDAControllerRuntime", "gapa.algorithm.LPA.EDA", "EDAController")
 
         edges = torch.tensor(list(workflow.data_loader.G.edges), device=workflow.device)
+        observer = self._observer_spec(workflow, "lpa_eda")
+        capture_path = self._capture_path("lpa_eda")
         comm_path = self._comm_path("lpa_eda") if workflow.mode == "m" else None
         loader = self._clone_loader(
             workflow.data_loader,
@@ -766,13 +792,15 @@ class LPAEDAAlgorithm(_LegacyAlgorithm):
             num_eda_pop=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer_spec(workflow, "lpa_eda")
+        controller.observer = observer
+        controller.capture_path = str(capture_path)
         if comm_path is not None:
             controller.comm_path = str(comm_path)
         evaluator = EDAEvaluator(pop_size=self.pop_size, graph=loader.G, ratio=0, device=workflow.device)
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         EDA(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
-        self._apply_capture(workflow.monitor, controller.captured_result, ("Pre", "AUC"))
+        self._consume_observer_spec(workflow.monitor, observer)
+        self._apply_capture(workflow.monitor, controller.captured_result or self._load_capture(capture_path), ("Pre", "AUC"))
         self._attach_runtime_report(workflow.monitor, evaluator=evaluator, comm_path=comm_path)
 
     def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
@@ -862,6 +890,8 @@ class NCAGAAlgorithm(_LegacyAlgorithm):
 
         loader = self._load_nca_payload(workflow.data_loader, workflow.device)
         loader.k = max(1, int(self.attack_rate * loader.num_edge))
+        observer = self._observer_spec(workflow, "nca_ga")
+        capture_path = self._capture_path("nca_ga")
         comm_path = self._comm_path("nca_ga") if workflow.mode == "m" else None
         load_set(loader.dataset, "gcn", num_nodes=loader.num_nodes, num_edge=loader.num_edge)
         classifier = Classifier(model_name="gcn", input_dim=loader.num_feats, output_dim=loader.num_classes, device=workflow.device)
@@ -878,7 +908,8 @@ class NCAGAAlgorithm(_LegacyAlgorithm):
             pop_size=self.pop_size,
             device=workflow.device,
         )
-        controller.observer = self._observer_spec(workflow, "nca_ga")
+        controller.observer = observer
+        controller.capture_path = str(capture_path)
         if comm_path is not None:
             controller.comm_path = str(comm_path)
         evaluator = NCA_GAEvaluator(
@@ -892,7 +923,8 @@ class NCAGAAlgorithm(_LegacyAlgorithm):
         )
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         NCA_GA(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
-        self._apply_capture(workflow.monitor, controller.captured_result, ("Acc", "ASR"))
+        self._consume_observer_spec(workflow.monitor, observer)
+        self._apply_capture(workflow.monitor, controller.captured_result or self._load_capture(capture_path), ("Acc", "ASR"))
         self._attach_runtime_report(workflow.monitor, evaluator=evaluator, comm_path=comm_path)
 
     def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
