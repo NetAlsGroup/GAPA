@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 import os
+import socket
 import time
 from dataclasses import dataclass
 from typing import Any, Deque, Dict, List, Optional, Tuple
@@ -48,6 +49,14 @@ def _env_float(name: str, default: float) -> float:
         return float(os.getenv(name, str(default)) or default)
     except Exception:
         return float(default)
+
+
+def _local_worker_label() -> str:
+    try:
+        host = socket.gethostname().strip()
+    except Exception:
+        host = ""
+    return f"local({host})" if host else "local"
 
 
 
@@ -175,7 +184,7 @@ def build_device_workers(
     if include_local:
         if local_device:
             device_workers.append(DeviceWorker(
-                server_id="local",
+                server_id=_local_worker_label(),
                 base_url="",
                 device=local_device,
                 is_local=True,

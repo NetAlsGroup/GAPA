@@ -3,8 +3,10 @@ from __future__ import annotations
 from contextlib import contextmanager
 from copy import deepcopy
 import json
+import pickle as pkl
 from pathlib import Path
 import random
+import sys
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, Optional, Sequence
 import uuid
@@ -840,6 +842,137 @@ class NCAGAAlgorithm(_LegacyAlgorithm):
         self.side = "max"
 
     @staticmethod
+    def _pickle_load(pkl_file):
+        if sys.version_info > (3, 0):
+            return pkl.load(pkl_file, encoding="latin1")
+        return pkl.load(pkl_file)
+
+    @staticmethod
+    def _parse_index_file(filename: Path) -> list[int]:
+        return [int(line.strip()) for line in filename.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    @staticmethod
+    def _preprocess_features(features) -> np.ndarray:
+        rowsum = np.asarray(features.sum(1)).reshape(-1)
+        r_inv = np.power(rowsum, -1, where=rowsum != 0)
+        r_inv[~np.isfinite(r_inv)] = 0.0
+        return np.asarray(features.multiply(r_inv[:, None]).todense(), dtype=np.float32)
+
+    @classmethod
+    def _load_planetoid_payload(cls, dataset_name: str, device: torch.device) -> Optional[Any]:
+        source_name = "cora_v2" if dataset_name == "cora" else dataset_name
+        root = Path(__file__).resolve().parents[1] / "dataset" / dataset_name
+        required = [root / f"ind.{source_name}.{name}" for name in ("x", "y", "tx", "ty", "allx", "ally", "graph")]
+        index_path = root / f"ind.{source_name}.test.index"
+        if not all(path.exists() for path in required) or not index_path.exists():
+            return None
+
+        try:
+            from scipy import sparse as sp  # type: ignore
+        except Exception as exc:
+            raise RuntimeError(f"NCA legacy Planetoid fallback requires scipy. {exc}") from exc
+
+        objects = []
+        for path in required:
+            with path.open("rb") as handle:
+                objects.append(cls._pickle_load(handle))
+        x, y, tx, ty, allx, ally, graph = tuple(objects)
+
+        test_idx_reorder = np.array(cls._parse_index_file(index_path), dtype=np.int64)
+        test_idx_range = np.sort(test_idx_reorder)
+
+        if dataset_name == "citeseer":
+            test_idx_range_full = range(int(min(test_idx_reorder)), int(max(test_idx_reorder)) + 1)
+            tx_extended = sp.lil_matrix((len(test_idx_range_full), x.shape[1]))
+            tx_extended[test_idx_range - min(test_idx_range), :] = tx
+            tx = tx_extended
+            ty_extended = np.zeros((len(test_idx_range_full), y.shape[1]))
+            ty_extended[test_idx_range - min(test_idx_range), :] = ty
+            ty = ty_extended
+
+        features = sp.vstack((allx, tx)).tolil()
+        features[test_idx_reorder, :] = features[test_idx_range, :]
+        feats = cls._preprocess_features(features)
+
+        onehot_labels = np.vstack((ally, ty))
+        onehot_labels[test_idx_reorder, :] = onehot_labels[test_idx_range, :]
+        labels = np.argmax(onehot_labels, axis=1).astype(np.int64)
+
+        train_index = np.arange(len(y), dtype=np.int64)
+        val_index = np.arange(len(y), len(y) + 500, dtype=np.int64)
+        test_index = test_idx_range.astype(np.int64)
+
+        edges = [(_x, _y) for _x, _y_list in graph.items() for _y in _y_list if _x != _y]
+        idx = torch.tensor(list(map(list, zip(*edges))), dtype=torch.long, device=device)
+        value = torch.ones(idx.shape[1], dtype=torch.float32, device=device)
+        ori_adj = torch.sparse_coo_tensor(indices=idx, values=value, dtype=torch.float32, device=device)
+        adj = (ori_adj + ori_adj.t()).coalesce().bool().float()
+        graph_nx = nx.Graph(adj.cpu().numpy())
+
+        return SimpleNamespace(
+            dataset=dataset_name,
+            name=dataset_name,
+            G=graph_nx,
+            adj=adj.to_sparse_coo(),
+            feats=torch.tensor(feats, dtype=torch.float32, device=device),
+            labels=torch.tensor(labels, dtype=torch.long, device=device),
+            train_index=torch.tensor(train_index, dtype=torch.long, device=device),
+            val_index=torch.tensor(val_index, dtype=torch.long, device=device),
+            test_index=torch.tensor(test_index, dtype=torch.long, device=device),
+            num_nodes=int(feats.shape[0]),
+            num_feats=int(feats.shape[1]),
+            num_classes=int(np.max(labels) + 1),
+            num_edge=int(len(edges)),
+            k=None,
+        )
+
+    @staticmethod
+    def _load_pt_payload(dataset_name: str, device: torch.device) -> Optional[Any]:
+        root = Path(__file__).resolve().parents[1] / "dataset" / dataset_name
+        required = [
+            root / "adj.pt",
+            root / "features.pt",
+            root / "labels.pt",
+            root / "train_index.pt",
+            root / "val_index.pt",
+            root / "test_index.pt",
+        ]
+        if not all(path.exists() for path in required):
+            return None
+
+        adj = torch.load(root / "adj.pt", map_location=device)
+        feats = torch.load(root / "features.pt", map_location=device)
+        labels = torch.load(root / "labels.pt", map_location=device)
+        train_index = torch.load(root / "train_index.pt", map_location=device)
+        val_index = torch.load(root / "val_index.pt", map_location=device)
+        test_index = torch.load(root / "test_index.pt", map_location=device)
+        if getattr(adj, "is_sparse", False):
+            adj = adj.coalesce()
+            graph_nx = nx.Graph(adj.to_dense().cpu().numpy())
+        else:
+            graph_nx = nx.Graph(adj.cpu().numpy())
+            adj = adj.to_sparse_coo()
+
+        num_nodes = int(feats.shape[0])
+        num_edge = int(graph_nx.number_of_edges())
+        return SimpleNamespace(
+            dataset=dataset_name,
+            name=dataset_name,
+            G=graph_nx,
+            adj=adj,
+            feats=feats.float(),
+            labels=labels.long(),
+            train_index=train_index.long(),
+            val_index=val_index.long(),
+            test_index=test_index.long(),
+            num_nodes=num_nodes,
+            num_feats=int(feats.shape[1]),
+            num_classes=int(torch.max(labels).item() + 1),
+            num_edge=num_edge,
+            k=None,
+        )
+
+    @staticmethod
     def _load_nca_payload(public_loader: DataLoader, device: torch.device) -> Any:
         data_path = Path(str(public_loader.meta.get("path") or ""))
         if not data_path.is_absolute():
@@ -848,9 +981,20 @@ class NCAGAAlgorithm(_LegacyAlgorithm):
             raise FileNotFoundError(f"NCA dataset file missing: {data_path}")
         raw = np.load(data_path, allow_pickle=True)
         required = {"edges", "node_features", "node_labels", "train_masks", "val_masks", "test_masks"}
-        if not required.issubset(set(raw.files)):
+        files = set(raw.files)
+        if not required.issubset(files):
+            csr_keys = {"adj_data", "adj_indices", "adj_indptr", "adj_shape", "attr_data", "attr_indices", "attr_indptr", "attr_shape", "labels"}
+            key = public_loader.name
+            if key.endswith("_filtered"):
+                key = key.replace("_filtered", "")
+            if csr_keys.issubset(files):
+                payload = NCAGAAlgorithm._load_planetoid_payload(key, device)
+                if payload is None:
+                    payload = NCAGAAlgorithm._load_pt_payload(key, device)
+                if payload is not None:
+                    return payload
             raise RuntimeError(
-                f"NCA public workflow currently expects filtered NPZ datasets with keys {sorted(required)}. got={sorted(raw.files)}"
+                f"NCA public workflow expects filtered NPZ keys {sorted(required)} or a legacy Planetoid dataset with companion raw files. got={sorted(raw.files)}"
             )
         edges = raw["edges"]
         feats = raw["node_features"]
