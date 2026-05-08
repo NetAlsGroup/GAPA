@@ -161,6 +161,7 @@ def build_device_workers(
     *,
     include_local: bool = False,
     local_device: Optional[str] = None,
+    force_cpu: bool = False,
     request_timeout: float = 5.0,
 ) -> List[DeviceWorker]:
     """Build a list of DeviceWorkers by querying each server's locked devices.
@@ -226,6 +227,16 @@ def build_device_workers(
             
             devices = lock_status.get("devices") or []
             backend = lock_status.get("backend", "cpu")
+
+            if force_cpu:
+                device_workers.append(DeviceWorker(
+                    server_id=w.server_id,
+                    base_url=w.base_url,
+                    device="cpu",
+                    is_local=False,
+                    weight=0.5 if backend == "cpu" else 1.0,
+                ))
+                continue
             
             if devices:
                 # Create one DeviceWorker per locked GPU
@@ -541,11 +552,11 @@ class DistributedEvaluator(nn.Module):
     Supports:
     - Multiple GPUs per server (each GPU is a separate worker)
     - Local node participation (CPU or GPU)
-    - CPU-based algorithms (QAttack) that can use Local CPU
+    - CPU-based algorithms that should dispatch as CPU workers only
     """
     
     # Algorithms that are CPU-based (use NetworkX/iGraph, not tensor computation)
-    CPU_ALGORITHMS = {"QAttack", "CGN"}
+    CPU_ALGORITHMS = {"QAttack", "CGN", "TDE", "CutOff", "LPAEDA", "LPAGA"}
 
     def __init__(
         self,
@@ -623,6 +634,7 @@ class DistributedEvaluator(nn.Module):
             self._workers,
             include_local=include_local,
             local_device=local_device,
+            force_cpu=self._is_cpu_algorithm,
         )
 
     def set_iteration(self, iter_num: int) -> None:
