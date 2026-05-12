@@ -19,6 +19,15 @@ from gapa.utils.comm_stats import CommTimer, finalize_comm_stats, timed_call
 from collections import Counter
 
 
+def _cutoff_single_fitness(graph: ig, nodes_tensor: torch.Tensor) -> float:
+    copy_g: ig = graph.copy()
+    copy_g.delete_vertices(nodes_tensor.tolist())
+    sub_graph_list = list(copy_g.clusters())
+    fitness = 0.0
+    for sub_graph in sub_graph_list:
+        size = len(sub_graph)
+        fitness += size * (size - 1) / 2
+    return float(fitness)
 class CutoffEvaluator(BasicEvaluator):
     def __init__(self, pop_size, graph, nodes, device):
         super().__init__(
@@ -32,19 +41,10 @@ class CutoffEvaluator(BasicEvaluator):
     def forward(self, population: torch.Tensor):
         copy_nodes = self.nodes.clone().to(population.device)
         fitness_list = torch.zeros(size=(population.shape[0],), device=population.device)
+
         pop_nodes = copy_nodes[population]
         for i, nodes in enumerate(pop_nodes):
-            copy_g: ig = self.graph.copy()
-            # for node in nodes:
-            copy_g.delete_vertices(nodes.tolist())
-            # sub_graph_list = list(nx.connected_components(copy_g))
-            # copy_g = ig.from_networkx(copy_g)
-            sub_graph_list = list(copy_g.clusters())
-            _fitness = 0
-            for sub_graph_i in range(len(sub_graph_list)):
-                _fitness += len(sub_graph_list[sub_graph_i]) * (len(sub_graph_list[sub_graph_i]) - 1) / 2
-            fitness_list[i] = torch.tensor(_fitness, device=population.device)
-
+            fitness_list[i] = torch.tensor(_cutoff_single_fitness(self.graph, nodes), device=population.device)
         return fitness_list
 
 

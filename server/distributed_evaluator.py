@@ -87,7 +87,7 @@ class MNMSchedulerConfig:
     failure_penalty_alpha: float = 0.35
     cpu_locality_boost: float = 1.08
     allocation_epsilon: float = 1e-9
-    min_chunk_size: int = 6
+    min_chunk_size: int = 4
 
     # Comm-guard knobs
     guard_enabled: bool = True
@@ -99,7 +99,7 @@ class MNMSchedulerConfig:
     @classmethod
     def from_env(cls) -> "MNMSchedulerConfig":
         return cls(
-            min_chunk_size=max(1, _env_int("GAPA_MNM_MIN_CHUNK_SIZE", 6)),
+            min_chunk_size=max(1, _env_int("GAPA_MNM_MIN_CHUNK_SIZE", 4)),
             guard_enabled=bool(_env_int("GAPA_MNM_COMM_GUARD", 1)),
             guard_max_ratio=_env_float("GAPA_MNM_COMM_MAX_RATIO", 1.5),
             guard_min_calls=max(1, _env_int("GAPA_MNM_COMM_MIN_CALLS", 8)),
@@ -626,9 +626,12 @@ class DistributedEvaluator(nn.Module):
     
     def _build_device_workers(self) -> List[DeviceWorker]:
         """Build DeviceWorkers from all servers' locked devices."""
-        # For CPU algorithms, always include local CPU
-        include_local = self._include_local or self._is_cpu_algorithm
-        local_device = self._local_device or ("cpu" if self._is_cpu_algorithm else None)
+        # CPU-bound MNM should default to remote-only workers so the coordinator
+        # does not silently compete for the same CPU budget during experiments.
+        # Keep local CPU only as an explicit opt-in or as a last-resort fallback
+        # when no remote workers are configured.
+        include_local = self._include_local or (self._is_cpu_algorithm and not self._workers)
+        local_device = self._local_device or ("cpu" if include_local and self._is_cpu_algorithm else None)
         
         return build_device_workers(
             self._workers,
@@ -681,8 +684,9 @@ class DistributedEvaluator(nn.Module):
         calls = int(ws.get("success_calls") or 0)
         failures = int(ws.get("failure_calls") or 0)
         if calls <= 0:
-            # Prefer local worker for CPU-bound fallback and fresh nodes equally.
-            return base * (float(cfg.fresh_local_boost) if dw.is_local else 1.0)
+            # Fresh local preference only helps GPU-bound workflows; CPU-bound
+            # MNM should not bias toward the coordinator by default.
+            return base * (float(cfg.fresh_local_boost) if dw.is_local and not self._is_cpu_algorithm else 1.0)
         avg_ms = float(ws.get("total_ms") or 0.0) / max(1, calls)
         # Lower latency should get larger chunk share.
         perf_boost = max(
@@ -690,7 +694,7 @@ class DistributedEvaluator(nn.Module):
             min(float(cfg.perf_boost_max), float(cfg.perf_reference_ms) / max(1e-6, avg_ms)),
         )
         fail_penalty = 1.0 / (1.0 + float(cfg.failure_penalty_alpha) * failures)
-        locality_boost = float(cfg.cpu_locality_boost) if dw.is_local and self._is_cpu_algorithm else 1.0
+        locality_boost = 1.0
         return base * perf_boost * fail_penalty * locality_boost
 
     @staticmethod
@@ -861,6 +865,25 @@ class DistributedEvaluator(nn.Module):
             )
             return idx, result
 
+        def _local_call(idx: int, dw: DeviceWorker, pop_chunk: Any) -> Tuple[int, DetailedCallResult]:
+            t0 = time.perf_counter()
+            fit_local = self._base(pop_chunk)
+            compute_ms = (time.perf_counter() - t0) * 1000.0
+            result = DetailedCallResult(
+                fitness=fit_local.detach().to("cpu") if isinstance(fit_local, torch.Tensor) else fit_local,
+                worker_id=f"local:{dw.device}",
+                serialize_ms=0.0,
+                network_ms=0.0,
+                compute_ms=compute_ms,
+                copy_to_device_ms=0.0,
+                forward_ms=compute_ms,
+                deserialize_ms=0.0,
+                total_ms=compute_ms,
+                payload_bytes=0,
+                chunk_size=int(pop_chunk.shape[0]),
+            )
+            return idx, result
+
         fits: List[Any] = [None] * len(assignments)
         iter_calls: List[DetailedCallResult] = []
         futures: List[Tuple[Future, int, DeviceWorker, Any]] = []
@@ -873,31 +896,8 @@ class DistributedEvaluator(nn.Module):
                 pop_chunk = assignment.chunk
                 try:
                     if dw.is_local:
-                        t0 = time.perf_counter()
-                        fit_local = self._base(pop_chunk)
-                        compute_ms = (time.perf_counter() - t0) * 1000.0
-                        result = DetailedCallResult(
-                            fitness=fit_local.detach().to("cpu") if isinstance(fit_local, torch.Tensor) else fit_local,
-                            worker_id=f"local:{dw.device}",
-                            serialize_ms=0.0,
-                            network_ms=0.0,
-                            compute_ms=compute_ms,
-                            copy_to_device_ms=0.0,
-                            forward_ms=compute_ms,
-                            deserialize_ms=0.0,
-                            total_ms=compute_ms,
-                            payload_bytes=0,
-                            chunk_size=int(pop_chunk.shape[0]),
-                        )
-                        self._detailed_calls.append(result)
-                        iter_calls.append(result)
-                        self._comm_total_ms += result.total_ms
-                        self._comm_calls += 1
-                        self._update_worker_stats(dw, result)
-                        fit_cpu = result.fitness
-                        if not isinstance(fit_cpu, torch.Tensor):
-                            fit_cpu = torch.tensor(fit_cpu)
-                        fits[idx] = fit_cpu.to(population_device)
+                        future = executor.submit(_local_call, idx, dw, pop_chunk)
+                        futures.append((future, idx, dw, pop_chunk))
                     else:
                         future = executor.submit(_remote_call, idx, dw, pop_chunk)
                         futures.append((future, idx, dw, pop_chunk))

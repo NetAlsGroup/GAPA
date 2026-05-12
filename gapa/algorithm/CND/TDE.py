@@ -230,10 +230,25 @@ class TDEController(BasicController):
                     if self.mode == "mnm" and (generation % 50 == 0 or (generation + 1) == max_generation):
                         t_total = time_mod.perf_counter() - t_gen_start
                         comm = evaluator.comm_stats() if hasattr(evaluator, "comm_stats") else {}
+                        detailed = evaluator.detailed_stats() if hasattr(evaluator, "detailed_stats") else {}
                         avg_ms = comm.get("avg_ms", 0.0)
                         total_ms = comm.get("total_ms", 0.0)
+                        wall_compute_ms = detailed.get("total_wall_compute_ms", 0.0) if isinstance(detailed, dict) else 0.0
+                        wall_comm_ms = detailed.get("total_wall_overhead_ms", 0.0) if isinstance(detailed, dict) else 0.0
+                        utilization = detailed.get("utilization") if isinstance(detailed, dict) else None
+                        allocation = utilization.get("allocation") if isinstance(utilization, dict) else None
+                        alloc_compact = None
+                        if isinstance(allocation, list):
+                            alloc_compact = [
+                                f"{item.get('worker')}:{item.get('chunk_size')}"
+                                for item in allocation
+                                if isinstance(item, dict)
+                            ]
                         print(
-                            f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
+                            f"[MNM-LOG] gen={generation} total={t_total:.3f}s "
+                            f"comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s "
+                            f"wall_compute={wall_compute_ms/1000.0:.3f}s wall_comm={wall_comm_ms/1000.0:.3f}s "
+                            f"alloc={alloc_compact}",
                             flush=True,
                         )
                     pbar.set_postfix(fitness=max(fitness_list).item(), PCG=min(best_PCG), MCN=min(best_MCN))

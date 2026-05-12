@@ -4,6 +4,7 @@ import os
 import time
 import threading
 import inspect
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,6 +13,7 @@ from typing import Any, Dict, Optional, Tuple
 from gapa.config import get_dataset_dir
 
 torch = None
+_CPU_POOL_EVALUATOR = None
 
 
 def _require_torch():
@@ -30,6 +32,29 @@ def _select_device() -> str:
     if torch.cuda.is_available():
         return "cuda:0"
     return "cpu"
+
+
+def _canonical_algorithm_name(name: str) -> str:
+    return str(name or "").strip().replace("-", "").replace("_", "").lower()
+
+
+CPU_PARALLEL_ALGORITHMS = {"qattack", "cgn", "tde", "cutoff", "lpaeda", "lpaga"}
+
+
+def _init_cpu_pool(evaluator: Any) -> None:
+    global _CPU_POOL_EVALUATOR
+    _CPU_POOL_EVALUATOR = evaluator
+
+
+def _cpu_pool_eval(pop_chunk_cpu: Any) -> Any:
+    evaluator = _CPU_POOL_EVALUATOR
+    if evaluator is None:
+        raise RuntimeError("cpu pool evaluator not initialized")
+    torch = _require_torch()
+    out = evaluator(pop_chunk_cpu)
+    if isinstance(out, torch.Tensor):
+        return out.detach().to("cpu")
+    return torch.as_tensor(out).detach().to("cpu")
 
 
 def _repo_root() -> Path:
@@ -129,6 +154,9 @@ class _FitnessContext:
         self._data: Any = None
         self._evaluator_setup: Any = None  # callable(pop_size)->evaluator
         self._evaluator_cache: Dict[int, Any] = {}
+        self._cpu_pool: Optional[ProcessPoolExecutor] = None
+        self._cpu_pool_workers: int = 0
+        self._cpu_pool_pop_size: int = 0
 
         self._prepare()
 
@@ -239,6 +267,18 @@ class _FitnessContext:
                              target_val = target_val.to(self.device)
                          setattr(evaluator, key, target_val)
 
+            is_cpu_parallel = _canonical_algorithm_name(self.algorithm) in CPU_PARALLEL_ALGORITHMS and self.device == "cpu"
+            if is_cpu_parallel:
+                t_forward_start = time.perf_counter()
+                out = self._eval_cpu_parallel(evaluator, population_cpu)
+                forward_ms = (time.perf_counter() - t_forward_start) * 1000.0
+                return out.detach().to("cpu"), {
+                    "device": self.device,
+                    "pop_size": pop_size,
+                    "copy_to_device_ms": 0.0,
+                    "forward_ms": forward_ms,
+                }
+
             t_copy_start = time.perf_counter()
             pop = population_cpu.to(self.device)
             if self.device.startswith("cuda"):
@@ -262,6 +302,54 @@ class _FitnessContext:
                 "copy_to_device_ms": copy_to_device_ms,
                 "forward_ms": forward_ms,
             }
+
+    def _eval_cpu_parallel(self, evaluator: Any, population_cpu: Any) -> Any:
+        torch = _require_torch()
+        pop_size = int(population_cpu.shape[0])
+        workers = int(os.getenv("GAPA_CPU_FITNESS_PROCS", "0") or 0)
+        if workers <= 0:
+            workers = min(max(1, os.cpu_count() or 1), max(1, pop_size), 4)
+        if workers <= 1 or pop_size <= 1:
+            return evaluator(population_cpu)
+
+        if (
+            self._cpu_pool is None
+            or self._cpu_pool_workers != workers
+            or self._cpu_pool_pop_size != pop_size
+        ):
+            if self._cpu_pool is not None:
+                try:
+                    self._cpu_pool.shutdown(wait=True, cancel_futures=False)
+                except Exception:
+                    pass
+            ctx = None
+            try:
+                import multiprocessing as _mp
+                ctx = _mp.get_context("fork")
+            except Exception:
+                ctx = None
+            self._cpu_pool = ProcessPoolExecutor(
+                max_workers=workers,
+                mp_context=ctx,
+                initializer=_init_cpu_pool,
+                initargs=(evaluator,),
+            )
+            self._cpu_pool_workers = workers
+            self._cpu_pool_pop_size = pop_size
+
+        chunk_count = min(workers, pop_size)
+        pop_chunks = [
+            chunk.contiguous()
+            for chunk in torch.chunk(population_cpu.detach().to("cpu"), chunk_count, dim=0)
+            if chunk.numel() > 0
+        ]
+        if len(pop_chunks) <= 1 or self._cpu_pool is None:
+            return evaluator(population_cpu)
+        try:
+            parts = list(self._cpu_pool.map(_cpu_pool_eval, pop_chunks))
+            return torch.cat([part if isinstance(part, torch.Tensor) else torch.as_tensor(part) for part in parts], dim=0)
+        except Exception:
+            return evaluator(population_cpu)
 
 
 _CTX: Dict[_ContextKey, _FitnessContext] = {}
