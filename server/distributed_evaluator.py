@@ -95,6 +95,8 @@ class MNMSchedulerConfig:
     guard_min_calls: int = 8
     guard_cooldown_iters: int = 5
     guard_window_iters: int = 3
+    detailed_calls_history: int = 128
+    per_iteration_history: int = 64
 
     @classmethod
     def from_env(cls) -> "MNMSchedulerConfig":
@@ -105,6 +107,8 @@ class MNMSchedulerConfig:
             guard_min_calls=max(1, _env_int("GAPA_MNM_COMM_MIN_CALLS", 8)),
             guard_cooldown_iters=max(1, _env_int("GAPA_MNM_COMM_COOLDOWN_ITERS", 5)),
             guard_window_iters=max(1, _env_int("GAPA_MNM_COMM_WINDOW_ITERS", 3)),
+            detailed_calls_history=max(32, _env_int("GAPA_MNM_DETAILED_CALLS_HISTORY", 128)),
+            per_iteration_history=max(32, _env_int("GAPA_MNM_PER_ITER_HISTORY", 64)),
         )
 
     def snapshot(self) -> Dict[str, Any]:
@@ -123,6 +127,8 @@ class MNMSchedulerConfig:
             "guard_min_calls": int(self.guard_min_calls),
             "guard_cooldown_iters": int(self.guard_cooldown_iters),
             "guard_window_iters": int(self.guard_window_iters),
+            "detailed_calls_history": int(self.detailed_calls_history),
+            "per_iteration_history": int(self.per_iteration_history),
         }
 
 
@@ -603,15 +609,19 @@ class DistributedEvaluator(nn.Module):
         self._comm_total_ms = 0.0  # Cumulative (sum of all calls)
         self._comm_wall_clock_ms = 0.0  # Wall clock (actual elapsed, parallel)
         self._comm_calls = 0
+        self._scheduler_config = MNMSchedulerConfig.from_env()
         
         # Detailed stats
-        self._detailed_calls: List[DetailedCallResult] = []
+        self._detailed_calls: Deque[DetailedCallResult] = deque(
+            maxlen=max(32, int(self._scheduler_config.detailed_calls_history))
+        )
         self._current_iter = 0
         self._per_worker_stats: Dict[str, Dict[str, float]] = {}
-        self._per_iter_stats: List[Dict[str, Any]] = []
+        self._per_iter_stats: Deque[Dict[str, Any]] = deque(
+            maxlen=max(32, int(self._scheduler_config.per_iteration_history))
+        )
         self._rr_cursor = 0
         self._forward_calls = 0
-        self._scheduler_config = MNMSchedulerConfig.from_env()
         self._guard_enabled = bool(self._scheduler_config.guard_enabled)
         self._guard_max_ratio = float(self._scheduler_config.guard_max_ratio)
         self._guard_min_calls = int(self._scheduler_config.guard_min_calls)
@@ -623,6 +633,15 @@ class DistributedEvaluator(nn.Module):
         self._recovery_events: List[float] = []
         self._recovery_latency_ms: List[float] = []
         self._last_allocation: List[Dict[str, Any]] = []
+        self._total_serialize_ms = 0.0
+        self._total_network_ms = 0.0
+        self._total_compute_ms = 0.0
+        self._total_copy_to_device_ms = 0.0
+        self._total_forward_ms = 0.0
+        self._total_deserialize_ms = 0.0
+        self._total_payload_bytes = 0
+        self._total_wall_compute_ms = 0.0
+        self._total_wall_overhead_ms = 0.0
     
     def _build_device_workers(self) -> List[DeviceWorker]:
         """Build DeviceWorkers from all servers' locked devices."""
@@ -916,6 +935,13 @@ class DistributedEvaluator(nn.Module):
                     iter_calls.append(result)
                     self._comm_total_ms += result.total_ms
                     self._comm_calls += 1
+                    self._total_serialize_ms += result.serialize_ms
+                    self._total_network_ms += result.network_ms
+                    self._total_compute_ms += result.compute_ms
+                    self._total_copy_to_device_ms += result.copy_to_device_ms
+                    self._total_forward_ms += result.forward_ms
+                    self._total_deserialize_ms += result.deserialize_ms
+                    self._total_payload_bytes += int(result.payload_bytes)
                     self._update_worker_stats(dw, result)
                     fit_cpu = result.fitness
                     if not isinstance(fit_cpu, torch.Tensor):
@@ -959,6 +985,8 @@ class DistributedEvaluator(nn.Module):
                 "max_overhead_ms": iter_max_overhead,
             }
         )
+        self._total_wall_compute_ms += float(iter_max_compute)
+        self._total_wall_overhead_ms += float(iter_max_overhead)
         self._guard_window.append(
             {
                 "iter": float(iter_tick),
@@ -1074,19 +1102,19 @@ class DistributedEvaluator(nn.Module):
             }
         
         # Aggregate phase totals
-        total_serialize = sum(c.serialize_ms for c in self._detailed_calls)
-        total_network = sum(c.network_ms for c in self._detailed_calls)
-        total_compute = sum(c.compute_ms for c in self._detailed_calls)
-        total_copy_to_device = sum(c.copy_to_device_ms for c in self._detailed_calls)
-        total_forward = sum(c.forward_ms for c in self._detailed_calls)
-        total_deserialize = sum(c.deserialize_ms for c in self._detailed_calls)
-        total_bytes = sum(c.payload_bytes for c in self._detailed_calls)
-        total_comm = sum(c.total_ms for c in self._detailed_calls)
-        total_wall_compute = sum(float(item.get("max_compute_ms") or 0.0) for item in self._per_iter_stats)
-        total_wall_overhead = sum(float(item.get("max_overhead_ms") or 0.0) for item in self._per_iter_stats)
+        total_serialize = self._total_serialize_ms
+        total_network = self._total_network_ms
+        total_compute = self._total_compute_ms
+        total_copy_to_device = self._total_copy_to_device_ms
+        total_forward = self._total_forward_ms
+        total_deserialize = self._total_deserialize_ms
+        total_bytes = self._total_payload_bytes
+        total_comm = self._comm_total_ms
+        total_wall_compute = self._total_wall_compute_ms
+        total_wall_overhead = self._total_wall_overhead_ms
         
         # Calculate averages
-        n = len(self._detailed_calls)
+        n = int(self._comm_calls)
         avg_total = total_comm / n if n else 0.0
         
         # Per-worker summary
@@ -1151,7 +1179,7 @@ class DistributedEvaluator(nn.Module):
             "utilization": {
                 "allocation": self._last_allocation,
             },
-            "per_iteration": self._per_iter_stats,
+            "per_iteration": list(self._per_iter_stats),
             "transport": self._pool.transport_metrics(),
             "recovery": {
                 "events": len(self._recovery_events),
