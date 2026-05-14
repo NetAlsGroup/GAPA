@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections import deque
+import json
 import os
 import socket
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, List, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, TextIO, Tuple
 
 from gapa.config import build_remote_server_entries
 
@@ -95,8 +97,10 @@ class MNMSchedulerConfig:
     guard_min_calls: int = 8
     guard_cooldown_iters: int = 5
     guard_window_iters: int = 3
-    detailed_calls_history: int = 128
-    per_iteration_history: int = 64
+    detailed_calls_history: int = 0
+    per_iteration_history: int = 0
+    per_iteration_log_path: str = ""
+    device_worker_refresh_s: float = 60.0
 
     @classmethod
     def from_env(cls) -> "MNMSchedulerConfig":
@@ -107,8 +111,10 @@ class MNMSchedulerConfig:
             guard_min_calls=max(1, _env_int("GAPA_MNM_COMM_MIN_CALLS", 8)),
             guard_cooldown_iters=max(1, _env_int("GAPA_MNM_COMM_COOLDOWN_ITERS", 5)),
             guard_window_iters=max(1, _env_int("GAPA_MNM_COMM_WINDOW_ITERS", 3)),
-            detailed_calls_history=max(32, _env_int("GAPA_MNM_DETAILED_CALLS_HISTORY", 128)),
-            per_iteration_history=max(32, _env_int("GAPA_MNM_PER_ITER_HISTORY", 64)),
+            detailed_calls_history=max(0, _env_int("GAPA_MNM_DETAILED_CALLS_HISTORY", 0)),
+            per_iteration_history=max(0, _env_int("GAPA_MNM_PER_ITER_HISTORY", 0)),
+            per_iteration_log_path=os.getenv("GAPA_MNM_PER_ITER_LOG", "").strip(),
+            device_worker_refresh_s=max(0.0, _env_float("GAPA_MNM_DEVICE_WORKER_REFRESH_S", 60.0)),
         )
 
     def snapshot(self) -> Dict[str, Any]:
@@ -129,6 +135,8 @@ class MNMSchedulerConfig:
             "guard_window_iters": int(self.guard_window_iters),
             "detailed_calls_history": int(self.detailed_calls_history),
             "per_iteration_history": int(self.per_iteration_history),
+            "per_iteration_log_path": self.per_iteration_log_path,
+            "device_worker_refresh_s": float(self.device_worker_refresh_s),
         }
 
 
@@ -184,96 +192,102 @@ def build_device_workers(
     req = _require_requests()
     session = req.Session()
     session.trust_env = False
-    
-    device_workers: List[DeviceWorker] = []
-    
-    # Add local worker if requested
-    if include_local:
-        if local_device:
-            device_workers.append(DeviceWorker(
-                server_id=_local_worker_label(),
-                base_url="",
-                device=local_device,
-                is_local=True,
-                weight=1.0,
-            ))
-    
-    # Query each remote server for its locked devices
-    for w in workers:
-        try:
-            resp, meta = request_with_retry(
-                session=session,
-                method="GET",
-                url=w.base_url + "/api/resource_lock/status",
-                timeout=(2.0, request_timeout),
-                op="resource_lock_status",
-            )
-            if not resp.ok:
-                # Server unreachable, but still add as CPU fallback worker
-                device_workers.append(DeviceWorker(
-                    server_id=w.server_id,
-                    base_url=w.base_url,
-                    device="cpu",
-                    is_local=False,
-                    weight=0.4,
-                ))
-                continue
-            lock_status = resp.json()
-            if not lock_status.get("active"):
-                # Lock inactive still means server is reachable: keep it as a CPU worker
-                # so MNM can continue to dispatch remote fitness jobs.
-                device_workers.append(DeviceWorker(
-                    server_id=w.server_id,
-                    base_url=w.base_url,
-                    device="cpu",
-                    is_local=False,
-                    weight=0.5 if int(meta.get("retries") or 0) == 0 else 0.4,
-                ))
-                continue
-            
-            devices = lock_status.get("devices") or []
-            backend = lock_status.get("backend", "cpu")
 
-            if force_cpu:
+    try:
+        device_workers: List[DeviceWorker] = []
+
+        # Add local worker if requested
+        if include_local:
+            if local_device:
                 device_workers.append(DeviceWorker(
-                    server_id=w.server_id,
-                    base_url=w.base_url,
-                    device="cpu",
-                    is_local=False,
-                    weight=0.5 if backend == "cpu" else 1.0,
+                    server_id=_local_worker_label(),
+                    base_url="",
+                    device=local_device,
+                    is_local=True,
+                    weight=1.0,
                 ))
-                continue
-            
-            if devices:
-                # Create one DeviceWorker per locked GPU
-                for dev_id in devices:
+
+        # Query each remote server for its locked devices
+        for w in workers:
+            try:
+                resp, meta = request_with_retry(
+                    session=session,
+                    method="GET",
+                    url=w.base_url + "/api/resource_lock/status",
+                    timeout=(2.0, request_timeout),
+                    op="resource_lock_status",
+                )
+                if not resp.ok:
+                    # Server unreachable, but still add as CPU fallback worker
                     device_workers.append(DeviceWorker(
                         server_id=w.server_id,
                         base_url=w.base_url,
-                        device=f"cuda:{dev_id}",
+                        device="cpu",
                         is_local=False,
-                        weight=1.0,
+                        weight=0.4,
                     ))
-            else:
-                # CPU backend or unknown - add CPU worker
+                    continue
+                lock_status = resp.json()
+                if not lock_status.get("active"):
+                    # Lock inactive still means server is reachable: keep it as a CPU worker
+                    # so MNM can continue to dispatch remote fitness jobs.
+                    device_workers.append(DeviceWorker(
+                        server_id=w.server_id,
+                        base_url=w.base_url,
+                        device="cpu",
+                        is_local=False,
+                        weight=0.5 if int(meta.get("retries") or 0) == 0 else 0.4,
+                    ))
+                    continue
+
+                devices = lock_status.get("devices") or []
+                backend = lock_status.get("backend", "cpu")
+
+                if force_cpu:
+                    device_workers.append(DeviceWorker(
+                        server_id=w.server_id,
+                        base_url=w.base_url,
+                        device="cpu",
+                        is_local=False,
+                        weight=0.5 if backend == "cpu" else 1.0,
+                    ))
+                    continue
+
+                if devices:
+                    # Create one DeviceWorker per locked GPU
+                    for dev_id in devices:
+                        device_workers.append(DeviceWorker(
+                            server_id=w.server_id,
+                            base_url=w.base_url,
+                            device=f"cuda:{dev_id}",
+                            is_local=False,
+                            weight=1.0,
+                        ))
+                else:
+                    # CPU backend or unknown - add CPU worker
+                    device_workers.append(DeviceWorker(
+                        server_id=w.server_id,
+                        base_url=w.base_url,
+                        device="cpu",
+                        is_local=False,
+                        weight=0.5 if backend == "cpu" else 1.0,
+                    ))
+            except Exception:
+                # On any error, add server as CPU fallback
                 device_workers.append(DeviceWorker(
                     server_id=w.server_id,
                     base_url=w.base_url,
                     device="cpu",
                     is_local=False,
-                    weight=0.5 if backend == "cpu" else 1.0,
+                    weight=0.3,  # Lower weight for potentially unreliable server
                 ))
+
+        return device_workers
+    finally:
+        try:
+            session.close()
         except Exception:
-            # On any error, add server as CPU fallback
-            device_workers.append(DeviceWorker(
-                server_id=w.server_id,
-                base_url=w.base_url,
-                device="cpu",
-                is_local=False,
-                weight=0.3,  # Lower weight for potentially unreliable server
-            ))
-    
-    return device_workers
+            pass
 
 
 class AdaptiveWorkerPool:
@@ -601,6 +615,7 @@ class DistributedEvaluator(nn.Module):
         
         # Device workers cache (rebuilt on each forward for fresh lock status)
         self._device_workers: List[DeviceWorker] = []
+        self._device_workers_last_refresh = 0.0
         
         # Is this a CPU-based algorithm?
         self._is_cpu_algorithm = algorithm in self.CPU_ALGORITHMS
@@ -612,14 +627,16 @@ class DistributedEvaluator(nn.Module):
         self._scheduler_config = MNMSchedulerConfig.from_env()
         
         # Detailed stats
-        self._detailed_calls: Deque[DetailedCallResult] = deque(
-            maxlen=max(32, int(self._scheduler_config.detailed_calls_history))
+        self._detailed_calls: Deque[Dict[str, Any]] = deque(
+            maxlen=int(self._scheduler_config.detailed_calls_history)
         )
         self._current_iter = 0
         self._per_worker_stats: Dict[str, Dict[str, float]] = {}
         self._per_iter_stats: Deque[Dict[str, Any]] = deque(
-            maxlen=max(32, int(self._scheduler_config.per_iteration_history))
+            maxlen=int(self._scheduler_config.per_iteration_history)
         )
+        self._per_iter_log_path = self._scheduler_config.per_iteration_log_path
+        self._per_iter_log_file: Optional[TextIO] = None
         self._rr_cursor = 0
         self._forward_calls = 0
         self._guard_enabled = bool(self._scheduler_config.guard_enabled)
@@ -642,9 +659,16 @@ class DistributedEvaluator(nn.Module):
         self._total_payload_bytes = 0
         self._total_wall_compute_ms = 0.0
         self._total_wall_overhead_ms = 0.0
+        self._executor: Optional[ThreadPoolExecutor] = None
+        self._executor_workers = 0
     
     def _build_device_workers(self) -> List[DeviceWorker]:
         """Build DeviceWorkers from all servers' locked devices."""
+        now = time.time()
+        refresh_s = float(self._scheduler_config.device_worker_refresh_s)
+        if self._device_workers and refresh_s > 0.0 and (now - self._device_workers_last_refresh) < refresh_s:
+            return list(self._device_workers)
+
         # CPU-bound MNM should default to remote-only workers so the coordinator
         # does not silently compete for the same CPU budget during experiments.
         # Keep local CPU only as an explicit opt-in or as a last-resort fallback
@@ -652,12 +676,15 @@ class DistributedEvaluator(nn.Module):
         include_local = self._include_local or (self._is_cpu_algorithm and not self._workers)
         local_device = self._local_device or ("cpu" if include_local and self._is_cpu_algorithm else None)
         
-        return build_device_workers(
+        device_workers = build_device_workers(
             self._workers,
             include_local=include_local,
             local_device=local_device,
             force_cpu=self._is_cpu_algorithm,
         )
+        self._device_workers = list(device_workers)
+        self._device_workers_last_refresh = now
+        return device_workers
 
     def set_iteration(self, iter_num: int) -> None:
         """Set current iteration number for tracking."""
@@ -683,6 +710,44 @@ class DistributedEvaluator(nn.Module):
         ws["forward_ms"] += result.forward_ms
         ws["deserialize_ms"] += result.deserialize_ms
         ws["total_bytes"] += result.payload_bytes
+
+    def _record_call_summary(self, result: "DetailedCallResult") -> None:
+        if self._detailed_calls.maxlen == 0:
+            return
+        self._detailed_calls.append(
+            {
+                "worker_id": result.worker_id,
+                "serialize_ms": result.serialize_ms,
+                "network_ms": result.network_ms,
+                "compute_ms": result.compute_ms,
+                "copy_to_device_ms": result.copy_to_device_ms,
+                "forward_ms": result.forward_ms,
+                "deserialize_ms": result.deserialize_ms,
+                "total_ms": result.total_ms,
+                "payload_bytes": int(result.payload_bytes),
+                "chunk_size": int(result.chunk_size),
+            }
+        )
+
+    def _write_iteration_log(self, payload: Dict[str, Any]) -> None:
+        if not self._per_iter_log_path:
+            return
+        try:
+            if self._per_iter_log_file is None:
+                parent = os.path.dirname(os.path.abspath(self._per_iter_log_path))
+                if parent:
+                    os.makedirs(parent, exist_ok=True)
+                self._per_iter_log_file = open(self._per_iter_log_path, "a", encoding="utf-8", buffering=1)
+            self._per_iter_log_file.write(json.dumps(payload, separators=(",", ":")) + "\n")
+        except Exception as exc:
+            print(f"[WARN] failed to write MNM per-iteration log: {exc}")
+            self._per_iter_log_path = ""
+            try:
+                if self._per_iter_log_file is not None:
+                    self._per_iter_log_file.close()
+            except Exception:
+                pass
+            self._per_iter_log_file = None
 
     def _record_worker_failure(self, dw: "DeviceWorker") -> None:
         wid = f"{dw.server_id}:{dw.device}"
@@ -869,7 +934,6 @@ class DistributedEvaluator(nn.Module):
         context: Dict[str, Any],
     ) -> Tuple[List[Any], List[DetailedCallResult], float]:
         torch, _nn = _require_torch()
-        from concurrent.futures import Future, ThreadPoolExecutor
 
         def _remote_call(idx: int, dw: DeviceWorker, pop_chunk: Any) -> Tuple[int, DetailedCallResult]:
             pop_cpu = pop_chunk.detach().to("cpu")
@@ -908,55 +972,82 @@ class DistributedEvaluator(nn.Module):
         futures: List[Tuple[Future, int, DeviceWorker, Any]] = []
         t_wall_start = time.perf_counter()
 
-        with ThreadPoolExecutor(max_workers=max(1, len(assignments))) as executor:
-            for assignment in assignments:
-                idx = int(assignment.index)
-                dw = assignment.worker
-                pop_chunk = assignment.chunk
-                try:
-                    if dw.is_local:
-                        future = executor.submit(_local_call, idx, dw, pop_chunk)
-                        futures.append((future, idx, dw, pop_chunk))
-                    else:
-                        future = executor.submit(_remote_call, idx, dw, pop_chunk)
-                        futures.append((future, idx, dw, pop_chunk))
-                except Exception as exc:
-                    print(f"[WARN] Device {dw.server_id}:{dw.device} prep failed: {exc}, falling back to local")
-                    self._record_worker_failure(dw)
-                    t_recover = time.perf_counter()
-                    fits[idx] = self._base(pop_chunk)
-                    self._recovery_events.append(time.perf_counter())
-                    self._recovery_latency_ms.append((time.perf_counter() - t_recover) * 1000.0)
+        executor = self._get_executor(max(1, len(assignments)))
+        for assignment in assignments:
+            idx = int(assignment.index)
+            dw = assignment.worker
+            pop_chunk = assignment.chunk
+            try:
+                if dw.is_local:
+                    future = executor.submit(_local_call, idx, dw, pop_chunk)
+                    futures.append((future, idx, dw, pop_chunk))
+                else:
+                    future = executor.submit(_remote_call, idx, dw, pop_chunk)
+                    futures.append((future, idx, dw, pop_chunk))
+            except Exception as exc:
+                print(f"[WARN] Device {dw.server_id}:{dw.device} prep failed: {exc}, falling back to local")
+                self._record_worker_failure(dw)
+                t_recover = time.perf_counter()
+                fits[idx] = self._base(pop_chunk)
+                self._recovery_events.append(time.perf_counter())
+                self._recovery_latency_ms.append((time.perf_counter() - t_recover) * 1000.0)
 
-            for future, stored_idx, dw, pop_chunk in futures:
-                try:
-                    idx, result = future.result()
-                    self._detailed_calls.append(result)
-                    iter_calls.append(result)
-                    self._comm_total_ms += result.total_ms
-                    self._comm_calls += 1
-                    self._total_serialize_ms += result.serialize_ms
-                    self._total_network_ms += result.network_ms
-                    self._total_compute_ms += result.compute_ms
-                    self._total_copy_to_device_ms += result.copy_to_device_ms
-                    self._total_forward_ms += result.forward_ms
-                    self._total_deserialize_ms += result.deserialize_ms
-                    self._total_payload_bytes += int(result.payload_bytes)
-                    self._update_worker_stats(dw, result)
-                    fit_cpu = result.fitness
-                    if not isinstance(fit_cpu, torch.Tensor):
-                        fit_cpu = torch.tensor(fit_cpu)
-                    fits[idx] = fit_cpu.to(population_device)
-                except Exception as exc:
-                    print(f"[WARN] Device {dw.server_id}:{dw.device} failed: {exc}, falling back to local")
-                    self._record_worker_failure(dw)
-                    t_recover = time.perf_counter()
-                    fits[stored_idx] = self._base(pop_chunk)
-                    self._recovery_events.append(time.perf_counter())
-                    self._recovery_latency_ms.append((time.perf_counter() - t_recover) * 1000.0)
+        for future, stored_idx, dw, pop_chunk in futures:
+            try:
+                idx, result = future.result()
+                self._record_call_summary(result)
+                iter_calls.append(result)
+                self._comm_total_ms += result.total_ms
+                self._comm_calls += 1
+                self._total_serialize_ms += result.serialize_ms
+                self._total_network_ms += result.network_ms
+                self._total_compute_ms += result.compute_ms
+                self._total_copy_to_device_ms += result.copy_to_device_ms
+                self._total_forward_ms += result.forward_ms
+                self._total_deserialize_ms += result.deserialize_ms
+                self._total_payload_bytes += int(result.payload_bytes)
+                self._update_worker_stats(dw, result)
+                fit_cpu = result.fitness
+                if not isinstance(fit_cpu, torch.Tensor):
+                    fit_cpu = torch.tensor(fit_cpu)
+                fits[idx] = fit_cpu.to(population_device)
+            except Exception as exc:
+                print(f"[WARN] Device {dw.server_id}:{dw.device} failed: {exc}, falling back to local")
+                self._record_worker_failure(dw)
+                t_recover = time.perf_counter()
+                fits[stored_idx] = self._base(pop_chunk)
+                self._recovery_events.append(time.perf_counter())
+                self._recovery_latency_ms.append((time.perf_counter() - t_recover) * 1000.0)
 
         iter_wall_ms = (time.perf_counter() - t_wall_start) * 1000.0
         return fits, iter_calls, iter_wall_ms
+
+    def _get_executor(self, max_workers: int) -> ThreadPoolExecutor:
+        max_workers = max(1, int(max_workers))
+        if self._executor is None or self._executor_workers < max_workers:
+            if self._executor is not None:
+                try:
+                    self._executor.shutdown(wait=True, cancel_futures=False)
+                except Exception:
+                    pass
+            self._executor = ThreadPoolExecutor(max_workers=max_workers)
+            self._executor_workers = max_workers
+        return self._executor
+
+    def close(self) -> None:
+        if self._executor is not None:
+            try:
+                self._executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+        self._executor = None
+        self._executor_workers = 0
+        if self._per_iter_log_file is not None:
+            try:
+                self._per_iter_log_file.close()
+            except Exception:
+                pass
+        self._per_iter_log_file = None
 
     def _record_iteration_stats(self, *, iter_tick: int, iter_calls: List[DetailedCallResult], iter_wall_ms: float) -> None:
         self._comm_wall_clock_ms += iter_wall_ms
@@ -970,8 +1061,9 @@ class DistributedEvaluator(nn.Module):
         iter_overhead = sum((c.serialize_ms + c.network_ms + c.deserialize_ms) for c in iter_calls)
         iter_max_compute = max((c.compute_ms for c in iter_calls), default=0.0)
         iter_max_overhead = max((c.serialize_ms + c.network_ms + c.deserialize_ms for c in iter_calls), default=0.0)
-        self._per_iter_stats.append(
-            {
+        needs_detail = bool(self._per_iter_stats.maxlen) or bool(self._per_iter_log_path)
+        if needs_detail:
+            iter_summary = {
                 "iter": iter_tick,
                 "total_ms": iter_cumulative,
                 "wall_ms": iter_wall_ms,
@@ -984,7 +1076,9 @@ class DistributedEvaluator(nn.Module):
                 "max_compute_ms": iter_max_compute,
                 "max_overhead_ms": iter_max_overhead,
             }
-        )
+            if self._per_iter_stats.maxlen:
+                self._per_iter_stats.append(iter_summary)
+            self._write_iteration_log(iter_summary)
         self._total_wall_compute_ms += float(iter_max_compute)
         self._total_wall_overhead_ms += float(iter_max_overhead)
         self._guard_window.append(
@@ -1088,12 +1182,13 @@ class DistributedEvaluator(nn.Module):
 
     def detailed_stats(self) -> Dict[str, Any]:
         """Return comprehensive communication statistics with full breakdown."""
-        if not self._detailed_calls:
+        if not self._comm_calls:
             return {
                 "type": "http_detailed",
                 "total_comm_ms": 0.0,
                 "scheduler_config": self._scheduler_config.snapshot(),
                 "utilization": {"allocation": self._last_allocation},
+                "per_iteration": [],
                 "recovery": {
                     "events": len(self._recovery_events),
                     "last_recovery_ts": self._recovery_events[-1] if self._recovery_events else None,
@@ -1180,6 +1275,7 @@ class DistributedEvaluator(nn.Module):
                 "allocation": self._last_allocation,
             },
             "per_iteration": list(self._per_iter_stats),
+            "per_iteration_log_path": self._per_iter_log_path or None,
             "transport": self._pool.transport_metrics(),
             "recovery": {
                 "events": len(self._recovery_events),

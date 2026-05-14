@@ -53,6 +53,16 @@ class BasicController(nn.Module):
                 f.write(f"{[i.tolist() for i in gene]}\n")
             f.write(f"{time_list}\n")
 
+    def _fitness_descending(self) -> bool:
+        side = getattr(self, "fit_side", getattr(self, "side", "min"))
+        return str(side).lower() == "max"
+
+    def _best_fitness_index(self, fitness_list: Tensor) -> int:
+        return torch.argmax(fitness_list).item() if self._fitness_descending() else torch.argmin(fitness_list).item()
+
+    def _best_fitness_value(self, fitness_list: Tensor) -> Tensor:
+        return torch.max(fitness_list) if self._fitness_descending() else torch.min(fitness_list)
+
 
 class CustomController(BasicController):
     """Reference controller implementing a simple GA training loop."""

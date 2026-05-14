@@ -284,6 +284,11 @@ class _LegacyAlgorithm(Algorithm):
                     "calls": comm_detailed.get("calls"),
                 }
         monitor._remote_result = result
+        if evaluator is not None and hasattr(evaluator, "close"):
+            try:
+                evaluator.close()
+            except Exception:
+                pass
 
     @staticmethod
     def _maybe_wrap_evaluator(workflow: Any, evaluator: nn.Module) -> nn.Module:
@@ -380,7 +385,7 @@ class SixDSTAlgorithm(_LegacyAlgorithm):
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         SixDST(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._consume_observer_spec(workflow.monitor, observer)
-        self._apply_capture(workflow.monitor, controller.captured_result or self._load_capture(capture_path), ("PCG", "MCN"))
+        self._apply_capture(workflow.monitor, controller.captured_result or self._load_capture(capture_path), ("Fitness", "PCG", "MCN"))
         self._attach_runtime_report(workflow.monitor, evaluator=evaluator, comm_path=comm_path)
 
     def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
@@ -440,7 +445,7 @@ class CutOffAlgorithm(_LegacyAlgorithm):
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         Cutoff(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._consume_observer_spec(workflow.monitor, observer)
-        self._apply_capture(workflow.monitor, controller.captured_result or self._load_capture(capture_path), ("PCG", "MCN"))
+        self._apply_capture(workflow.monitor, controller.captured_result or self._load_capture(capture_path), ("Fitness", "PCG", "MCN"))
         self._attach_runtime_report(workflow.monitor, evaluator=evaluator, comm_path=comm_path)
 
     def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:
@@ -497,7 +502,7 @@ class TDEAlgorithm(_LegacyAlgorithm):
         evaluator = self._maybe_wrap_evaluator(workflow, evaluator)
         TDE(workflow.mode, int(steps), loader, controller, evaluator, workflow.world_size, verbose=workflow.verbose)
         self._consume_observer_spec(workflow.monitor, observer)
-        self._apply_capture(workflow.monitor, controller.captured_result or self._load_capture(capture_path), ("PCG", "MCN"))
+        self._apply_capture(workflow.monitor, controller.captured_result or self._load_capture(capture_path), ("Fitness", "PCG", "MCN"))
         self._attach_runtime_report(workflow.monitor, evaluator=evaluator, comm_path=comm_path)
 
     def build_distributed_evaluator(self, data_loader: DataLoader, device: torch.device, pop_size: int) -> nn.Module:

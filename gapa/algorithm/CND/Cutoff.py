@@ -107,6 +107,7 @@ class CutoffController(BasicController):
     def calculate(self, max_generation, evaluator):
         best_PCG = []
         best_MCN = []
+        best_fitness = []
         best_genes = []
         time_list = []
         genes_index = evaluator.genes_index
@@ -117,8 +118,6 @@ class CutoffController(BasicController):
             if self.mode == "sm":
                 evaluator = torch.nn.DataParallel(evaluator)
             fitness_list = evaluator(population)
-            best_fitness_list = torch.tensor(data=[], device=self.device)
-            best_fitness_list = torch.hstack((best_fitness_list, torch.min(fitness_list)))
             with tqdm(total=max_generation) as pbar:
                 pbar.set_description(f'Training....{self.dataset} in Loop: {loop}...')
                 for generation in range(max_generation):
@@ -137,10 +136,13 @@ class CutoffController(BasicController):
                     population, fitness_list = body.elitism(population, mutation_population, fitness_list, new_fitness_list)
                     if generation % 50 == 0 or (generation+1) == max_generation:
                         # population_copy = self._remove_repeat(population.clone())
-                        nodes_index = genes_index[population[torch.argsort(fitness_list.clone())[0]]]
-                        critical_nodes = self.nodes[population[torch.argsort(fitness_list.clone())[0]]]
+                        best_idx = self._best_fitness_index(fitness_list)
+                        best_fit = self._best_fitness_value(fitness_list).item()
+                        nodes_index = genes_index[population[best_idx]]
+                        critical_nodes = self.nodes[population[best_idx]]
                         best_MCN.append(CNDTest(self.graph, nodes_index, pattern='ccn'))
-                        best_PCG.append(best_fitness_list[-1].item())
+                        best_PCG.append(best_fit)
+                        best_fitness.append(best_fit)
                         best_genes.append(critical_nodes)
                         end = time()
                         time_list.append(end - start)
@@ -148,7 +150,7 @@ class CutoffController(BasicController):
                             self._emit_observer(
                                 generation + 1,
                                 max_generation,
-                                {"PCG": float(CNDTest(self.graph, critical_nodes)), "MCN": float(best_MCN[-1])},
+                                {"fitness": float(best_fit), "PCG": float(best_PCG[-1]), "MCN": float(best_MCN[-1])},
                             )
                         except Exception:
                             pass
@@ -161,11 +163,12 @@ class CutoffController(BasicController):
                             f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
                             flush=True,
                         )
-                    pbar.set_postfix(MCN=min(best_MCN), PCG=min(best_PCG), fitness=min(fitness_list).item())
+                    current_best = self._best_fitness_value(fitness_list).item()
+                    pbar.set_postfix(fitness=current_best, PCG=best_PCG[-1] if best_PCG else current_best, MCN=best_MCN[-1] if best_MCN else None)
                     pbar.update(1)
-            top_index = best_PCG.index(min(best_PCG))
-            print(f"Best PC(G): {best_PCG[top_index]}. Best connected num: {best_MCN[top_index]}.")
-            self.save(self.dataset, best_genes[top_index], [best_PCG[top_index], best_MCN[top_index], time_list[-1]], time_list, "CutOff", bestPCG=best_PCG, bestMCN=best_MCN)
+            top_index = best_fitness.index(max(best_fitness) if self._fitness_descending() else min(best_fitness))
+            print(f"Best fitness: {best_fitness[top_index]}. Best PC(G): {best_PCG[top_index]}. Best connected num: {best_MCN[top_index]}.")
+            self.save(self.dataset, best_genes[top_index], [best_fitness[top_index], best_PCG[top_index], best_MCN[top_index], time_list[-1]], time_list, "CutOff", bestFitness=best_fitness, bestPCG=best_PCG, bestMCN=best_MCN)
             print(f"Loop {loop} finished. Data saved in {self.path}...")
 
     def mp_calculate(self, rank, max_generation, evaluator, world_size, component_size_list):
@@ -173,6 +176,7 @@ class CutoffController(BasicController):
         comm_timer = CommTimer()
         best_PCG = []
         best_MCN = []
+        best_fitness = []
         best_genes = []
         time_list = []
         genes_index = evaluator.genes_index.to(device)
@@ -266,10 +270,13 @@ class CutoffController(BasicController):
 
                     if generation % 50 == 0 or (generation+1) == max_generation:
                         # component_population = self._remove_repeat(component_population.clone())
-                        nodes_index = genes_index[component_population[torch.argsort(component_fitness_list.clone())[0]]]
-                        critical_nodes = nodes[component_population[torch.argsort(component_fitness_list.clone())[0]]]
+                        best_idx = self._best_fitness_index(component_fitness_list)
+                        best_fit = self._best_fitness_value(component_fitness_list).item()
+                        nodes_index = genes_index[component_population[best_idx]]
+                        critical_nodes = nodes[component_population[best_idx]]
                         best_MCN.append(CNDTest(self.graph, nodes_index, pattern='ccn'))
-                        best_PCG.append(component_fitness_list[-1].item())
+                        best_PCG.append(best_fit)
+                        best_fitness.append(best_fit)
                         best_genes.append(critical_nodes)
                         end = time()
                         time_list.append(end - start)
@@ -278,34 +285,40 @@ class CutoffController(BasicController):
                                 self._emit_observer(
                                     generation + 1,
                                     max_generation,
-                                    {"PCG": float(CNDTest(self.graph, critical_nodes)), "MCN": float(best_MCN[-1])},
+                                    {"fitness": float(best_fit), "PCG": float(best_PCG[-1]), "MCN": float(best_MCN[-1])},
                                 )
                             except Exception:
                                 pass
-                    pbar.set_postfix(MCN=min(best_MCN), PCG=min(best_PCG), fitness=min(component_fitness_list).item())
+                    current_best = self._best_fitness_value(component_fitness_list).item()
+                    pbar.set_postfix(fitness=current_best, PCG=best_PCG[-1] if best_PCG else current_best, MCN=best_MCN[-1] if best_MCN else None)
                     pbar.update(1)
             best_genes = torch.stack(best_genes)
             best_PCG = torch.tensor(best_PCG, device=device)
             best_MCN = torch.tensor(best_MCN, device=device)
+            best_fitness = torch.tensor(best_fitness, device=device)
             if rank == 0:
                 whole_genes = [torch.zeros(best_genes.shape, dtype=best_genes.dtype, device=device) for _ in range(world_size)]
                 whole_PCG = [torch.empty(best_PCG.shape, device=device) for _ in range(world_size)]
                 whole_MCN = [torch.zeros(best_MCN.shape, dtype=best_MCN.dtype, device=device) for _ in range(world_size)]
+                whole_fitness = [torch.empty(best_fitness.shape, device=device) for _ in range(world_size)]
             else:
                 whole_genes = None
                 whole_PCG = None
                 whole_MCN = None
+                whole_fitness = None
             timed_call(comm_timer, "barrier", dist.barrier)
             timed_call(comm_timer, "gather_genes", dist.gather, best_genes, whole_genes, dst=0)
+            timed_call(comm_timer, "gather_fitness", dist.gather, best_fitness, whole_fitness, dst=0)
             timed_call(comm_timer, "gather_pcg", dist.gather, best_PCG, whole_PCG, dst=0)
             timed_call(comm_timer, "gather_mcn", dist.gather, best_MCN, whole_MCN, dst=0)
             if rank == 0:
                 whole_genes = torch.cat(whole_genes)
+                whole_fitness = torch.cat(whole_fitness)
                 whole_PCG = torch.cat(whole_PCG)
                 whole_MCN = torch.cat(whole_MCN)
-                top_index = torch.argsort(whole_PCG)[0]
-                print(f"Best PC(G): {whole_PCG[top_index]}. Best connected num: {whole_MCN[top_index]}.")
-                self.save(self.dataset, whole_genes[top_index], [whole_PCG[top_index].item(), whole_MCN[top_index].item(), time_list[-1]], time_list, "CutOff", bestPCG=best_PCG, bestMCN=best_MCN)
+                top_index = torch.argsort(whole_fitness, descending=self._fitness_descending())[0]
+                print(f"Best fitness: {whole_fitness[top_index]}. Best PC(G): {whole_PCG[top_index]}. Best connected num: {whole_MCN[top_index]}.")
+                self.save(self.dataset, whole_genes[top_index], [whole_fitness[top_index].item(), whole_PCG[top_index].item(), whole_MCN[top_index].item(), time_list[-1]], time_list, "CutOff", bestFitness=best_fitness, bestPCG=best_PCG, bestMCN=best_MCN)
                 print(f"Loop {loop} finished. Data saved in {self.path}...")
         torch.cuda.empty_cache()
         finalize_comm_stats(comm_timer, rank, world_size, getattr(self, "comm_path", None))
@@ -317,6 +330,9 @@ class CutoffController(BasicController):
         with open(save_path, 'a+') as f:
             f.write(current_time())
             f.write(f"\nCurrent mode: {self.mode}. Current pop_size: {self.pop_size}\n")
+        with open(save_path, 'a+') as f:
+            if 'bestFitness' in kwargs:
+                f.write(str([i for i in kwargs['bestFitness']]) + '\n')
         with open(save_path, 'a+') as f:
             f.write(str([i for i in kwargs['bestPCG']]) + '\n')
         with open(save_path, 'a+') as f:

@@ -185,6 +185,7 @@ class TDEController(BasicController):
     def calculate(self, max_generation, evaluator):
         best_PCG = []
         best_MCN = []
+        best_fitness = []
         best_genes = []
         time_list = []
         body = TDEBody(self.nodes_num, self.budget, self.pop_size, self.fit_side, evaluator.device)
@@ -212,10 +213,13 @@ class TDEController(BasicController):
                     new_fitness_list = evaluator(crossover_population_embed)
                     population_embed, fitness_list = body.elitism(population_embed, crossover_population_embed, fitness_list, new_fitness_list)
                     if generation % 50 == 0 or (generation+1) == max_generation:
-                        genes_embed = population_embed[torch.argsort(fitness_list.clone(), descending=True)[0]].unsqueeze(dim=0)
+                        best_idx = self._best_fitness_index(fitness_list)
+                        best_fit = self._best_fitness_value(fitness_list).item()
+                        genes_embed = population_embed[best_idx].unsqueeze(dim=0)
                         critical_nodes = genotype2phenotype(genes_embed, self.embeds, len(self.embeds), self.budget, self.device)
                         best_PCG.append(CNDTest(self.graph, critical_nodes))
                         best_MCN.append(CNDTest(self.graph, critical_nodes, pattern="ccn"))
+                        best_fitness.append(best_fit)
                         best_genes.append(critical_nodes)
                         end = time()
                         time_list.append(end - start)
@@ -223,7 +227,7 @@ class TDEController(BasicController):
                             self._emit_observer(
                                 generation + 1,
                                 max_generation,
-                                {"PCG": float(best_PCG[-1]), "MCN": float(best_MCN[-1])},
+                                {"fitness": float(best_fit), "PCG": float(best_PCG[-1]), "MCN": float(best_MCN[-1])},
                             )
                         except Exception:
                             pass
@@ -251,11 +255,12 @@ class TDEController(BasicController):
                             f"alloc={alloc_compact}",
                             flush=True,
                         )
-                    pbar.set_postfix(fitness=max(fitness_list).item(), PCG=min(best_PCG), MCN=min(best_MCN))
+                    current_best = self._best_fitness_value(fitness_list).item()
+                    pbar.set_postfix(fitness=current_best, PCG=best_PCG[-1] if best_PCG else None, MCN=best_MCN[-1] if best_MCN else None)
                     pbar.update(1)
-            top_index = best_PCG.index(min(best_PCG))
-            print(f"Best PC(G): {best_PCG[top_index]}. Best connected num: {best_MCN[top_index]}.")
-            self.save(self.dataset, best_genes[top_index], [best_PCG[top_index], best_MCN[top_index], time_list[-1]], time_list, "TDE", bestPCG=best_PCG, bestMCN=best_MCN)
+            top_index = best_fitness.index(max(best_fitness) if self._fitness_descending() else min(best_fitness))
+            print(f"Best fitness: {best_fitness[top_index]}. Best PC(G): {best_PCG[top_index]}. Best connected num: {best_MCN[top_index]}.")
+            self.save(self.dataset, best_genes[top_index], [best_fitness[top_index], best_PCG[top_index], best_MCN[top_index], time_list[-1]], time_list, "TDE", bestFitness=best_fitness, bestPCG=best_PCG, bestMCN=best_MCN)
             print(f"Loop {loop} finished. Data saved in {self.path}...")
 
     def mp_calculate(self, rank, max_generation, evaluator, world_size, component_size_list):
@@ -263,6 +268,7 @@ class TDEController(BasicController):
         comm_timer = CommTimer()
         best_PCG = []
         best_MCN = []
+        best_fitness = []
         best_genes = []
         time_list = []
         embeds = self.embeds.to(device)
@@ -360,10 +366,13 @@ class TDEController(BasicController):
                     component_fitness_list = fitness_list[top_index]
 
                     if generation % 50 == 0 or (generation + 1) == max_generation:
-                        genes_embed = component_population_embed[torch.argsort(component_fitness_list.clone(), descending=True)[0]].unsqueeze(dim=0)
+                        best_idx = self._best_fitness_index(component_fitness_list)
+                        best_fit = self._best_fitness_value(component_fitness_list).item()
+                        genes_embed = component_population_embed[best_idx].unsqueeze(dim=0)
                         critical_nodes = genotype2phenotype(genes_embed, embeds, len(embeds), self.budget, device)
                         best_PCG.append(CNDTest(self.graph, critical_nodes))
                         best_MCN.append(CNDTest(self.graph, critical_nodes, pattern="ccn"))
+                        best_fitness.append(best_fit)
                         best_genes.append(critical_nodes)
                         end = time()
                         time_list.append(end - start)
@@ -372,35 +381,41 @@ class TDEController(BasicController):
                                 self._emit_observer(
                                     generation + 1,
                                     max_generation,
-                                    {"PCG": float(best_PCG[-1]), "MCN": float(best_MCN[-1])},
+                                    {"fitness": float(best_fit), "PCG": float(best_PCG[-1]), "MCN": float(best_MCN[-1])},
                                 )
                             except Exception:
                                 pass
-                    pbar.set_postfix(fitness=max(component_fitness_list).item(), PCG=min(best_PCG), MCN=min(best_MCN))
+                    current_best = self._best_fitness_value(component_fitness_list).item()
+                    pbar.set_postfix(fitness=current_best, PCG=best_PCG[-1] if best_PCG else None, MCN=best_MCN[-1] if best_MCN else None)
                     pbar.update(1)
 
             best_genes = torch.stack(best_genes)
             best_PCG = torch.tensor(best_PCG, device=device)
             best_MCN = torch.tensor(best_MCN, device=device)
+            best_fitness = torch.tensor(best_fitness, device=device)
             if rank == 0:
                 whole_genes = [torch.zeros(best_genes.shape, dtype=best_genes.dtype, device=device) for _ in range(world_size)]
                 whole_PCG = [torch.empty(best_PCG.shape, device=device) for _ in range(world_size)]
                 whole_MCN = [torch.zeros(best_MCN.shape, dtype=best_MCN.dtype, device=device) for _ in range(world_size)]
+                whole_fitness = [torch.empty(best_fitness.shape, device=device) for _ in range(world_size)]
             else:
                 whole_genes = None
                 whole_PCG = None
                 whole_MCN = None
+                whole_fitness = None
             timed_call(comm_timer, "barrier", dist.barrier)
             timed_call(comm_timer, "gather_genes", dist.gather, best_genes, whole_genes, dst=0)
+            timed_call(comm_timer, "gather_fitness", dist.gather, best_fitness, whole_fitness, dst=0)
             timed_call(comm_timer, "gather_pcg", dist.gather, best_PCG, whole_PCG, dst=0)
             timed_call(comm_timer, "gather_mcn", dist.gather, best_MCN, whole_MCN, dst=0)
             if rank == 0:
                 whole_genes = torch.cat(whole_genes)
+                whole_fitness = torch.cat(whole_fitness)
                 whole_PCG = torch.cat(whole_PCG)
                 whole_MCN = torch.cat(whole_MCN)
-                top_index = torch.argsort(whole_PCG)[0]
-                print(f"Best PC(G): {whole_PCG[top_index]}. Best connected num: {whole_MCN[top_index]}.")
-                self.save(self.dataset, whole_genes[top_index], [whole_PCG[top_index].item(), whole_MCN[top_index].item(), time_list[-1]], time_list, "TDE", bestPCG=best_PCG, bestMCN=best_MCN)
+                top_index = torch.argsort(whole_fitness, descending=self._fitness_descending())[0]
+                print(f"Best fitness: {whole_fitness[top_index]}. Best PC(G): {whole_PCG[top_index]}. Best connected num: {whole_MCN[top_index]}.")
+                self.save(self.dataset, whole_genes[top_index], [whole_fitness[top_index].item(), whole_PCG[top_index].item(), whole_MCN[top_index].item(), time_list[-1]], time_list, "TDE", bestFitness=best_fitness, bestPCG=best_PCG, bestMCN=best_MCN)
                 print(f"Loop {loop} finished. Data saved in {self.path}...")
         finalize_comm_stats(comm_timer, rank, world_size, getattr(self, "comm_path", None))
 
@@ -409,6 +424,9 @@ class TDEController(BasicController):
         with open(save_path, 'a+') as f:
             f.write(current_time())
             f.write(f"\nCurrent mode: {self.mode}. Current pop_size: {self.pop_size}\n")
+        with open(save_path, 'a+') as f:
+            if 'bestFitness' in kwargs:
+                f.write(str([i for i in kwargs['bestFitness']]) + '\n')
         with open(save_path, 'a+') as f:
             f.write(str([i for i in kwargs['bestPCG']]) + '\n')
         with open(save_path, 'a+') as f:

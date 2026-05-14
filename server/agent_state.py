@@ -105,6 +105,12 @@ def start_consumer(task: TaskState, on_finish: Optional[Callable[[], None]] = No
                 LOCK_MANAGER.release(reason="task_done")
             except Exception:
                 pass
+            try:
+                from server.fitness_worker import clear_contexts
+
+                clear_contexts()
+            except Exception:
+                pass
         if terminal_task_id:
             try:
                 from server.db_manager import db_manager

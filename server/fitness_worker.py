@@ -4,11 +4,12 @@ import os
 import time
 import threading
 import inspect
+import gc
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from gapa.config import get_dataset_dir
 
@@ -51,6 +52,11 @@ def _cpu_pool_eval(pop_chunk_cpu: Any) -> Any:
     if evaluator is None:
         raise RuntimeError("cpu pool evaluator not initialized")
     torch = _require_torch()
+    if hasattr(evaluator, "pop_size"):
+        try:
+            evaluator.pop_size = int(pop_chunk_cpu.shape[0])
+        except Exception:
+            pass
     out = evaluator(pop_chunk_cpu)
     if isinstance(out, torch.Tensor):
         return out.detach().to("cpu")
@@ -150,15 +156,29 @@ class _FitnessContext:
         self.dataset = dataset
         self.device = device
         self.lock = threading.Lock()
+        self.created_at = time.time()
+        self.last_used_at = self.created_at
 
         self._data: Any = None
         self._evaluator_setup: Any = None  # callable(pop_size)->evaluator
         self._evaluator_cache: Dict[int, Any] = {}
         self._cpu_pool: Optional[ProcessPoolExecutor] = None
         self._cpu_pool_workers: int = 0
-        self._cpu_pool_pop_size: int = 0
+        self._cpu_pool_evaluator_id: int = 0
 
         self._prepare()
+
+    def close(self) -> None:
+        if self._cpu_pool is not None:
+            try:
+                self._cpu_pool.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+        self._cpu_pool = None
+        self._cpu_pool_workers = 0
+        self._cpu_pool_evaluator_id = 0
+        self._evaluator_cache.clear()
+        self._data = None
 
     def _prepare(self) -> None:
         torch = _require_torch()
@@ -247,14 +267,23 @@ class _FitnessContext:
             raise TypeError("population must be a torch.Tensor")
         pop_size = int(population_cpu.shape[0])
         with self.lock:
-            evaluator = self._evaluator_cache.get(pop_size)
+            self.last_used_at = time.time()
+            is_cpu_parallel = _canonical_algorithm_name(self.algorithm) in CPU_PARALLEL_ALGORITHMS and self.device == "cpu"
+            evaluator_key = 0 if is_cpu_parallel else pop_size
+            evaluator = self._evaluator_cache.get(evaluator_key)
             if evaluator is None:
                 if not callable(self._evaluator_setup):
                     raise RuntimeError(
                         f"evaluator setup not ready for algorithm='{self.algorithm}'"
                     )
                 evaluator = self._evaluator_setup(pop_size)
-                self._evaluator_cache[pop_size] = evaluator
+                self._evaluator_cache[evaluator_key] = evaluator
+                self._trim_evaluator_cache(keep_key=evaluator_key)
+            elif hasattr(evaluator, "pop_size"):
+                try:
+                    setattr(evaluator, "pop_size", int(pop_size))
+                except Exception:
+                    pass
             
             # Apply generic task-specific context synchronization
             # Logic: If evaluator has attribute matching context key, override it.
@@ -267,7 +296,6 @@ class _FitnessContext:
                              target_val = target_val.to(self.device)
                          setattr(evaluator, key, target_val)
 
-            is_cpu_parallel = _canonical_algorithm_name(self.algorithm) in CPU_PARALLEL_ALGORITHMS and self.device == "cpu"
             if is_cpu_parallel:
                 t_forward_start = time.perf_counter()
                 out = self._eval_cpu_parallel(evaluator, population_cpu)
@@ -309,13 +337,14 @@ class _FitnessContext:
         workers = int(os.getenv("GAPA_CPU_FITNESS_PROCS", "0") or 0)
         if workers <= 0:
             workers = min(max(1, os.cpu_count() or 1), max(1, pop_size), 4)
-        if workers <= 1 or pop_size <= 1:
+        min_chunk = max(1, int(os.getenv("GAPA_CPU_FITNESS_MIN_CHUNK", "8") or 8))
+        if workers <= 1 or pop_size <= 1 or pop_size < min_chunk:
             return evaluator(population_cpu)
 
         if (
             self._cpu_pool is None
             or self._cpu_pool_workers != workers
-            or self._cpu_pool_pop_size != pop_size
+            or self._cpu_pool_evaluator_id != id(evaluator)
         ):
             if self._cpu_pool is not None:
                 try:
@@ -335,7 +364,7 @@ class _FitnessContext:
                 initargs=(evaluator,),
             )
             self._cpu_pool_workers = workers
-            self._cpu_pool_pop_size = pop_size
+            self._cpu_pool_evaluator_id = id(evaluator)
 
         chunk_count = min(workers, pop_size)
         pop_chunks = [
@@ -351,16 +380,85 @@ class _FitnessContext:
         except Exception:
             return evaluator(population_cpu)
 
+    def _trim_evaluator_cache(self, *, keep_key: int) -> None:
+        max_items = max(1, int(os.getenv("GAPA_FITNESS_EVALUATOR_CACHE_MAX", "4") or 4))
+        if len(self._evaluator_cache) <= max_items:
+            return
+        for key in list(self._evaluator_cache.keys()):
+            if key == keep_key:
+                continue
+            self._evaluator_cache.pop(key, None)
+            if len(self._evaluator_cache) <= max_items:
+                break
+
+    def stats(self) -> Dict[str, Any]:
+        return {
+            "algorithm": self.algorithm,
+            "dataset": self.dataset,
+            "device": self.device,
+            "created_at": self.created_at,
+            "last_used_at": self.last_used_at,
+            "age_s": max(0.0, time.time() - self.created_at),
+            "idle_s": max(0.0, time.time() - self.last_used_at),
+            "evaluator_cache_size": len(self._evaluator_cache),
+            "cpu_pool_active": self._cpu_pool is not None,
+            "cpu_pool_workers": self._cpu_pool_workers,
+        }
+
 
 _CTX: Dict[_ContextKey, _FitnessContext] = {}
 _CTX_LOCK = threading.Lock()
+
+
+def _close_context(ctx: _FitnessContext) -> None:
+    try:
+        with ctx.lock:
+            ctx.close()
+    except Exception:
+        pass
+
+
+def _prune_contexts_locked(*, now: Optional[float] = None, force: bool = False) -> None:
+    if not _CTX:
+        return
+    now = time.time() if now is None else float(now)
+    ttl_s = float(os.getenv("GAPA_FITNESS_CONTEXT_TTL_S", "1800") or 1800)
+    max_contexts = max(1, int(os.getenv("GAPA_FITNESS_CONTEXT_MAX", "4") or 4))
+
+    stale_keys: List[_ContextKey] = []
+    if force:
+        stale_keys = list(_CTX.keys())
+    elif ttl_s > 0:
+        stale_keys = [key for key, ctx in _CTX.items() if now - ctx.last_used_at > ttl_s]
+    for key in stale_keys:
+        ctx = _CTX.pop(key, None)
+        if ctx is not None:
+            _close_context(ctx)
+
+    if not force and len(_CTX) > max_contexts:
+        victims = sorted(_CTX.items(), key=lambda item: item[1].last_used_at)
+        for key, ctx in victims[: max(0, len(_CTX) - max_contexts)]:
+            _CTX.pop(key, None)
+            _close_context(ctx)
+
+
+def context_stats() -> Dict[str, Any]:
+    with _CTX_LOCK:
+        return {
+            "count": len(_CTX),
+            "max_contexts": max(1, int(os.getenv("GAPA_FITNESS_CONTEXT_MAX", "4") or 4)),
+            "ttl_s": float(os.getenv("GAPA_FITNESS_CONTEXT_TTL_S", "1800") or 1800),
+            "contexts": [ctx.stats() for ctx in _CTX.values()],
+        }
 
 
 def clear_contexts() -> None:
     """Release cached fitness contexts and GPU memory."""
     global _CTX
     with _CTX_LOCK:
+        _prune_contexts_locked(force=True)
         _CTX = {}
+    gc.collect()
     try:
         torch = _require_torch()
         if torch.cuda.is_available():
@@ -377,6 +475,7 @@ def compute_fitness_batch(algorithm: str, dataset: str, population_cpu: Any, *, 
         device = _select_device()
     key = _ContextKey(algorithm=algorithm, dataset=dataset, device=device)
     with _CTX_LOCK:
+        _prune_contexts_locked()
         ctx = _CTX.get(key)
         if ctx is None:
             ctx = _FitnessContext(algorithm=algorithm, dataset=dataset, device=device)

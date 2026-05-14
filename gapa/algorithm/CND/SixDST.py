@@ -110,6 +110,7 @@ class SixDSTController(BasicController):
     def calculate(self, max_generation, evaluator):
         best_PCG = []
         best_MCN = []
+        best_fitness = []
         best_genes = []
         time_list = []
         body = Body(self.nodes_num, self.budget, self.pop_size, self.fit_side, evaluator.device)
@@ -119,8 +120,6 @@ class SixDSTController(BasicController):
             if self.mode == "sm":
                 evaluator = torch.nn.DataParallel(evaluator)
             fitness_list = evaluator(population)
-            best_fitness_list = torch.tensor(data=[], device=self.device)
-            best_fitness_list = torch.hstack((best_fitness_list, torch.min(fitness_list)))
             with tqdm(total=max_generation) as pbar:
                 pbar.set_description(f'Training....{self.dataset} in Loop: {loop}...')
                 for generation in range(max_generation):
@@ -134,9 +133,12 @@ class SixDSTController(BasicController):
                     population, fitness_list = body.elitism(population, mutation_population, fitness_list, new_fitness_list)
                     if generation % 50 == 0 or (generation+1) == max_generation:
                         # population_copy = self._remove_repeat(population.clone())
-                        critical_nodes = self.nodes[population[torch.argsort(fitness_list.clone())[0]]]
+                        best_idx = self._best_fitness_index(fitness_list)
+                        best_fit = self._best_fitness_value(fitness_list).item()
+                        critical_nodes = self.nodes[population[best_idx]]
                         best_PCG.append(CNDTest(self.graph, critical_nodes))
-                        best_MCN.append(min(fitness_list).item())
+                        best_MCN.append(best_fit)
+                        best_fitness.append(best_fit)
                         best_genes.append(critical_nodes)
                         end = time()
                         time_list.append(end - start)
@@ -144,7 +146,7 @@ class SixDSTController(BasicController):
                             self._emit_observer(
                                 generation + 1,
                                 max_generation,
-                                {"PCG": float(best_PCG[-1]), "MCN": float(best_MCN[-1])},
+                                {"fitness": float(best_fit), "PCG": float(best_PCG[-1]), "MCN": float(best_MCN[-1])},
                             )
                         except Exception:
                             pass
@@ -157,11 +159,12 @@ class SixDSTController(BasicController):
                             f"[MNM-LOG] gen={generation} total={t_total:.3f}s comm_avg={avg_ms:.3f}ms comm_total={total_ms/1000.0:.3f}s",
                             flush=True,
                         )
-                    pbar.set_postfix(fitness=min(fitness_list).item(), PCG=min(best_PCG))
+                    current_best = self._best_fitness_value(fitness_list).item()
+                    pbar.set_postfix(fitness=current_best, PCG=best_PCG[-1] if best_PCG else None)
                     pbar.update(1)
-            top_index = best_PCG.index(min(best_PCG))
-            print(f"Best PC(G): {best_PCG[top_index]}. Best connected num: {best_MCN[top_index]}.")
-            self.save(self.dataset, best_genes[top_index], [best_PCG[top_index], best_MCN[top_index], time_list[-1]], time_list, "SixDST", bestPCG=best_PCG, bestMCN=best_MCN)
+            top_index = best_fitness.index(max(best_fitness) if self._fitness_descending() else min(best_fitness))
+            print(f"Best fitness: {best_fitness[top_index]}. Best PC(G): {best_PCG[top_index]}. Best connected num: {best_MCN[top_index]}.")
+            self.save(self.dataset, best_genes[top_index], [best_fitness[top_index], best_PCG[top_index], best_MCN[top_index], time_list[-1]], time_list, "SixDST", bestFitness=best_fitness, bestPCG=best_PCG, bestMCN=best_MCN)
             print(f"Loop {loop} finished. Data saved in {self.path}...")
 
     def mp_calculate(self, rank, max_generation, evaluator, world_size, component_size_list):
@@ -169,6 +172,7 @@ class SixDSTController(BasicController):
         comm_timer = CommTimer()
         best_PCG = []
         best_MCN = []
+        best_fitness = []
         best_genes = []
         time_list = []
         nodes = self.nodes.clone().to(device)
@@ -258,9 +262,12 @@ class SixDSTController(BasicController):
                     component_fitness_list = fitness_list[top_index]
                     if generation % 50 == 0 or (generation+1) == max_generation:
                         # component_population = self._remove_repeat(component_population.clone())
-                        critical_nodes = nodes[component_population[torch.argsort(component_fitness_list.clone())[0]]]
+                        best_idx = self._best_fitness_index(component_fitness_list)
+                        best_fit = self._best_fitness_value(component_fitness_list).item()
+                        critical_nodes = nodes[component_population[best_idx]]
                         best_PCG.append(CNDTest(self.graph, critical_nodes))
-                        best_MCN.append(min(component_fitness_list).item())
+                        best_MCN.append(best_fit)
+                        best_fitness.append(best_fit)
                         best_genes.append(critical_nodes)
                         end = time()
                         time_list.append(end - start)
@@ -269,35 +276,41 @@ class SixDSTController(BasicController):
                                 self._emit_observer(
                                     generation + 1,
                                     max_generation,
-                                    {"PCG": float(best_PCG[-1]), "MCN": float(best_MCN[-1])},
+                                    {"fitness": float(best_fit), "PCG": float(best_PCG[-1]), "MCN": float(best_MCN[-1])},
                                 )
                             except Exception:
                                 pass
                     if not disable_pbar:
-                        pbar.set_postfix(MCN=min(component_fitness_list).item(), PCG=min(best_PCG))
+                        current_best = self._best_fitness_value(component_fitness_list).item()
+                        pbar.set_postfix(fitness=current_best, PCG=best_PCG[-1] if best_PCG else None)
                         pbar.update(1)
             best_genes = torch.stack(best_genes)
             best_PCG = torch.tensor(best_PCG, device=device)
             best_MCN = torch.tensor(best_MCN, device=device)
+            best_fitness = torch.tensor(best_fitness, device=device)
             if rank == 0:
                 whole_genes = [torch.zeros(best_genes.shape, dtype=best_genes.dtype, device=device) for _ in range(world_size)]
                 whole_PCG = [torch.empty(best_PCG.shape, device=device) for _ in range(world_size)]
                 whole_MCN = [torch.empty(best_MCN.shape, device=device) for _ in range(world_size)]
+                whole_fitness = [torch.empty(best_fitness.shape, device=device) for _ in range(world_size)]
             else:
                 whole_genes = None
                 whole_PCG = None
                 whole_MCN = None
+                whole_fitness = None
             timed_call(comm_timer, "barrier", dist.barrier)
             timed_call(comm_timer, "gather_genes", dist.gather, best_genes, whole_genes, dst=0)
+            timed_call(comm_timer, "gather_fitness", dist.gather, best_fitness, whole_fitness, dst=0)
             timed_call(comm_timer, "gather_pcg", dist.gather, best_PCG, whole_PCG, dst=0)
             timed_call(comm_timer, "gather_mcn", dist.gather, best_MCN, whole_MCN, dst=0)
             if rank == 0:
                 whole_genes = torch.cat(whole_genes)
+                whole_fitness = torch.cat(whole_fitness)
                 whole_PCG = torch.cat(whole_PCG)
                 whole_MCN = torch.cat(whole_MCN)
-                top_index = torch.argsort(whole_PCG)[0]
-                print(f"Best PC(G): {whole_PCG[top_index]}. Best connected num: {whole_MCN[top_index]}.")
-                self.save(self.dataset, whole_genes[top_index], [whole_PCG[top_index].item(), whole_MCN[top_index].item(), time_list[-1]], time_list, "SixDST", world_size=world_size, bestPCG=best_PCG, bestMCN=best_MCN)
+                top_index = torch.argsort(whole_fitness, descending=self._fitness_descending())[0]
+                print(f"Best fitness: {whole_fitness[top_index]}. Best PC(G): {whole_PCG[top_index]}. Best connected num: {whole_MCN[top_index]}.")
+                self.save(self.dataset, whole_genes[top_index], [whole_fitness[top_index].item(), whole_PCG[top_index].item(), whole_MCN[top_index].item(), time_list[-1]], time_list, "SixDST", world_size=world_size, bestFitness=best_fitness, bestPCG=best_PCG, bestMCN=best_MCN)
                 print(f"Loop {loop} finished. Data saved in {self.path}...")
         torch.cuda.empty_cache()
         finalize_comm_stats(comm_timer, rank, world_size, getattr(self, "comm_path", None))
@@ -309,6 +322,9 @@ class SixDSTController(BasicController):
         with open(save_path, 'a+') as f:
             f.write(current_time())
             f.write(f"\nCurrent mode: {self.mode}. Current pop_size: {self.pop_size}. World size: {world_size}\n")
+        with open(save_path, 'a+') as f:
+            if 'bestFitness' in kwargs:
+                f.write(str([i for i in kwargs['bestFitness']]) + '\n')
         with open(save_path, 'a+') as f:
             f.write(str([i for i in kwargs['bestPCG']]) + '\n')
         with open(save_path, 'a+') as f:

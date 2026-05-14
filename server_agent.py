@@ -382,7 +382,22 @@ def _start_task_locked(
     TASK.queue = q
     TASK.process = proc
     proc.start()
-    start_consumer(TASK, on_finish=_try_dispatch_next_task)
+    start_consumer(TASK, on_finish=_on_task_finish)
+
+
+def _clear_fitness_contexts(reason: str) -> None:
+    try:
+        from server.fitness_worker import clear_contexts
+
+        clear_contexts()
+        print(f"[INFO] cleared fitness contexts after {reason}")
+    except Exception as exc:
+        print(f"[WARN] failed to clear fitness contexts after {reason}: {exc}")
+
+
+def _on_task_finish() -> None:
+    _clear_fitness_contexts("task finish")
+    _try_dispatch_next_task()
 
 
 def _try_dispatch_next_task() -> None:
@@ -628,6 +643,7 @@ def api_analysis_stop() -> Dict[str, Any]:
             db_manager.save_task_terminal(task_id=str(TASK.task_id or ""), state="cancelled")
         except Exception:
             pass
+    _clear_fitness_contexts("task cancellation")
     _try_dispatch_next_task()
 
     return {
@@ -770,6 +786,29 @@ def api_resource_lock_release() -> Dict[str, Any]:
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
     return info
+
+
+@app.get("/api/fitness/cache")
+def api_fitness_cache() -> Dict[str, Any]:
+    try:
+        from server.fitness_worker import context_stats
+
+        return context_stats()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/fitness/cache/clear")
+def api_fitness_cache_clear() -> Dict[str, Any]:
+    try:
+        from server.fitness_worker import clear_contexts, context_stats
+
+        before = context_stats()
+        clear_contexts()
+        after = context_stats()
+        return {"cleared": True, "before": before, "after": after}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.get("/api/resource_lock/status")
