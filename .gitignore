@@ -13,6 +13,7 @@
 !/README.md
 !/README.zh-CN.md
 !/CHANGELOG.txt
+!/MANIFEST.in
 !/setup.py
 !/requirements.txt
 !/requirements/
@@ -43,8 +44,6 @@
 # Algorithm dataset registry and bundled benchmark datasets.
 !/datasets/
 !/datasets/**
-!/gapa/datasets/
-!/gapa/datasets/**
 
 # Always ignore generated/local/private files, even under allowed dirs.
 **/.DS_Store

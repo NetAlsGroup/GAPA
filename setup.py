@@ -1,4 +1,8 @@
+from pathlib import Path
+import shutil
+
 from setuptools import setup, find_packages
+from setuptools.command.build_py import build_py as _build_py
 
 
 FULL_REQUIREMENTS = [
@@ -33,6 +37,20 @@ DEV_REQUIREMENTS = [
 with open("README.md", "r", encoding="utf-8") as f:
     long_description = f.read()
 
+
+class build_py(_build_py):
+    """Bundle root-level datasets into built packages without duplicating source files."""
+
+    def run(self):
+        super().run()
+        source = Path(__file__).resolve().parent / "datasets"
+        if not source.exists():
+            return
+        target = Path(self.build_lib) / "gapa" / "datasets"
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.copytree(source, target)
+
 setup(
     name="gapa",
     version="0.1.0",  # Major update: Unified Workflow API
@@ -57,7 +75,7 @@ setup(
         "Operating System :: OS Independent",
     ],
     
-    python_requires=">=3.10,<3.11",
+    python_requires=">=3.10",
     
     # Only include gapa package (not server/, web/, etc.)
     packages=find_packages(include=["gapa", "gapa.*"]),
@@ -92,9 +110,7 @@ setup(
         ],
     },
     
-    package_data={
-        "gapa": ["datasets/*"],
-    },
+    cmdclass={"build_py": build_py},
 
     # Include package data
     include_package_data=True,

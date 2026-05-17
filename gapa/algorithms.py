@@ -223,10 +223,19 @@ class _LegacyAlgorithm(Algorithm):
         monitor._best_fitness = primary
         monitor._best_solution = gene
         if elapsed is not None:
+            iteration_count = int(monitor._generation or 0)
+            if iteration_count <= 0:
+                for value in extra.values():
+                    if isinstance(value, list) and value:
+                        iteration_count = max(iteration_count, len(value))
+            if iteration_count <= 0:
+                time_list = capture.get("time_list") if isinstance(capture.get("time_list"), list) else []
+                iteration_count = len(time_list)
+            iteration_count = max(1, iteration_count)
             monitor._local_timing = {
                 "iter_seconds": elapsed,
-                "iter_avg_ms": (elapsed / max(1, int(monitor._generation or 1))) * 1000.0,
-                "throughput_ips": None,
+                "iter_avg_ms": (elapsed / iteration_count) * 1000.0,
+                "throughput_ips": iteration_count / elapsed if elapsed > 0 else None,
             }
         monitor._remote_result = {"best_metrics": metrics}
         if primary is not None and not monitor._fitness_history:

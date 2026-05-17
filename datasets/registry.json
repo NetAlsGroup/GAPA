@@ -61,8 +61,40 @@
       "tasks": ["CND"],
       "path": "yeast1.txt",
       "format": "edgelist",
-      "nodes": 1966,
-      "edges": 1592
+      "nodes": 2018,
+      "edges": 3714
+    },
+    "Hamilton1000": {
+      "task": "CND",
+      "tasks": ["CND"],
+      "path": "Hamilton1000.txt",
+      "format": "edgelist",
+      "nodes": 1000,
+      "edges": 2498
+    },
+    "Hamilton3000": {
+      "task": "CND",
+      "tasks": ["CND"],
+      "path": "Hamilton3000.txt",
+      "format": "edgelist",
+      "nodes": 3000,
+      "edges": 7497
+    },
+    "Hamilton4000": {
+      "task": "CND",
+      "tasks": ["CND"],
+      "path": "Hamilton4000.txt",
+      "format": "edgelist",
+      "nodes": 4000,
+      "edges": 9997
+    },
+    "Powergrid": {
+      "task": "CND",
+      "tasks": ["CND"],
+      "path": "Powergrid.txt",
+      "format": "edgelist",
+      "nodes": 4941,
+      "edges": 6594
     },
     "chameleon_filtered": {
       "task": "NCA",
@@ -136,7 +168,7 @@
     },
     "SixDST": {
       "task": "CND",
-      "datasets": ["Circuit", "A01", "humanDiseasome", "yeast1"]
+      "datasets": ["Circuit", "A01", "humanDiseasome", "yeast1", "Hamilton1000", "Hamilton3000", "Hamilton4000", "Powergrid"]
     },
     "GANI": {
       "task": "NCA",

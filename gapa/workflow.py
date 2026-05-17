@@ -660,13 +660,21 @@ class Monitor(_MonitorResourceCompatibility):
             "extra": list(self._extra_history),
         }
 
+    def _effective_timing(self) -> Dict[str, Any]:
+        timing = dict(self._local_timing or {})
+        if self._remote_result and isinstance(self._remote_result.get("timing"), dict):
+            remote_timing = self._remote_result.get("timing") or {}
+            for key in ("iter_seconds", "iter_avg_ms", "throughput_ips"):
+                value = remote_timing.get(key)
+                if value is not None:
+                    timing[key] = value
+        return timing
+
     def result(self) -> Dict[str, Any]:
         report_meta = {}
         if isinstance(self._run_context, dict):
             report_meta = self._run_context.get("reports") if isinstance(self._run_context.get("reports"), dict) else {}
-        timing = self._local_timing or {}
-        if self._remote_result and isinstance(self._remote_result.get("timing"), dict):
-            timing = dict(self._remote_result.get("timing") or {})
+        timing = self._effective_timing()
         metrics: Dict[str, Any] = {}
         if self._remote_result:
             metrics_block = self._remote_result.get("best_metrics")
@@ -688,8 +696,11 @@ class Monitor(_MonitorResourceCompatibility):
             "best_gene": self._serialize_gene(self._best_solution),
             "iterations": self._iteration_count(),
             "elapsed_seconds": timing.get("iter_seconds"),
+            "timing": timing,
             "metrics": metrics,
             "comm": comm,
+            "requested_mode": (self._run_context or {}).get("requested_mode"),
+            "resolved_mode": (self._run_context or {}).get("resolved_mode"),
             "report_path": report_meta.get("summary_path"),
         }
 
@@ -710,7 +721,7 @@ class Monitor(_MonitorResourceCompatibility):
         result = self._remote_result or {}
         objectives = result.get("objectives") or {}
         best_metrics = result.get("best_metrics") or {}
-        timing = result.get("timing") or {}
+        timing = self._effective_timing()
         comm = result.get("comm") or {}
         data = {
             "best_fitness": self.get_best_fitness(),
