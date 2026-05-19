@@ -92,7 +92,7 @@ class MNMSchedulerConfig:
     min_chunk_size: int = 4
 
     # Comm-guard knobs
-    guard_enabled: bool = True
+    guard_enabled: bool = False
     guard_max_ratio: float = 1.5
     guard_min_calls: int = 8
     guard_cooldown_iters: int = 5
@@ -101,12 +101,18 @@ class MNMSchedulerConfig:
     per_iteration_history: int = 0
     per_iteration_log_path: str = ""
     device_worker_refresh_s: float = 60.0
+    warmup_enabled: bool = True
+    warmup_timeout_s: float = 120.0
+    straggler_cooldown_enabled: bool = False
+    straggler_factor: float = 2.5
+    straggler_min_ms: float = 500.0
+    straggler_cooldown_iters: int = 8
 
     @classmethod
     def from_env(cls) -> "MNMSchedulerConfig":
         return cls(
             min_chunk_size=max(1, _env_int("GAPA_MNM_MIN_CHUNK_SIZE", 4)),
-            guard_enabled=bool(_env_int("GAPA_MNM_COMM_GUARD", 1)),
+            guard_enabled=bool(_env_int("GAPA_MNM_COMM_GUARD", 0)),
             guard_max_ratio=_env_float("GAPA_MNM_COMM_MAX_RATIO", 1.5),
             guard_min_calls=max(1, _env_int("GAPA_MNM_COMM_MIN_CALLS", 8)),
             guard_cooldown_iters=max(1, _env_int("GAPA_MNM_COMM_COOLDOWN_ITERS", 5)),
@@ -115,6 +121,12 @@ class MNMSchedulerConfig:
             per_iteration_history=max(0, _env_int("GAPA_MNM_PER_ITER_HISTORY", 0)),
             per_iteration_log_path=os.getenv("GAPA_MNM_PER_ITER_LOG", "").strip(),
             device_worker_refresh_s=max(0.0, _env_float("GAPA_MNM_DEVICE_WORKER_REFRESH_S", 60.0)),
+            warmup_enabled=bool(_env_int("GAPA_MNM_WARMUP", 1)),
+            warmup_timeout_s=max(1.0, _env_float("GAPA_MNM_WARMUP_TIMEOUT_S", 120.0)),
+            straggler_cooldown_enabled=bool(_env_int("GAPA_MNM_STRAGGLER_COOLDOWN", 0)),
+            straggler_factor=max(1.0, _env_float("GAPA_MNM_STRAGGLER_FACTOR", 2.5)),
+            straggler_min_ms=max(0.0, _env_float("GAPA_MNM_STRAGGLER_MIN_MS", 500.0)),
+            straggler_cooldown_iters=max(1, _env_int("GAPA_MNM_STRAGGLER_COOLDOWN_ITERS", 8)),
         )
 
     def snapshot(self) -> Dict[str, Any]:
@@ -137,6 +149,12 @@ class MNMSchedulerConfig:
             "per_iteration_history": int(self.per_iteration_history),
             "per_iteration_log_path": self.per_iteration_log_path,
             "device_worker_refresh_s": float(self.device_worker_refresh_s),
+            "warmup_enabled": bool(self.warmup_enabled),
+            "warmup_timeout_s": float(self.warmup_timeout_s),
+            "straggler_cooldown_enabled": bool(self.straggler_cooldown_enabled),
+            "straggler_factor": float(self.straggler_factor),
+            "straggler_min_ms": float(self.straggler_min_ms),
+            "straggler_cooldown_iters": int(self.straggler_cooldown_iters),
         }
 
 
@@ -562,6 +580,54 @@ class AdaptiveWorkerPool:
             chunk_size=chunk_rows,
         )
 
+    def warmup_fitness(
+        self,
+        worker: Worker,
+        *,
+        algorithm: str,
+        dataset: str,
+        device: Optional[str],
+        pop_size: int,
+        timeout_s: float,
+    ) -> Dict[str, Any]:
+        """Pre-create the remote fitness context/evaluator for one worker."""
+        session = self._get_session()
+        resp, meta = request_with_retry(
+            session=session,
+            method="POST",
+            url=worker.base_url + "/api/fitness/warmup",
+            json_payload={
+                "algorithm": algorithm,
+                "dataset": dataset,
+                "device": device,
+                "pop_size": int(pop_size),
+            },
+            timeout=(3.0, float(timeout_s)),
+            op="fitness_batch",
+            allow_status_retry=[408, 429, 502, 503, 504],
+        )
+        self._update_transport_stats(meta, bool(resp.ok))
+        if not resp.ok:
+            detail = ""
+            try:
+                body = resp.json()
+                if isinstance(body, dict):
+                    detail = str(body.get("detail") or body)
+            except Exception:
+                try:
+                    detail = resp.text.strip()
+                except Exception:
+                    detail = ""
+            if len(detail) > 500:
+                detail = detail[:500] + "..."
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(f"remote warmup failed: {worker.server_id} HTTP {resp.status_code}{suffix}")
+        try:
+            data = resp.json()
+        except Exception:
+            data = {}
+        return data if isinstance(data, dict) else {}
+
 
 @dataclass
 class DetailedCallResult:
@@ -674,6 +740,9 @@ class DistributedEvaluator(nn.Module):
         self._total_wall_overhead_ms = 0.0
         self._executor: Optional[ThreadPoolExecutor] = None
         self._executor_workers = 0
+        self._warmup_keys = set()
+        self._warmup_logged = False
+        self._worker_cooldown_until: Dict[str, int] = {}
     
     def _build_device_workers(self) -> List[DeviceWorker]:
         """Build DeviceWorkers from all servers' locked devices."""
@@ -884,6 +953,22 @@ class DistributedEvaluator(nn.Module):
             self._last_allocation = []
             return []
 
+        if self._scheduler_config.straggler_cooldown_enabled:
+            active = []
+            cooled = []
+            iter_tick = int(self._current_iter) if self._current_iter > 0 else int(self._forward_calls)
+            for dw in device_workers:
+                wid = f"{dw.server_id}:{dw.device}"
+                until = int(self._worker_cooldown_until.get(wid) or 0)
+                if until >= iter_tick:
+                    cooled.append(wid)
+                else:
+                    active.append(dw)
+            if active:
+                device_workers = active
+            elif cooled and self._current_iter <= 1:
+                print(f"[WARN] MNM all workers cooled down, keeping original workers: {cooled}")
+
         if len(device_workers) > total_items:
             device_workers = device_workers[:total_items]
 
@@ -1008,6 +1093,7 @@ class DistributedEvaluator(nn.Module):
         for future, stored_idx, dw, pop_chunk in futures:
             try:
                 idx, result = future.result()
+                result.worker_id = f"{dw.server_id}:{dw.device}"
                 self._record_call_summary(result)
                 iter_calls.append(result)
                 self._comm_total_ms += result.total_ms
@@ -1034,6 +1120,63 @@ class DistributedEvaluator(nn.Module):
 
         iter_wall_ms = (time.perf_counter() - t_wall_start) * 1000.0
         return fits, iter_calls, iter_wall_ms
+
+    def _warmup_assignments(self, assignments: List[DispatchAssignment]) -> None:
+        if not bool(self._scheduler_config.warmup_enabled):
+            return
+        cache_by_pop = str(os.getenv("GAPA_FITNESS_CACHE_BY_POP_SIZE", "0") or "0").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+        warmups: List[Tuple[str, DeviceWorker, int]] = []
+        for assignment in assignments:
+            dw = assignment.worker
+            if dw.is_local:
+                continue
+            chunk_size = int(assignment.chunk.shape[0]) if hasattr(assignment.chunk, "shape") else 0
+            if chunk_size <= 0:
+                continue
+            key_size = chunk_size if cache_by_pop else 0
+            key = f"{dw.server_id}:{dw.device}:{self.algorithm}:{self.dataset}:{key_size}"
+            if key in self._warmup_keys:
+                continue
+            self._warmup_keys.add(key)
+            warmups.append((key, dw, chunk_size))
+        if not warmups:
+            return
+
+        if not self._warmup_logged:
+            desc = ", ".join(f"{dw.server_id}:{dw.device}[{chunk_size}]" for _key, dw, chunk_size in warmups)
+            print(f"[INFO] MNM warmup: {len(warmups)} remote evaluator(s): {desc}")
+            self._warmup_logged = True
+
+        executor = self._get_executor(max(1, len(warmups)))
+        futures: List[Tuple[Future, str, DeviceWorker]] = []
+        for key, dw, chunk_size in warmups:
+            temp_worker = Worker(server_id=dw.server_id, base_url=dw.base_url)
+            futures.append(
+                (
+                    executor.submit(
+                        self._pool.warmup_fitness,
+                        temp_worker,
+                        algorithm=self.algorithm,
+                        dataset=self.dataset,
+                        device=dw.device,
+                        pop_size=chunk_size,
+                        timeout_s=float(self._scheduler_config.warmup_timeout_s),
+                    ),
+                    key,
+                    dw,
+                )
+            )
+        for future, key, dw in futures:
+            try:
+                future.result()
+            except Exception as exc:
+                self._warmup_keys.discard(key)
+                print(f"[WARN] MNM warmup failed on {dw.server_id}:{dw.device}: {exc}")
 
     def _get_executor(self, max_workers: int) -> ThreadPoolExecutor:
         max_workers = max(1, int(max_workers))
@@ -1092,6 +1235,7 @@ class DistributedEvaluator(nn.Module):
             if self._per_iter_stats.maxlen:
                 self._per_iter_stats.append(iter_summary)
             self._write_iteration_log(iter_summary)
+        self._update_straggler_cooldowns(iter_tick=iter_tick, iter_calls=iter_calls)
         self._total_wall_compute_ms += float(iter_max_compute)
         self._total_wall_overhead_ms += float(iter_max_overhead)
         self._guard_window.append(
@@ -1123,6 +1267,36 @@ class DistributedEvaluator(nn.Module):
                     f"> threshold={self._guard_max_ratio:.2f}"
                 )
                 print(f"[WARN] MNM comm-guard triggered: {self._guard_reason}")
+
+    def _update_straggler_cooldowns(self, *, iter_tick: int, iter_calls: List[DetailedCallResult]) -> None:
+        if not bool(self._scheduler_config.straggler_cooldown_enabled):
+            return
+        if len(iter_calls) < 2:
+            return
+        totals = sorted(float(c.total_ms) for c in iter_calls if float(c.total_ms) > 0.0)
+        if len(totals) < 2:
+            return
+        mid = len(totals) // 2
+        median_ms = totals[mid] if len(totals) % 2 else (totals[mid - 1] + totals[mid]) / 2.0
+        threshold = max(
+            float(self._scheduler_config.straggler_min_ms),
+            median_ms * float(self._scheduler_config.straggler_factor),
+        )
+        for call in iter_calls:
+            total_ms = float(call.total_ms)
+            if total_ms <= threshold:
+                continue
+            wid = str(call.worker_id)
+            until = int(iter_tick) + int(self._scheduler_config.straggler_cooldown_iters)
+            previous = int(self._worker_cooldown_until.get(wid) or 0)
+            if until <= previous:
+                continue
+            self._worker_cooldown_until[wid] = until
+            print(
+                f"[WARN] MNM straggler cooldown: {wid} "
+                f"total_ms={total_ms:.1f} median_ms={median_ms:.1f} "
+                f"threshold_ms={threshold:.1f} until_iter={until}"
+            )
 
     # ---- attribute forwarding for controller.setup() mutations ----
     def __getattr__(self, name: str) -> Any:  # pragma: no cover (delegation)
@@ -1171,6 +1345,7 @@ class DistributedEvaluator(nn.Module):
         if not assignments:
             return self._base(population)
 
+        self._warmup_assignments(assignments)
         fits, iter_calls, iter_wall_ms = self._dispatch_assignments(
             assignments,
             population_device=population.device,

@@ -826,6 +826,36 @@ def api_fitness_cache_clear() -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.post("/api/fitness/warmup")
+def api_fitness_warmup(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Pre-create the fitness context/evaluator for MNM remote workers."""
+    with TASK.lock:
+        if TASK.state == "running":
+            raise HTTPException(status_code=409, detail="Agent is busy running a GA task")
+    algorithm = str(payload.get("algorithm") or "")
+    dataset = str(payload.get("dataset") or "")
+    device = payload.get("device")
+    pop_size = payload.get("pop_size")
+    try:
+        from server.fitness_worker import warmup_context
+
+        return warmup_context(
+            algorithm=algorithm,
+            dataset=dataset,
+            device=str(device) if device is not None else None,
+            pop_size=int(pop_size) if pop_size is not None else None,
+        )
+    except Exception as exc:
+        logger.exception(
+            "fitness_warmup failed algorithm=%s dataset=%s device=%s pop_size=%s",
+            algorithm,
+            dataset,
+            device,
+            pop_size,
+        )
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.get("/api/resource_lock/status")
 def api_resource_lock_status() -> Dict[str, Any]:
     try:

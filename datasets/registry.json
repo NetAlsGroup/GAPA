@@ -91,7 +91,7 @@
     "Powergrid": {
       "task": "CND",
       "tasks": ["CND"],
-      "path": "Powergrid.txt",
+      "path": "powergrid.txt",
       "format": "edgelist",
       "nodes": 4941,
       "edges": 6594

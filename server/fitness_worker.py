@@ -42,6 +42,14 @@ def _canonical_algorithm_name(name: str) -> str:
 CPU_PARALLEL_ALGORITHMS = {"qattack", "cgn", "tde", "cutoff", "lpaeda", "lpaga"}
 
 
+def _evaluator_cache_key(algorithm: str, device: str, pop_size: int) -> int:
+    cache_by_pop = str(os.getenv("GAPA_FITNESS_CACHE_BY_POP_SIZE", "0") or "0").strip().lower()
+    if cache_by_pop in ("1", "true", "yes", "on"):
+        is_cpu_parallel = _canonical_algorithm_name(algorithm) in CPU_PARALLEL_ALGORITHMS and device == "cpu"
+        return 0 if is_cpu_parallel else int(pop_size)
+    return 0
+
+
 def _init_cpu_pool(evaluator: Any) -> None:
     global _CPU_POOL_EVALUATOR
     _CPU_POOL_EVALUATOR = evaluator
@@ -269,7 +277,7 @@ class _FitnessContext:
         with self.lock:
             self.last_used_at = time.time()
             is_cpu_parallel = _canonical_algorithm_name(self.algorithm) in CPU_PARALLEL_ALGORITHMS and self.device == "cpu"
-            evaluator_key = 0 if is_cpu_parallel else pop_size
+            evaluator_key = _evaluator_cache_key(self.algorithm, self.device, pop_size)
             evaluator = self._evaluator_cache.get(evaluator_key)
             if evaluator is None:
                 if not callable(self._evaluator_setup):
@@ -466,6 +474,55 @@ def clear_contexts() -> None:
             torch.cuda.ipc_collect()
     except Exception:
         pass
+
+
+def warmup_context(
+    algorithm: str,
+    dataset: str,
+    *,
+    device: Optional[str] = None,
+    pop_size: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Pre-create the cached context/evaluator used by remote fitness calls."""
+    if device is None:
+        device = _select_device()
+    key = _ContextKey(algorithm=algorithm, dataset=dataset, device=device)
+    created = False
+    with _CTX_LOCK:
+        _prune_contexts_locked()
+        ctx = _CTX.get(key)
+        if ctx is None:
+            ctx = _FitnessContext(algorithm=algorithm, dataset=dataset, device=device)
+            _CTX[key] = ctx
+            created = True
+
+    evaluator_created = False
+    if pop_size is not None and int(pop_size) > 0:
+        pop_size = int(pop_size)
+        with ctx.lock:
+            ctx.last_used_at = time.time()
+            evaluator_key = _evaluator_cache_key(ctx.algorithm, ctx.device, pop_size)
+            evaluator = ctx._evaluator_cache.get(evaluator_key)
+            if evaluator is None:
+                if not callable(ctx._evaluator_setup):
+                    raise RuntimeError(
+                        f"evaluator setup not ready for algorithm='{ctx.algorithm}'"
+                    )
+                evaluator = ctx._evaluator_setup(pop_size)
+                ctx._evaluator_cache[evaluator_key] = evaluator
+                ctx._trim_evaluator_cache(keep_key=evaluator_key)
+                evaluator_created = True
+
+    return {
+        "warmed": True,
+        "algorithm": algorithm,
+        "dataset": dataset,
+        "device": device,
+        "pop_size": pop_size,
+        "context_created": created,
+        "evaluator_created": evaluator_created,
+        "stats": ctx.stats(),
+    }
 
 
 def compute_fitness_batch(algorithm: str, dataset: str, population_cpu: Any, *, device: Optional[str] = None, extra_context: Optional[Dict[str, Any]] = None) -> Tuple[Any, Dict[str, Any]]:
