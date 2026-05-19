@@ -9,7 +9,7 @@ These examples are source-tree examples. Run `pip install -e .` once before exec
 - `api/data_loader.py`
   - inspect the public dataset registry and load a dataset by name
 - `api/workflow.py`
-  - run a minimal local workflow with `Workflow`
+  - run a local `s` / `sm` / `m` workflow with CLI-selectable algorithm, dataset, steps, and constructor kwargs
 - `api/monitor.py`
   - inspect `status()`, `result()`, and `report()`
 - `api/resource_manager.py`
@@ -35,12 +35,12 @@ These examples are source-tree examples. Run `pip install -e .` once before exec
 - `remote/resource_manager.py`
   - inspect configured remote servers and request a remote strategy plan
 - `remote/workflow.py`
-  - run a minimal remote workflow through `Workflow`
+  - run a remote M-mode workflow with CLI-selectable server id, devices, algorithm, dataset, and steps
 
 ## 4. Advanced API
 
 - `advanced/mnm_workflow.py`
-  - run a minimal MNM workflow with all online remote servers from `.env`
+  - run an MNM workflow with resource locks, CLI-selectable servers/devices, timing summaries, and communication metrics
 - `advanced/service_api.py`
   - smoke test the local `app.py` service API surface
 - `advanced/resource_lock.py`
@@ -54,3 +54,29 @@ Advanced service, remote runtime, and compatibility guidance has been moved out 
 - operations and QA: `docs/OPERATIONS_AND_QA.md`
 - remote entry points: `app.py`, `server_agent.py`, `server/`
 - legacy script-first references: `old_examples/`
+
+## Common Commands
+
+Local workflow:
+
+```bash
+python examples/api/workflow.py --mode m --algorithm SixDST --dataset yeast1 --steps 100 --pop-size 80
+```
+
+Remote M-mode workflow:
+
+```bash
+python examples/remote/workflow.py --algorithm CDAEDA --dataset karate --steps 100 --remote-devices 0
+```
+
+MNM workflow:
+
+```bash
+python examples/advanced/mnm_workflow.py \
+  --algorithm SixDST \
+  --dataset yeast1 \
+  --steps 200 \
+  --server-ids Node2,Node1 \
+  --lock-devices Node2=0 \
+  --lock-devices Node1=0
+```
