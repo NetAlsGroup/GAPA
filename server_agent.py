@@ -13,6 +13,7 @@ server_agent.py
 from __future__ import annotations
 
 import multiprocessing as mp
+import logging
 import os
 import signal
 import time
@@ -52,6 +53,7 @@ from gapa.config import get_server_agent_host, get_server_agent_port
 
 
 app = FastAPI(title="GAPA Server Agent", version="0.1.0")
+logger = logging.getLogger("gapa.agent")
 
 def check_dependencies():
     """Check for essential packages and print warnings if missing."""
@@ -728,6 +730,19 @@ async def api_fitness_batch(req: Request) -> Response:
     except HTTPException:
         raise
     except Exception as exc:
+        pop_shape = None
+        try:
+            if "population" in locals() and hasattr(population, "shape"):
+                pop_shape = tuple(population.shape)
+        except Exception:
+            pop_shape = None
+        logger.exception(
+            "fitness_batch failed algorithm=%s dataset=%s device=%s population_shape=%s",
+            locals().get("algorithm"),
+            locals().get("dataset"),
+            locals().get("device"),
+            pop_shape,
+        )
         print(f"[ERROR] fitness_batch failed: {exc}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(exc))

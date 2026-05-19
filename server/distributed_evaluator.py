@@ -514,7 +514,20 @@ class AdaptiveWorkerPool:
         network_total_ms = (time.perf_counter() - t_network_start) * 1000.0
         
         if not resp.ok:
-            raise RuntimeError(f"remote fitness failed: {worker.server_id} HTTP {resp.status_code}")
+            detail = ""
+            try:
+                body = resp.json()
+                if isinstance(body, dict):
+                    detail = str(body.get("detail") or body)
+            except Exception:
+                try:
+                    detail = resp.text.strip()
+                except Exception:
+                    detail = ""
+            if len(detail) > 500:
+                detail = detail[:500] + "..."
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(f"remote fitness failed: {worker.server_id} HTTP {resp.status_code}{suffix}")
         
         # Phase 3: Deserialize
         t_deserialize_start = time.perf_counter()
